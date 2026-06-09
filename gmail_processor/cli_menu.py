@@ -55,6 +55,7 @@ def run_menu():
             elif choice == "5": _menu_feedback()
             elif choice == "6": _menu_config()
             elif choice == "7": _menu_debug(_get_service)
+            elif choice == "8": _menu_smart_setup(_get_service)
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -78,6 +79,7 @@ def _main_menu() -> str:
         ("5", "Feedback            corregir una decisión"),
         ("6", "Configuración       reglas y contactos"),
         ("7", "Debug mode          traza completa del pipeline"),
+        ("8", "Configuración inicial  detectar contactos importantes"),
         ("0", "Salir"),
     ]
     for key, label in items:
@@ -519,6 +521,225 @@ def _menu_debug(get_svc: Callable):
     _pause()
 
 
+# ── 8. Configuración inicial inteligente ─────────────────────────────────────
+
+def _menu_smart_setup(get_svc: Callable):
+    _section("CONFIGURACIÓN INICIAL INTELIGENTE")
+
+    print("  Analiza tus últimos 12 meses de correo para detectar")
+    print("  contactos importantes que deben estar protegidos.")
+    print()
+    print(f"  Límites del análisis:")
+    print(f"    • Hasta 500 correos de bandeja de entrada")
+    print(f"    • Hasta 400 mensajes enviados (para detectar respuestas)")
+    print(f"    • Tiempo estimado: 3-6 minutos")
+    print()
+    print("  Los resultados se muestran antes de modificar nada.")
+    print("  Confirmarás cada cambio antes de que sea aplicado.")
+    print()
+
+    if not _confirm("¿Iniciar análisis?"):
+        return
+
+    svc = get_svc()
+    if svc is None:
+        return
+
+    # ── Scan ──────────────────────────────────────────────────────────────────
+    from .smart_setup import SmartSetup
+    from .processor import setup_logging
+    setup_logging(level=logging.WARNING)
+
+    setup = SmartSetup(svc)
+    if setup.user_email:
+        print(f"\n  Cuenta: {setup.user_email}")
+
+    print()
+    _phase_label = [""]
+
+    def progress(scanned: int, total: int, phase: str = "inbox"):
+        _phase_label[0] = phase
+        label = "Enviados indexados" if phase == "sent" else "Correos analizados"
+        pct   = min(100, int(scanned / max(total, 1) * 100))
+        done  = pct // 5
+        bar   = "█" * done + "░" * (20 - done)
+        print(f"\r  [{bar}] {pct:3d}%  {label}: {scanned}", end="", flush=True)
+
+    print("  Paso 1/2 — Indexando mensajes enviados...")
+    try:
+        contacts, domains = setup.analyze(progress_cb=progress)
+    except Exception as exc:
+        print(f"\n\n  ERROR durante el análisis: {exc}")
+        _pause()
+        return
+
+    print(f"\n  Análisis completado.\n")
+
+    # ── Show contact suggestions ───────────────────────────────────────────────
+    if not contacts:
+        print("  No se encontraron contactos nuevos para proteger.")
+        print("  (puede que ya estén todos en CONTACT_RULES, o que el historial")
+        print("   no tenga suficientes interacciones claras)")
+        if domains:
+            _present_domains(domains)
+        _pause()
+        return
+
+    from .smart_setup import DOMAIN_LABELS
+    _present_contacts(contacts, domains, DOMAIN_LABELS)
+
+
+def _present_contacts(contacts, domains, DOMAIN_LABELS):
+    from . import rules as cfg
+
+    print(_SEP2)
+    print(f"  CONTACTOS IMPORTANTES DETECTADOS")
+    print(_SEP2)
+    print()
+
+    for i, s in enumerate(contacts, 1):
+        label, important = DOMAIN_LABELS.get(s.domain_type, ("CONTACTOS", False))
+        imp_tag  = "importante=Sí" if important else "importante=No"
+        name_tag = f'  "{s.name}"' if s.name else ""
+        print(f"  [{i:>2}]  {s.email}{name_tag}")
+        stats_parts = [f"{s.count} recibidos"]
+        if s.replied:
+            stats_parts.append(f"{s.replied} respondidos")
+        if s.important_count:
+            stats_parts.append(f"IMPORTANT×{s.important_count}")
+        if s.starred_count:
+            stats_parts.append(f"★×{s.starred_count}")
+        print(f"        {' | '.join(stats_parts)}")
+        print(f"        Tipo: {s.domain_type:<14}  Score: {s.score:.0f}")
+        print(f"        → CONTACT_RULES  label={label}  {imp_tag}")
+        print()
+
+    print(_SEP)
+    print("  Opciones:")
+    print("    A        Aceptar todos")
+    print("    N        Rechazar todos")
+    print("    1,3,5    Aceptar solo esos números (separados por coma)")
+    print(_SEP)
+
+    raw = _ask("Selección", "A").strip().upper()
+
+    if raw == "N":
+        print("  Sin cambios en contactos.")
+        selected_contacts = []
+    elif raw == "A":
+        selected_contacts = list(range(len(contacts)))
+    else:
+        selected_contacts = []
+        for part in raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                idx = int(part) - 1
+                if 0 <= idx < len(contacts):
+                    selected_contacts.append(idx)
+
+    # Apply contacts
+    added_contacts = 0
+    if selected_contacts:
+        print()
+        for idx in selected_contacts:
+            s = contacts[idx]
+            label, important = DOMAIN_LABELS.get(s.domain_type, ("CONTACTOS", False))
+            ok = _patch_rules_add_contact(s.email, label, important)
+            if ok:
+                added_contacts += 1
+                tag = "Sí" if important else "No"
+                print(f"  + {s.email:<40} label={label}  importante={tag}")
+            else:
+                print(f"  ! {s.email} ya protegido o no se pudo escribir")
+
+        if added_contacts:
+            from . import rules as cfg
+            importlib.reload(cfg)
+
+    # ── Show domain suggestions ────────────────────────────────────────────────
+    domains_added = 0
+    if domains:
+        domains_added = _present_domains(domains)
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    print()
+    print(_SEP2)
+    print("  RESUMEN")
+    print(_SEP2)
+    print(f"  Contactos protegidos añadidos : {added_contacts}")
+    print(f"  Dominios protegidos añadidos  : {domains_added}")
+    if added_contacts or domains_added:
+        print()
+        print("  Las reglas están activas en esta sesión.")
+        print("  Se aplicarán en el próximo Cleanup y Procesado de inbox.")
+    else:
+        print("  Sin cambios aplicados.")
+
+    _pause()
+
+
+def _present_domains(domains) -> int:
+    """Shows domain suggestions and applies approved ones. Returns count added."""
+    from . import rules as cfg
+    from .smart_setup import DOMAIN_LABELS
+
+    # Filter domains already in DOMAIN_RULES
+    existing = {
+        d
+        for rule in cfg.DOMAIN_RULES
+        for d in rule.get("domains", [])
+    }
+    new_domains = [d for d in domains if d.domain not in existing]
+    if not new_domains:
+        return 0
+
+    print()
+    print(_SEP2)
+    print("  DOMINIOS FRECUENTES DETECTADOS")
+    print(_SEP2)
+    print()
+
+    for i, d in enumerate(new_domains, 1):
+        action_label = "mark_important (nunca eliminado)" if d.action == "mark_important" else "archive"
+        print(f"  [{i:>2}]  {d.domain}")
+        print(f"        {d.sender_count} remitentes  |  {d.total_msgs} correos  |  tipo: {d.domain_type}")
+        print(f"        → DOMAIN_RULES  label={d.label}  action={action_label}")
+        print()
+
+    print(_SEP)
+    raw = _ask("Selección (A=todos, N=ninguno, o números)", "A").strip().upper()
+
+    if raw == "N":
+        return 0
+
+    if raw == "A":
+        selected = list(range(len(new_domains)))
+    else:
+        selected = []
+        for part in raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                idx = int(part) - 1
+                if 0 <= idx < len(new_domains):
+                    selected.append(idx)
+
+    added = 0
+    print()
+    for idx in selected:
+        d  = new_domains[idx]
+        ok = _patch_rules_add_domain(d.domain, d.label, d.action)
+        if ok:
+            added += 1
+            print(f"  + {d.domain:<35} label={d.label}  {d.action}")
+        else:
+            print(f"  ! {d.domain} ya existe o no se pudo escribir")
+
+    if added:
+        importlib.reload(cfg)
+
+    return added
+
+
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
@@ -579,6 +800,59 @@ def _patch_rules_remove_contact(email: str) -> bool:
 
     try:
         rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
+    """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    rules_path = Path(__file__).parent / "rules.py"
+    try:
+        lines = rules_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+
+    # Find DOMAIN_RULES list start
+    start_idx = None
+    for i, line in enumerate(lines):
+        if "DOMAIN_RULES: list[dict] = [" in line:
+            start_idx = i
+            break
+    if start_idx is None:
+        return False
+
+    # Find closing ] by tracking bracket depth
+    depth   = 1
+    end_idx = None
+    for i in range(start_idx + 1, len(lines)):
+        for ch in lines[i]:
+            if   ch == "[": depth += 1
+            elif ch == "]": depth -= 1
+            if depth == 0:
+                end_idx = i
+                break
+        if end_idx is not None:
+            break
+    if end_idx is None:
+        return False
+
+    # Check if domain already exists anywhere in the block
+    block_text = "\n".join(lines[start_idx:end_idx])
+    if f'"{domain}"' in block_text:
+        return False
+
+    new_entry = (
+        f'    {{\n'
+        f'        "domains": ["{domain}"],\n'
+        f'        "label": "{label}",\n'
+        f'        "action": "{action}",\n'
+        f'    }},'
+    )
+    lines.insert(end_idx, new_entry)
+
+    try:
+        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return True
     except OSError:
         return False
