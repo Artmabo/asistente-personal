@@ -1,0 +1,182 @@
+#!/usr/bin/env python
+"""
+Ejemplos de uso avanzado del sistema de throttling adaptativo.
+Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
+"""
+
+from limpiar_correos import limpiar_correos, ThrottleManager
+from asistente_personal import get_gmail_service
+
+
+def ejemplo_1_modo_conservador():
+    """Modo por defecto - el más seguro, respeita límites de Gmail API."""
+    print("\n" + "="*60)
+    print("EJEMPLO 1: Modo Conservador (RECOMENDADO)")
+    print("="*60)
+    print("✅ Usa delays adaptativos")
+    print("✅ Circuit breaker automático")
+    print("✅ Respeita límites de Gmail API")
+    print("❌ Más lento pero confiable")
+    
+    resultado = limpiar_correos(
+        meses=6,
+        solo_no_leidos=True,
+        aggressive=False  # Conservative mode
+    )
+    
+    print(f"\n✓ Resultado: {resultado['eliminados']} correos eliminados")
+
+
+def ejemplo_2_listar_sin_borrar():
+    """Solo verificar cuántos correos se encontrarían sin borrar."""
+    print("\n" + "="*60)
+    print("EJEMPLO 2: Verificación Previa (Dry Run)")
+    print("="*60)
+    
+    service = get_gmail_service()
+    
+    # Buscar sin eliminar (seguro para previsualizacion)
+    from datetime import datetime, timedelta
+    fecha_limite = (datetime.now() - timedelta(days=6 * 30)).strftime("%Y/%m/%d")
+    query = f"before:{fecha_limite} is:unread"
+    
+    resultados = service.users().messages().list(
+        userId="me",
+        q=query,
+        maxResults=100  # Pequeño límite para ver
+    ).execute()
+    
+    mensajes = resultados.get("messages", [])
+    print(f"\n📊 Se encontraron {len(mensajes)} correos que cumplen criterio")
+    print(f"📅 Criterio: {query}")
+    print(f"\nℹ️  Para eliminarlos, ejecuta:")
+    print("    python limpiar_correos.py")
+
+
+def ejemplo_3_limpieza_personalizada():
+    """Eliminar con parámetros personalizados."""
+    print("\n" + "="*60)
+    print("EJEMPLO 3: Limpieza Personalizada")
+    print("="*60)
+    
+    # Eliminar TODOS los correos (leídos y no leídos) de más de 1 año
+    resultado = limpiar_correos(
+        meses=12,           # Más de 1 año
+        solo_no_leidos=False,  # Incluir leídos
+        aggressive=False
+    )
+    
+    print(f"\n✓ Se eliminaron {resultado['eliminados']} correos")
+
+
+def ejemplo_4_comparacion_modos():
+    """Comparar comportamiento en modo agresivo vs conservador."""
+    print("\n" + "="*60)
+    print("EJEMPLO 4: Comparación de Modes")
+    print("="*60)
+    
+    print("\n📊 Modo AGRESIVO:")
+    print("   - REQUEST_DELAY: 0.1s (muy rápido)")
+    print("   - BATCH_SIZE: 30")
+    print("   - RIESGO: Alto para 403/429")
+    print("   - VELOCIDAD: Rápida")
+    
+    print("\n📊 Modo CONSERVADOR:")
+    print("   - REQUEST_DELAY: 0.5s (seguro)")
+    print("   - BATCH_SIZE: 15")
+    print("   - RIESGO: Bajo o nulo")
+    print("   - VELOCIDAD: Moderada")
+    
+    print("\n✅ RECOMENDACIÓN: Usar modo CONSERVADOR siempre")
+
+
+def ejemplo_5_monitorear_throttle():
+    """Crear custom throttle manager y monitorear estado."""
+    print("\n" + "="*60)
+    print("EJEMPLO 5: Monitoreo de Throttle Manager")
+    print("="*60)
+    
+    throttle = ThrottleManager(
+        initial_delay=0.5,
+        min_delay=0.3,
+        max_delay=5.0
+    )
+    
+    print(f"\n Estado inicial:")
+    print(f"   Delay: {throttle.current_delay}s")
+    print(f"   Éxitos: {throttle.success_count}")
+    print(f"   Errores: {throttle.error_count}")
+    print(f"   Circuit broken: {throttle.circuit_broken}")
+    
+    # Simular algunos éxitos
+    for _ in range(5):
+        throttle.record_success()
+    
+    print(f"\n Después de 5 éxitos:")
+    print(f"   Delay (reducido): {throttle.current_delay:.3f}s")
+    
+    # Simular error de rate limit
+    throttle.record_rate_limit_error()
+    
+    print(f"\n Después de error 429:")
+    print(f"   Delay (aumentado): {throttle.current_delay:.3f}s")
+
+
+def ejemplo_6_errores_comunes():
+    """Referencia de errores comunes y soluciones."""
+    print("\n" + "="*60)
+    print("EJEMPLO 6: Solución de Problemas")
+    print("="*60)
+    
+    errores = {
+        "403 Forbidden": {
+            "causa": "Cuota de usuario excedida o permisos insuficientes",
+            "solucion": [
+                "1. Esperar 24h (se resetea la cuota diaria)",
+                "2. Aumentar PAGE_DELAY y REQUEST_DELAY",
+                "3. Reducir BATCH_SIZE",
+                "4. Usar aggressive=False"
+            ]
+        },
+        "429 Too Many Requests": {
+            "causa": "Rate limit de Gmail API",
+            "solucion": [
+                "1. Circuit breaker se activa automáticamente",
+                "2. Espera exponencial con backoff",
+                "3. Aumenta PAGE_DELAY a 5.0+",
+                "4. Ejecuta en horarios menos concurridos"
+            ]
+        },
+        "401 Unauthorized": {
+            "causa": "Token expirado o inválido",
+            "solucion": [
+                "1. Elimina token.json",
+                "2. Ejecuta: python asistente-personal.py",
+                "3. Autoriza de nuevo en navegador"
+            ]
+        }
+    }
+    
+    for error_code, info in errores.items():
+        print(f"\n🔴 {error_code}")
+        print(f"   Causa: {info['causa']}")
+        print(f"   Solución:")
+        for sol in info['solucion']:
+            print(f"      {sol}")
+
+
+if __name__ == "__main__":
+    print("\n" + "="*60)
+    print("EJEMPLOS: Sistema de Throttling Adaptativo")
+    print("="*60)
+    
+    # Descomenta el ejemplo que quieras ejecutar:
+    
+    # ejemplo_1_modo_conservador()
+    ejemplo_2_listar_sin_borrar()
+    # ejemplo_3_limpieza_personalizada()
+    # ejemplo_4_comparacion_modos()
+    # ejemplo_5_monitorear_throttle()
+    # ejemplo_6_errores_comunes()
+    
+    print("\n✅ Fin de ejemplos")

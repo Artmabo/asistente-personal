@@ -1,0 +1,96 @@
+"""
+AuditLogger: structured per-decision log in JSONL format.
+
+One JSON object per line in audit_log.jsonl:
+  {"ts":"…","msg_id":"…","sender":"…","domain":"…","score":-15.0,
+   "decision":"TRASH","action":"trash","rule":"promotions_60d",
+   "reason":"…","learned":false,"protected":false,"dry_run":true}
+
+The file is capped at MAX_ENTRIES lines; older entries are rotated out
+when the cap is exceeded (keeps the most recent MAX_ENTRIES).
+
+Writes are buffered in memory and flushed to disk in one pass via flush().
+This avoids one open() per message during high-volume runs.
+"""
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+
+logger = logging.getLogger("gmail_processor.audit")
+
+MAX_ENTRIES = 10_000
+
+
+class AuditLogger:
+    def __init__(self, path: str = "audit_log.jsonl", dry_run: bool = False):
+        self.path    = Path(path)
+        self.dry_run = dry_run
+        self._buf: list[dict] = []
+
+    # ── Public ────────────────────────────────────────────────────────────────
+
+    def log(
+        self,
+        *,
+        msg_id:    str,
+        sender:    str,
+        domain:    str,
+        score:     float,
+        decision:  str,        # "TRASH" | "KEEP" | "SKIP"
+        action:    str,        # "trash" | "keep" | "skip"
+        rule:      str,
+        reason:    str,
+        learned:   bool = False,
+        protected: bool = False,
+    ):
+        self._buf.append({
+            "ts":        datetime.now().isoformat(timespec="seconds"),
+            "msg_id":    msg_id,
+            "sender":    sender,
+            "domain":    domain,
+            "score":     score,
+            "decision":  decision,
+            "action":    action,
+            "rule":      rule,
+            "reason":    reason,
+            "learned":   learned,
+            "protected": protected,
+            "dry_run":   self.dry_run,
+        })
+
+    def flush(self):
+        """Writes buffered entries to disk. Called once per run."""
+        if not self._buf:
+            return
+        existing = self._load()
+        combined = (existing + self._buf)[-MAX_ENTRIES:]
+        with open(self.path, "w", encoding="utf-8") as f:
+            for entry in combined:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
+        self._buf = []
+
+    def recent(self, n: int = 20) -> list[dict]:
+        """Returns the n most recent entries (including un-flushed buffer)."""
+        return (self._load() + self._buf)[-n:]
+
+    def stats_summary(self) -> dict:
+        """Counts decisions from the persisted log."""
+        counts: dict[str, int] = {"TRASH": 0, "KEEP": 0, "SKIP": 0}
+        for entry in self._load():
+            counts[entry.get("decision", "")] = (
+                counts.get(entry.get("decision", ""), 0) + 1
+            )
+        return counts
+
+    # ── Private ───────────────────────────────────────────────────────────────
+
+    def _load(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except (OSError, json.JSONDecodeError):
+            return []
