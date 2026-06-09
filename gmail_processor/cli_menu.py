@@ -602,15 +602,13 @@ def _present_contacts(contacts, domains, DOMAIN_LABELS):
         imp_tag  = "importante=Sí" if important else "importante=No"
         name_tag = f'  "{s.name}"' if s.name else ""
         print(f"  [{i:>2}]  {s.email}{name_tag}")
-        stats_parts = [f"{s.count} recibidos"]
-        if s.replied:
-            stats_parts.append(f"{s.replied} respondidos")
-        if s.important_count:
-            stats_parts.append(f"IMPORTANT×{s.important_count}")
-        if s.starred_count:
-            stats_parts.append(f"★×{s.starred_count}")
-        print(f"        {' | '.join(stats_parts)}")
-        print(f"        Tipo: {s.domain_type:<14}  Score: {s.score:.0f}")
+
+        # Score breakdown (explainability)
+        print(f"        Score: {s.score:.0f}  |  tipo: {s.domain_type}")
+        for delta, reason in (s.score_factors or []):
+            sign = "+" if delta >= 0 else ""
+            print(f"          {sign}{delta:>5.0f}  {reason}")
+
         print(f"        → CONTACT_RULES  label={label}  {imp_tag}")
         print()
 

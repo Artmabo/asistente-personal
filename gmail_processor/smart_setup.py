@@ -1,74 +1,116 @@
 """
 SmartSetup: analyzes Gmail history to suggest important contacts and domains.
 
-Scans up to MAX_MESSAGES from the last SCAN_DAYS days using three signal passes:
-  1. IMPORTANT + STARRED messages (highest-signal, fetched first)
-  2. Sent thread IDs (to detect reply patterns)
-  3. Recent inbox messages (frequency and interaction signals)
+── Scoring philosophy ────────────────────────────────────────────────────────
+The single strongest signal that something is a real contact (not a newsletter)
+is that the user has replied to them.  Newsletters are one-directional by
+definition: they never appear in the user's "sent" threads.
 
-Each sender receives a score based on weighted signals. Results above MIN_SCORE
-are returned sorted descending, ready for the CLI to present and approve.
+Signal hierarchy (highest → lowest):
+  1. User replied to a thread from this sender  (+25 each, cap 5)
+  2. User starred an email from this sender      (+20 each, cap 2)
+  3. Gmail marked the email IMPORTANT            (+8  each, cap 3 — low weight:
+                                                  Gmail auto-marks newsletters)
+  4. Frequency of received emails                (+1  each, cap 20)
+  5. Domain type bonus/penalty                   (±25 to ±-60)
+
+Anti-newsletter signals:
+  - Email local part matches known marketing patterns          → −60
+  - Email local part starts with known marketing prefix        → −40
+  - Display name contains marketing keywords                   → −30
+  - High volume (15+) with zero replies                        → −25
+  - Behavioral reclassification: corporate + 15+ msgs, 0 reply → newsletter type
+
+── Domain types ──────────────────────────────────────────────────────────────
+  financial    banks, payments, insurance
+  government   .gob.mx / .gov / .mil
+  educational  .edu / .edu.mx / .ac.mx
+  corporate    real business domain (non-free, non-promotional)
+  personal     free email provider (likely a real person)
+  service      account/security alert domains (important but not a "contact")
+  newsletter   detected by behavioral or local-part signals
+  marketing    detected by name/local-part marketing patterns
+  promotional  known ESP/bulk-mail infrastructure domains
+  social       social-network notification domains
 """
 import logging
-import re
 from dataclasses import dataclass, field
-from typing import Optional
 
 from googleapiclient.errors import HttpError
 
 logger = logging.getLogger("gmail_processor.smart_setup")
 
 # ── Scan limits ───────────────────────────────────────────────────────────────
-MAX_MESSAGES      = 500    # inbox messages to scan
-MAX_SENT          = 400    # sent messages to index for reply detection
-SCAN_DAYS         = 365    # look back 12 months
-TOP_N             = 20     # max contacts to present
-TOP_DOMAINS       = 8      # max domain suggestions
+MAX_MESSAGES  = 500   # inbox messages to scan
+MAX_SENT      = 400   # sent messages to index for reply detection
+SCAN_DAYS     = 365   # 12-month look-back
+TOP_N         = 20    # max contact suggestions to present
+TOP_DOMAINS   = 8     # max domain suggestions
+MIN_SCORE     = 35    # must clear this threshold to appear as suggestion
+MIN_MESSAGES  = 2     # min emails received from sender
 
-MIN_SCORE         = 30     # minimum score to appear as suggestion
-MIN_MESSAGES      = 2      # minimum emails from sender to be considered
+# ── Scoring weights ───────────────────────────────────────────────────────────
+W_REPLY           = 25    # per thread where user replied
+W_REPLY_CAP       = 5     # max 5 threads counted  → max +125
 
-# ── Score weights ─────────────────────────────────────────────────────────────
-W_IMPORTANT   = 30          # per email marked IMPORTANT
-W_IMPORTANT_CAP = 3         # cap at 3 IMPORTANT signals
-W_STARRED     = 25          # per starred email
-W_STARRED_CAP = 2
-W_REPLY       = 20          # per thread where user replied
-W_REPLY_CAP   = 3
-W_MSG         = 1           # per message received
-W_MSG_CAP     = 30          # cap contribution
+W_STARRED         = 20    # per starred email
+W_STARRED_CAP     = 2     # max +40
 
+W_IMPORTANT       = 8     # per IMPORTANT label (Gmail auto-marks = low signal)
+W_IMPORTANT_CAP   = 3     # max +24
+
+W_FREQUENCY       = 1     # per message received
+W_FREQUENCY_CAP   = 20    # max +20
+
+# Penalty for one-way communication (many emails, zero replies)
+ONEWAY_THRESHOLD  = 15    # messages received before applying penalty
+ONEWAY_PENALTY    = -25
+
+# Newsletter / marketing signal penalties
+P_NEWSLETTER_LOCAL  = -60   # exact match in _NEWSLETTER_EXACT_LOCALS
+P_MARKETING_PREFIX  = -40   # local part starts with a known marketing prefix
+P_MARKETING_NAME    = -30   # display name contains a marketing keyword (once only)
+
+# Domain bonuses applied after all other signals
 DOMAIN_BONUS: dict[str, int] = {
-    "financial":   20,
-    "government":  20,
+    "financial":   25,
+    "government":  25,
     "educational": 15,
-    "corporate":   10,
-    "personal":     0,
-    "promotional": -40,
-    "social":      -30,
+    "corporate":    8,
+    "personal":    10,
+    "service":     -5,
+    "newsletter":  -50,
+    "marketing":   -60,
+    "promotional": -50,
+    "social":      -40,
     "unknown":      0,
 }
 
 # ── Label defaults per domain type ────────────────────────────────────────────
+# (label_name, mark_important)
 DOMAIN_LABELS: dict[str, tuple[str, bool]] = {
-    "financial":   ("FINANZAS",  True),   # (label, mark_important)
-    "government":  ("GOBIERNO",  True),
-    "educational": ("ESCUELA",   False),
-    "corporate":   ("TRABAJO",   True),
-    "personal":    ("PERSONAL",  False),
-    "unknown":     ("CONTACTOS", False),
-    "promotional": ("SPAM",      False),
-    "social":      ("SOCIAL",    False),
+    "financial":   ("FINANZAS",   True),
+    "government":  ("GOBIERNO",   True),
+    "educational": ("ESCUELA",    False),
+    "corporate":   ("TRABAJO",    True),
+    "personal":    ("PERSONAL",   False),
+    "service":     ("SERVICIOS",  False),
+    "newsletter":  ("NEWSLETTER", False),
+    "marketing":   ("MARKETING",  False),
+    "unknown":     ("CONTACTOS",  False),
+    "promotional": ("SPAM",       False),
+    "social":      ("SOCIAL",     False),
 }
 
-# ── Domain classification ─────────────────────────────────────────────────────
+# ── Domain classification sets ────────────────────────────────────────────────
 _FINANCIAL_DOMAINS = frozenset([
     "banamex.com", "bbva.com", "bancomer.com", "hsbc.com", "hsbc.com.mx",
     "santander.com.mx", "banorte.com", "scotiabank.com.mx", "inbursa.com",
-    "banregio.com", "banbajio.com", "citibanamex.com",
+    "banregio.com", "banbajio.com", "citibanamex.com", "afirme.com",
     "paypal.com", "stripe.com", "mercadopago.com", "clip.mx",
     "americanexpress.com", "visa.com", "mastercard.com",
     "afore.com.mx", "metlife.com.mx", "gnp.com.mx", "axa.com.mx",
+    "chubb.com", "zurich.com.mx",
 ])
 
 _SOCIAL_DOMAINS = frozenset([
@@ -82,7 +124,7 @@ _PROMOTIONAL_DOMAINS = frozenset([
     "mailchimp.com", "sendgrid.net", "constantcontact.com",
     "campaignmonitor.com", "klaviyo.com", "hubspot.com", "marketo.com",
     "exacttarget.com", "salesforce.com", "mailgun.org",
-    "amazonses.com", "em.servicios.com", "bounce.com",
+    "amazonses.com", "bounce.com", "mktg.com",
 ])
 
 _FREE_EMAIL_DOMAINS = frozenset([
@@ -92,15 +134,44 @@ _FREE_EMAIL_DOMAINS = frozenset([
     "aol.com", "msn.com", "me.com",
 ])
 
-_AUTOMATED_LOCALS = frozenset([
-    "noreply", "no-reply", "donotreply", "do-not-reply",
-    "mailer-daemon", "postmaster", "bounce", "bounces",
-    "notifications", "notification", "newsletter", "newsletters",
-    "subscriptions", "unsubscribe", "mailing", "auto-reply",
-    "autoreply", "support", "help", "info",  # generic — only excluded if domain is promo
+_GOV_TLDS     = (".gob.mx", ".gov", ".gob", ".mil")
+_EDU_TLDS     = (".edu", ".edu.mx", ".ac.mx", ".ac.uk", ".edu.co", ".edu.ar")
+
+# ESP subdomain prefixes that indicate bulk/marketing infrastructure
+_ESP_SUBDOMAINS = frozenset([
+    "em", "e", "email", "mail", "send", "bulk", "click",
+    "bounce", "track", "link", "offers", "deals", "promo",
+    "news", "newsletter", "campaign", "mkt",
 ])
 
-_DEFINITELY_AUTOMATED = frozenset([
+# ── Newsletter / marketing detection ─────────────────────────────────────────
+# Email local part — exact match triggers P_NEWSLETTER_LOCAL (-60)
+_NEWSLETTER_EXACT_LOCALS = frozenset([
+    "newsletter", "newsletters", "news", "noticias", "boletin",
+    "offers", "ofertas", "promo", "promotions", "promociones",
+    "deals", "marketing", "sale", "sales", "ventas", "descuentos",
+    "discount", "coupons", "cupones", "campaign", "campaigns",
+    "advertising", "mailer", "digest", "unsubscribe", "subscriptions",
+    "novedades", "promoreal", "promos",
+])
+
+# Email local part — startswith triggers P_MARKETING_PREFIX (-40)
+_MARKETING_PREFIXES = (
+    "newsletter", "noticias", "boletin",
+    "mailer", "digest", "blast", "bulk", "campaign",
+    "donotreply", "no-reply", "noreply",
+    "offers", "promo", "deal",
+)
+
+# Display name substrings — first match triggers P_MARKETING_NAME (-30)
+_MARKETING_NAME_KEYWORDS = (
+    "newsletter", "digest", "% off", "% de descuento", "descuento",
+    "oferta", "deals", "sale", "subscribe", "unsubscribe",
+    "marketing", "savings", "promo",
+)
+
+# Local parts that are definitely automated — exclude entirely before scoring
+_DEFINITELY_AUTOMATED_LOCALS = frozenset([
     "noreply", "no-reply", "donotreply", "do-not-reply",
     "mailer-daemon", "postmaster", "bounce", "bounces",
 ])
@@ -110,15 +181,16 @@ _DEFINITELY_AUTOMATED = frozenset([
 
 @dataclass
 class SenderStats:
-    email:           str
-    name:            str
-    domain:          str
-    count:           int         = 0
-    important_count: int         = 0
-    starred_count:   int         = 0
-    replied_threads: set         = field(default_factory=set)
-    domain_type:     str         = "unknown"
-    score:           float       = 0.0
+    email:            str
+    name:             str
+    domain:           str
+    count:            int   = 0
+    important_count:  int   = 0
+    starred_count:    int   = 0
+    replied_threads:  set   = field(default_factory=set)
+    domain_type:      str   = "unknown"
+    score:            float = 0.0
+    score_factors:    list  = field(default_factory=list)  # list[tuple[float, str]]
 
     @property
     def replied(self) -> int:
@@ -127,13 +199,12 @@ class SenderStats:
 
 @dataclass
 class DomainSuggestion:
-    domain:      str
-    label:       str
-    action:      str             # "mark_important" | "archive"
-    sender_count: int            # distinct senders from this domain
-    total_msgs:  int
-    domain_type: str
-    already_in_rules: bool = False
+    domain:       str
+    label:        str
+    action:       str   # "mark_important" | "archive"
+    sender_count: int
+    total_msgs:   int
+    domain_type:  str
 
 
 # ── Main class ────────────────────────────────────────────────────────────────
@@ -147,20 +218,18 @@ class SmartSetup:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def analyze(self, progress_cb=None) -> tuple[list[SenderStats], list[DomainSuggestion]]:
+    def analyze(
+        self, progress_cb=None
+    ) -> tuple[list[SenderStats], list[DomainSuggestion]]:
         """
         Full scan. Returns (contact_suggestions, domain_suggestions).
-        progress_cb(scanned: int, total_estimate: int) is called during the scan.
+        progress_cb(scanned, total, phase) called during the scan.
         """
         from . import rules as cfg
 
-        # Step 1: Index sent thread IDs (reply detection)
         sent_threads = self._index_sent_threads(progress_cb)
+        senders      = self._scan_inbox(sent_threads, progress_cb)
 
-        # Step 2: Scan inbox messages
-        senders = self._scan_inbox(sent_threads, progress_cb)
-
-        # Step 3: Score + classify
         existing_emails  = set(cfg.CONTACT_RULES.keys())
         existing_domains = {
             d
@@ -168,41 +237,41 @@ class SmartSetup:
             for d in rule.get("domains", [])
         }
 
+        # Score + classify every sender
         for stats in senders.values():
             stats.domain_type = _classify_domain(stats.domain)
-            stats.score       = _score(stats)
+            stats.domain_type = _behavioral_reclassify(stats)   # override if warranted
+            stats.score, stats.score_factors = _score(stats)
 
-        # Step 4: Filter contact suggestions
+        # Contact suggestions: score threshold + exclude clearly non-personal types
         contacts = [
             s for s in senders.values()
-            if s.score   >= MIN_SCORE
-            and s.count  >= MIN_MESSAGES
-            and s.email  not in existing_emails
+            if s.score  >= MIN_SCORE
+            and s.count >= MIN_MESSAGES
+            and s.email not in existing_emails
             and not _is_definitely_automated(s.email)
-            and s.domain_type not in ("promotional",)
+            and s.domain_type not in ("promotional", "social", "newsletter", "marketing")
         ]
         contacts.sort(key=lambda s: s.score, reverse=True)
         contacts = contacts[:TOP_N]
 
-        # Step 5: Domain suggestions (only financial/government/educational
-        #          with multiple senders and not already in DOMAIN_RULES)
-        domain_stats: dict[str, list[SenderStats]] = {}
+        # Domain suggestions: financial / government / educational not in rules yet
+        domain_map: dict[str, list[SenderStats]] = {}
         for s in senders.values():
             if s.domain_type in ("financial", "government", "educational"):
-                domain_stats.setdefault(s.domain, []).append(s)
+                domain_map.setdefault(s.domain, []).append(s)
 
         domains: list[DomainSuggestion] = []
-        for domain, entries in domain_stats.items():
+        for domain, entries in domain_map.items():
             if domain in existing_domains or domain in _FREE_EMAIL_DOMAINS:
                 continue
-            total = sum(e.count for e in entries)
-            dtype = entries[0].domain_type
+            total  = sum(e.count for e in entries)
+            dtype  = entries[0].domain_type
             label, important = DOMAIN_LABELS[dtype]
             action = "mark_important" if important else "archive"
             domains.append(DomainSuggestion(
                 domain=domain, label=label, action=action,
-                sender_count=len(entries), total_msgs=total,
-                domain_type=dtype,
+                sender_count=len(entries), total_msgs=total, domain_type=dtype,
             ))
         domains.sort(key=lambda d: d.total_msgs, reverse=True)
         domains = domains[:TOP_DOMAINS]
@@ -219,7 +288,6 @@ class SmartSetup:
             return ""
 
     def _index_sent_threads(self, progress_cb=None) -> set[str]:
-        """Returns the set of threadIds where the user sent a message."""
         thread_ids: set[str] = set()
         query      = f"in:sent newer_than:{SCAN_DAYS}d"
         page_token = None
@@ -231,8 +299,7 @@ class SmartSetup:
         while fetched < MAX_SENT:
             try:
                 result = self.service.users().messages().list(
-                    userId="me",
-                    q=query,
+                    userId="me", q=query,
                     maxResults=min(100, MAX_SENT - fetched),
                     pageToken=page_token,
                 ).execute()
@@ -255,55 +322,29 @@ class SmartSetup:
         return thread_ids
 
     def _scan_inbox(
-        self,
-        sent_threads: set[str],
-        progress_cb=None,
+        self, sent_threads: set[str], progress_cb=None
     ) -> dict[str, SenderStats]:
-        """
-        Scans inbox messages (plus IMPORTANT/STARRED) and builds per-sender stats.
-        Uses two sub-queries: high-signal first, then recent general messages.
-        """
         senders: dict[str, SenderStats] = {}
 
-        # Pass A: IMPORTANT and STARRED messages (most valuable signals)
-        high_signal_q = (
-            f"newer_than:{SCAN_DAYS}d "
-            f"(is:important OR is:starred) "
-            f"-in:sent"
-        )
+        # Pass A: IMPORTANT + STARRED first (highest-value messages)
         self._fetch_and_process(
-            query=high_signal_q,
-            cap=200,
-            sent_threads=sent_threads,
-            senders=senders,
-            progress_cb=progress_cb,
-            offset=0,
-            total=MAX_MESSAGES,
+            query=f"newer_than:{SCAN_DAYS}d (is:important OR is:starred) -in:sent",
+            cap=200, sent_threads=sent_threads, senders=senders,
+            progress_cb=progress_cb, offset=0, total=MAX_MESSAGES,
         )
 
-        # Pass B: General recent messages (frequency signals)
-        general_q = f"newer_than:{SCAN_DAYS}d in:inbox -in:sent"
+        # Pass B: General inbox (frequency signals for remaining quota)
         self._fetch_and_process(
-            query=general_q,
-            cap=MAX_MESSAGES - len(senders),
-            sent_threads=sent_threads,
-            senders=senders,
-            progress_cb=progress_cb,
-            offset=len(senders),
-            total=MAX_MESSAGES,
+            query=f"newer_than:{SCAN_DAYS}d in:inbox -in:sent",
+            cap=MAX_MESSAGES - len(senders), sent_threads=sent_threads,
+            senders=senders, progress_cb=progress_cb,
+            offset=len(senders), total=MAX_MESSAGES,
         )
 
         return senders
 
     def _fetch_and_process(
-        self,
-        query:        str,
-        cap:          int,
-        sent_threads: set[str],
-        senders:      dict[str, SenderStats],
-        progress_cb,
-        offset:       int,
-        total:        int,
+        self, query, cap, sent_threads, senders, progress_cb, offset, total
     ):
         page_token = None
         fetched    = 0
@@ -311,8 +352,7 @@ class SmartSetup:
         while fetched < cap:
             try:
                 result = self.service.users().messages().list(
-                    userId="me",
-                    q=query,
+                    userId="me", q=query,
                     maxResults=min(100, cap - fetched),
                     pageToken=page_token,
                 ).execute()
@@ -329,10 +369,8 @@ class SmartSetup:
                     break
                 try:
                     msg = self.service.users().messages().get(
-                        userId="me",
-                        id=stub["id"],
-                        format="metadata",
-                        metadataHeaders=["From"],
+                        userId="me", id=stub["id"],
+                        format="metadata", metadataHeaders=["From"],
                     ).execute()
                 except HttpError:
                     fetched += 1
@@ -351,12 +389,7 @@ class SmartSetup:
         if progress_cb:
             progress_cb(offset + fetched, total, phase="inbox")
 
-    def _ingest(
-        self,
-        message:      dict,
-        sent_threads: set[str],
-        senders:      dict[str, SenderStats],
-    ):
+    def _ingest(self, message, sent_threads, senders):
         headers   = message.get("payload", {}).get("headers", [])
         label_ids = message.get("labelIds", [])
         thread_id = message.get("threadId", "")
@@ -383,51 +416,143 @@ class SmartSetup:
             s.replied_threads.add(thread_id)
 
 
-# ── Scoring & classification ──────────────────────────────────────────────────
+# ── Scoring ───────────────────────────────────────────────────────────────────
 
-def _score(s: SenderStats) -> float:
-    score  = 0.0
-    score += min(s.important_count, W_IMPORTANT_CAP) * W_IMPORTANT
-    score += min(s.starred_count,   W_STARRED_CAP)   * W_STARRED
-    score += min(s.replied,         W_REPLY_CAP)      * W_REPLY
-    score += min(s.count,           W_MSG_CAP)        * W_MSG
-    score += DOMAIN_BONUS.get(s.domain_type, 0)
-    return round(score, 1)
+def _score(s: SenderStats) -> tuple[float, list[tuple[float, str]]]:
+    """
+    Returns (total_score, factors).
+    factors is a list of (delta, description) for explainability display.
+    Positive delta = signal of importance.
+    Negative delta = signal of automation / newsletter.
+    """
+    total:   float                   = 0.0
+    factors: list[tuple[float, str]] = []
 
+    def _add(delta: float, desc: str):
+        nonlocal total
+        if delta == 0:
+            return
+        total += delta
+        factors.append((round(delta, 1), desc))
+
+    # 1. Replies — strongest real-contact signal
+    reply_count = min(s.replied, W_REPLY_CAP)
+    if reply_count > 0:
+        hilos = f"{s.replied} hilo{'s' if s.replied > 1 else ''} respondido{'s' if s.replied > 1 else ''}"
+        _add(reply_count * W_REPLY, hilos)
+
+    # 2. Stars — explicit user action, reliable signal
+    star_count = min(s.starred_count, W_STARRED_CAP)
+    if star_count > 0:
+        _add(star_count * W_STARRED,
+             f"marcado con estrella (×{star_count})")
+
+    # 3. IMPORTANT — low weight: Gmail auto-marks many newsletters
+    imp_count = min(s.important_count, W_IMPORTANT_CAP)
+    if imp_count > 0:
+        _add(imp_count * W_IMPORTANT,
+             f"etiqueta IMPORTANT (×{imp_count}) — señal débil")
+
+    # 4. Frequency
+    freq = min(s.count, W_FREQUENCY_CAP)
+    if freq > 0:
+        _add(freq * W_FREQUENCY,
+             f"frecuencia ({s.count} correos recibidos)")
+
+    # 5. Domain type bonus
+    domain_bonus = DOMAIN_BONUS.get(s.domain_type, 0)
+    if domain_bonus != 0:
+        _add(domain_bonus, f"tipo de dominio: {s.domain_type}")
+
+    # 6. One-way communication penalty (newsletters never get replies)
+    if s.count >= ONEWAY_THRESHOLD and s.replied == 0:
+        _add(ONEWAY_PENALTY,
+             f"comunicación unidireccional ({s.count} recibidos, nunca respondido)")
+    elif s.count >= 5 and s.replied == 0 and s.domain_type in ("corporate", "unknown"):
+        _add(-10, "sin respuestas registradas hacia este remitente")
+
+    # 7. Newsletter/marketing local-part penalty
+    local = s.email.split("@")[0].lower()
+    if local in _NEWSLETTER_EXACT_LOCALS:
+        _add(P_NEWSLETTER_LOCAL,
+             f"patrón newsletter en dirección ({local}@...)")
+    elif any(local.startswith(p) for p in _MARKETING_PREFIXES):
+        _add(P_MARKETING_PREFIX,
+             f"prefijo de marketing en dirección ({local}@...)")
+
+    # 8. Marketing display-name penalty (fire once at most)
+    name_lower = s.name.lower()
+    for kw in _MARKETING_NAME_KEYWORDS:
+        if kw in name_lower:
+            _add(P_MARKETING_NAME,
+                 f"nombre contiene patrón de marketing (\"{kw}\")")
+            break
+
+    return round(total, 1), factors
+
+
+# ── Classification ────────────────────────────────────────────────────────────
 
 def _classify_domain(domain: str) -> str:
     if not domain:
         return "unknown"
-    domain = domain.lower()
+    d = domain.lower()
 
-    if domain in _FINANCIAL_DOMAINS:
-        return "financial"
-    if domain in _SOCIAL_DOMAINS:
-        return "social"
-    if domain in _PROMOTIONAL_DOMAINS:
+    if d in _FINANCIAL_DOMAINS:   return "financial"
+    if d in _SOCIAL_DOMAINS:      return "social"
+    if d in _PROMOTIONAL_DOMAINS: return "promotional"
+
+    if any(d.endswith(t) for t in _GOV_TLDS): return "government"
+    if any(d.endswith(t) for t in _EDU_TLDS): return "educational"
+    if d in _FREE_EMAIL_DOMAINS:              return "personal"
+
+    # ESP subdomain patterns (e.g. em.michaels.com, e.temu.com)
+    subdomain = d.split(".")[0]
+    if subdomain in _ESP_SUBDOMAINS:
         return "promotional"
 
-    if any(domain.endswith(t) for t in (".gob.mx", ".gov", ".gob", ".mil", ".gob.mx")):
-        return "government"
-    if any(domain.endswith(t) for t in (".edu", ".edu.mx", ".ac.mx", ".ac.uk", ".edu.co")):
-        return "educational"
-
-    if domain in _FREE_EMAIL_DOMAINS:
-        return "personal"
-
-    # Non-free, non-known → corporate
-    # But check for common promo/automated patterns in the domain itself
-    promo_keywords = ("newsletter", "email.", "mail.", "notify.", "noreply.",
-                       "marketing", "promo", "bulk", "bounce", "campaign")
-    if any(kw in domain for kw in promo_keywords):
+    # Marketing keywords embedded in domain name
+    _mkt_kw = ("newsletter", "mailer", "campaign", "marketing",
+               "promo", "offers", "deals", "email-", "emkt", "bulkmail")
+    if any(kw in d for kw in _mkt_kw):
         return "promotional"
 
     return "corporate"
 
 
+def _behavioral_reclassify(stats: SenderStats) -> str:
+    """
+    Overrides the domain-based classification using behavioral signals.
+    A 'corporate' sender with 15+ emails and zero replies is almost certainly
+    a newsletter or automated marketing account.
+    """
+    dtype = stats.domain_type
+
+    # Never override authoritative financial/government/educational classifications
+    if dtype in ("financial", "government", "educational"):
+        return dtype
+
+    local = stats.email.split("@")[0].lower()
+
+    # Exact newsletter local → always newsletter
+    if local in _NEWSLETTER_EXACT_LOCALS:
+        return "newsletter"
+
+    # High-volume, zero-reply → newsletter (strongest behavioral signal)
+    if stats.count >= ONEWAY_THRESHOLD and stats.replied == 0:
+        if dtype in ("corporate", "unknown", "personal"):
+            return "newsletter"
+
+    # Marketing prefix on corporate domain → marketing
+    if any(local.startswith(p) for p in _MARKETING_PREFIXES):
+        if dtype in ("corporate", "unknown"):
+            return "marketing"
+
+    return dtype
+
+
 def _is_definitely_automated(email: str) -> bool:
-    local = email.split("@")[0].lower()
-    return local in _DEFINITELY_AUTOMATED
+    return email.split("@")[0].lower() in _DEFINITELY_AUTOMATED_LOCALS
 
 
 # ── Header helpers ────────────────────────────────────────────────────────────
@@ -449,6 +574,5 @@ def _extract_email(headers: list[dict]) -> str:
 def _extract_name(headers: list[dict]) -> str:
     raw = _get_header(headers, "From")
     if "<" in raw:
-        name = raw.split("<")[0].strip().strip('"').strip("'")
-        return name
+        return raw.split("<")[0].strip().strip('"').strip("'")
     return ""
