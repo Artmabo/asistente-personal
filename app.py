@@ -40,6 +40,11 @@ st.session_state.setdefault("ca_batch_result",     None)
 st.session_state.setdefault("ca_apply_result",     None)
 st.session_state.setdefault("ca_decisions",        {})
 st.session_state.setdefault("ca_running",          False)
+# Almacenamiento
+st.session_state.setdefault("storage_data",        None)
+st.session_state.setdefault("cleanup_size_data",   None)
+# Limpiezas automáticas
+st.session_state.setdefault("schedule_saved",      False)
 
 # ── Definición de categorías ───────────────────────────────────────────────────
 CATS = [
@@ -525,9 +530,84 @@ def _ca_reset():
     ContactAnalyzer(st.session_state.service).reset()
 
 
+def _ca_learning_summary() -> dict:
+    from gmail_processor.contact_analyzer import ContactAnalyzer
+    a = ContactAnalyzer(st.session_state.service)
+    return a.get_learning_stats()
+
+
+# ── Helpers: almacenamiento ───────────────────────────────────────────────────
+
+def _cargar_storage_summary() -> dict:
+    try:
+        from gmail_processor.storage_analyzer import StorageAnalyzer
+        return StorageAnalyzer(st.session_state.service).get_storage_summary()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _cargar_cleanup_estimate(categories: list[str] | None = None) -> dict:
+    try:
+        from gmail_processor.storage_analyzer import StorageAnalyzer
+        return StorageAnalyzer(st.session_state.service).estimate_cleanup_size(categories)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+# ── Helpers: scheduler ────────────────────────────────────────────────────────
+
+@st.cache_resource
+def _get_scheduler():
+    from gmail_processor.scheduler import CleanupScheduler
+    return CleanupScheduler()
+
+
+def _schedule_status() -> dict:
+    try:
+        return _get_scheduler().get_status()
+    except Exception:
+        return {}
+
+
+def _time_ago(date_str: str) -> str:
+    """Convierte fecha ISO (YYYY-MM-DD) a texto en español relativo."""
+    if not date_str:
+        return ""
+    try:
+        from datetime import datetime
+        d     = datetime.strptime(date_str, "%Y-%m-%d")
+        days  = (datetime.now() - d).days
+        if days == 0:
+            return "hoy"
+        elif days == 1:
+            return "ayer"
+        elif days < 7:
+            return f"hace {days} días"
+        elif days < 30:
+            w = days // 7
+            return f"hace {w} semana{'s' if w > 1 else ''}"
+        elif days < 365:
+            m = days // 30
+            return f"hace {m} mes{'es' if m > 1 else ''}"
+        else:
+            y = days // 365
+            return f"hace {y} año{'s' if y > 1 else ''}"
+    except Exception:
+        return date_str
+
+
 # ── Intentar conectar automáticamente si ya hay token guardado ─────────────────
 if st.session_state.service is None and os.path.exists("token.json"):
     _init_service()
+
+# ── Iniciar scheduler si está habilitado ──────────────────────────────────────
+if os.path.exists("cleanup_schedule.json"):
+    try:
+        _sch_auto = _get_scheduler()
+        if _sch_auto.config.get("enabled") and _sch_auto._job is None:
+            _sch_auto.start()
+    except Exception:
+        pass
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONTENIDO DE LA PÁGINA
@@ -611,6 +691,72 @@ else:
             st.rerun()
 
 connected = st.session_state.service is not None
+
+# ── Resumen de almacenamiento ──────────────────────────────────────────────────
+if connected:
+    _stor_c1, _stor_c2 = st.columns([5, 2])
+    with _stor_c1:
+        _sd = st.session_state.get("storage_data")
+        if _sd and not _sd.get("error_profile") and not _sd.get("error"):
+            _s_used  = _sd.get("used_gb")
+            _s_total = _sd.get("total_gb")
+            _s_pct   = _sd.get("percent_used")
+            _s_msgs  = _sd.get("messages_total", 0)
+            if _s_used is not None and _s_total:
+                st.progress(
+                    (_s_pct or 0) / 100,
+                    text=f"Usando **{_s_used} GB** de {_s_total:.0f} GB ({_s_pct}%) · {_s_msgs:,} mensajes",
+                )
+            else:
+                st.caption(
+                    f"**{_s_msgs:,}** mensajes en tu cuenta. "
+                    "(Cuota en GB no disponible — requiere permisos adicionales)"
+                )
+        elif _sd and _sd.get("error"):
+            st.caption(f"Error al cargar almacenamiento: {_sd['error']}")
+        else:
+            st.caption("Haz clic para ver cuánto espacio usas en Gmail.")
+    with _stor_c2:
+        if st.button("📊 Ver almacenamiento", key="btn_storage_load", use_container_width=True):
+            with st.spinner("Consultando…"):
+                st.session_state["storage_data"] = _cargar_storage_summary()
+            st.rerun()
+
+    if st.session_state.get("storage_data"):
+        _ce_visible = st.session_state.get("cleanup_size_data")
+        if not _ce_visible:
+            if st.button(
+                "📊 ¿Cuánto espacio liberaría limpiar ahora?",
+                key="btn_estimate_cleanup",
+                use_container_width=True,
+            ):
+                with st.spinner("Estimando tamaño de categorías (puede tardar ~1 min)…"):
+                    st.session_state["cleanup_size_data"] = _cargar_cleanup_estimate()
+                st.rerun()
+
+        _ce = st.session_state.get("cleanup_size_data")
+        if _ce:
+            if "error" in _ce:
+                st.error(f"Error al estimar: {_ce['error']}")
+            elif "total_mb" in _ce:
+                _CE_NAMES = {
+                    "spam": "🚫 Spam", "promociones": "📢 Promociones",
+                    "social": "👥 Social", "actualizaciones": "🔔 Actualizaciones",
+                    "foros": "💬 Foros",
+                }
+                _ce_cats = {k: v for k, v in _ce.items() if k not in ("total_mb", "total_gb")}
+                st.info(
+                    f"Podrías liberar hasta **{_ce.get('total_gb', 0):.2f} GB** "
+                    f"({_ce.get('total_mb', 0):,} MB) limpiando las categorías."
+                )
+                if _ce_cats:
+                    _ce_cols = st.columns(len(_ce_cats))
+                    for _cei, (_cek, _cev) in enumerate(_ce_cats.items()):
+                        _ce_cols[_cei].metric(
+                            _CE_NAMES.get(_cek, _cek),
+                            f"{_cev['size_mb']:,} MB",
+                            f"{_cev['count']:,} correos",
+                        )
 
 st.divider()
 
@@ -1110,58 +1256,64 @@ if _ca_batch is not None:
 
             _decisions = st.session_state["ca_decisions"]
 
-            # Header row
-            _ph1, _ph2, _ph3, _ph4, _ph5 = st.columns([4, 2, 1, 3, 3])
-            _ph1.markdown("**Remitente**")
-            _ph2.markdown("**Señales**")
-            _ph3.markdown("**Score**")
-            _ph4.markdown("")
-            _ph5.markdown("")
-
-            st.markdown("---")
+            from gmail_processor.contact_analyzer import SIGNAL_LABELS as _SL
 
             for _pi, _ps in enumerate(_pend_list):
-                _pa  = _ps["email"]
-                _pn  = _ps.get("name", "")
-                _psc = _ps.get("score", 0)
-                _psi = _ps.get("signals", [])
-                _lbl = f"{_pn} <{_pa}>" if _pn else _pa
-                _dec = _decisions.get(_pa)
+                _pa     = _ps["email"]
+                _pn     = _ps.get("name", "")
+                _psc    = _ps.get("score", 0)
+                _psi    = _ps.get("signals", [])
+                _psubj  = _ps.get("sample_subjects", [])
+                _pfirst = _ps.get("first_seen", "")
+                _plast  = _ps.get("last_seen",  "")
+                _pcount = _ps.get("count", 0)
+                _lbl    = f"{_pn} <{_pa}>" if _pn else _pa
+                _dec    = _decisions.get(_pa)
 
-                _pc1, _pc2, _pc3, _pc4, _pc5 = st.columns([4, 2, 1, 3, 3])
-                with _pc1:
-                    st.markdown(f"**{_lbl}**")
-                    if _psi:
-                        st.caption(" · ".join(_psi[:2]))
-                with _pc2:
-                    if len(_psi) > 2:
-                        with st.expander("ver señales"):
-                            for _sig in _psi:
-                                st.caption(_sig)
-                    else:
-                        st.write("")
-                with _pc3:
-                    _score_color = "🟢" if _psc >= 55 else "🟡" if _psc >= 40 else "🔴"
-                    st.markdown(f"{_score_color} **{_psc}**")
+                with st.container(border=True):
+                    _cc1, _cc2 = st.columns([5, 1])
+                    with _cc1:
+                        st.markdown(f"**{_lbl}**")
+                        _ctx = []
+                        if _pcount:
+                            _ctx.append(f"Te escribió {_pcount} veces en este período.")
+                        if _plast:
+                            _ctx.append(f"Último contacto: {_time_ago(_plast)}.")
+                        if _pfirst and _pfirst != _plast:
+                            _ctx.append(f"Primera vez: {_time_ago(_pfirst)}.")
+                        if _ctx:
+                            st.caption("  ".join(_ctx))
+                        if _psubj:
+                            st.caption(
+                                "Asuntos recientes: "
+                                + "  ·  ".join(f'"{s[:50]}"' for s in _psubj)
+                            )
+                        if _psi:
+                            _sig_txt = "  ·  ".join(
+                                ("✓ " if _SL.get(s, ("", True))[1] else "✗ ")
+                                + _SL.get(s, (s, True))[0]
+                                for s in _psi
+                            )
+                            st.caption(f"Señales: {_sig_txt}")
+                    with _cc2:
+                        _sc_icon = "🟢" if _psc >= 60 else "🟡" if _psc >= 40 else "🔴"
+                        st.markdown(f"### {_sc_icon}")
+                        st.caption(f"Score {_psc}/100")
 
-                with _pc4:
-                    _btn_label_p = "🛡️ Personal ✓" if _dec == "personal" else "🛡️ Personal"
-                    if st.button(
-                        _btn_label_p,
-                        key=f"ca_personal_{_pi}",
-                        type="primary" if _dec == "personal" else "secondary",
-                        use_container_width=True,
-                    ):
-                        _decisions[_pa] = "personal"
-                        st.session_state["ca_decisions"] = _decisions
-                        st.rerun()
-
-                with _pc5:
-                    _btn_col_a, _btn_col_b = st.columns(2)
-                    with _btn_col_a:
-                        _btn_label_s = "🗑️ Spam ✓" if _dec == "spam" else "🗑️ Spam"
+                    _cb1, _cb2, _cb3 = st.columns(3)
+                    with _cb1:
                         if st.button(
-                            _btn_label_s,
+                            "🛡️ Personal" + (" ✓" if _dec == "personal" else ""),
+                            key=f"ca_personal_{_pi}",
+                            type="primary" if _dec == "personal" else "secondary",
+                            use_container_width=True,
+                        ):
+                            _decisions[_pa] = "personal"
+                            st.session_state["ca_decisions"] = _decisions
+                            st.rerun()
+                    with _cb2:
+                        if st.button(
+                            "🗑️ Spam" + (" ✓" if _dec == "spam" else ""),
                             key=f"ca_spam_{_pi}",
                             type="primary" if _dec == "spam" else "secondary",
                             use_container_width=True,
@@ -1169,18 +1321,15 @@ if _ca_batch is not None:
                             _decisions[_pa] = "spam"
                             st.session_state["ca_decisions"] = _decisions
                             st.rerun()
-                    with _btn_col_b:
-                        _btn_label_o = "⏭️ Omitir ✓" if _dec == "skip" else "⏭️ Omitir"
+                    with _cb3:
                         if st.button(
-                            _btn_label_o,
+                            "⏭️ Omitir" + (" ✓" if _dec == "skip" else ""),
                             key=f"ca_skip_{_pi}",
                             use_container_width=True,
                         ):
                             _decisions[_pa] = "skip"
                             st.session_state["ca_decisions"] = _decisions
                             st.rerun()
-
-                st.markdown("---")
 
             # ── Aplicar decisiones ────────────────────────────────────────────
             _decided_count = len(_decisions)
@@ -1239,9 +1388,157 @@ if _ca_apply_r is not None:
 
         if _apr_st:
             _as1, _as2, _as3 = st.columns(3)
-            _as1.metric("Personales (total)", _apr_st.get("personal",   0))
-            _as2.metric("Spam (total)",        _apr_st.get("spam",       0))
+            _as1.metric("Personales (total)", _apr_st.get("personal",      0))
+            _as2.metric("Spam (total)",        _apr_st.get("spam",          0))
             _as3.metric("Escaneados (total)",  _apr_st.get("total_scanned", 0))
+
+# ── Aprendizaje visible ───────────────────────────────────────────────────────
+if connected:
+    try:
+        _learn = _ca_learning_summary()
+        _l_dec = _learn.get("decisions_count", 0)
+        _l_dom = _learn.get("auto_domains",    0)
+        if _l_dec > 0:
+            with st.container(border=True):
+                st.caption("🧠 **El sistema ha aprendido de tus decisiones**")
+                _ll1, _ll2 = st.columns(2)
+                _ll1.metric("Tus decisiones aplicadas", _l_dec)
+                _ll2.metric("Dominios con auto-clasificación", _l_dom)
+                if _l_dom > 0:
+                    _dv = _learn.get("domain_votes", {})
+                    _auto_list = [
+                        f"**{d}**"
+                        for d, v in _dv.items()
+                        if (v.get("personal", 0) >= 3 and v["personal"] > v.get("spam", 0))
+                        or (v.get("spam",     0) >= 3 and v["spam"]     > v.get("personal", 0))
+                    ]
+                    if _auto_list:
+                        st.caption(
+                            "Dominios con clasificación automática: "
+                            + ", ".join(_auto_list[:8])
+                        )
+    except Exception:
+        pass
+
+st.divider()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LIMPIEZAS AUTOMÁTICAS
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.header("⏰ Limpiezas automáticas")
+st.caption(
+    "Programa una limpieza periódica de las categorías que elijas. "
+    "Solo mueve correos a la papelera — nunca borra permanentemente. "
+    "Tienes 30 días para recuperar cualquier correo desde la Papelera de Gmail."
+)
+
+_sch_obj    = _get_scheduler()
+_sch_status = _schedule_status()
+_sch_avail  = _sch_status.get("scheduler_available", False)
+
+if not _sch_avail:
+    st.warning(
+        "Para activar limpiezas automáticas instala APScheduler: "
+        "`pip install APScheduler>=3.10`"
+    )
+else:
+    _sched_enabled = st.toggle(
+        "Activar limpieza automática",
+        value=bool(_sch_status.get("enabled", False)),
+        key="sched_toggle",
+        disabled=not connected,
+    )
+
+    if _sched_enabled:
+        _sf1, _sf2, _sf3 = st.columns(3)
+        with _sf1:
+            _sched_freq = st.selectbox(
+                "Frecuencia",
+                options=["daily", "weekly", "monthly"],
+                index=["daily", "weekly", "monthly"].index(
+                    _sch_status.get("frequency", "weekly")
+                ),
+                format_func=lambda x: {"daily": "Diaria", "weekly": "Semanal", "monthly": "Mensual"}[x],
+                key="sched_freq",
+            )
+        with _sf2:
+            _sched_dow = st.selectbox(
+                "Día de la semana",
+                options=["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+                index=["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].index(
+                    _sch_status.get("day_of_week", "sunday")
+                ),
+                format_func=lambda x: {
+                    "monday": "Lunes", "tuesday": "Martes", "wednesday": "Miércoles",
+                    "thursday": "Jueves", "friday": "Viernes",
+                    "saturday": "Sábado", "sunday": "Domingo",
+                }[x],
+                key="sched_dow",
+                disabled=_sched_freq != "weekly",
+            )
+        with _sf3:
+            _sched_hour = st.number_input(
+                "Hora (0-23)",
+                min_value=0, max_value=23,
+                value=int(_sch_status.get("hour", 3)),
+                key="sched_hour",
+            )
+
+        _CAT_OPTIONS = {
+            "spam":            "🚫 Spam",
+            "promociones":     "📢 Promociones",
+            "social":          "👥 Social",
+            "actualizaciones": "🔔 Actualizaciones",
+            "foros":           "💬 Foros",
+        }
+        _sched_cats = st.multiselect(
+            "Categorías a limpiar",
+            options=list(_CAT_OPTIONS.keys()),
+            default=_sch_status.get("categories", ["spam", "promociones"]),
+            format_func=lambda x: _CAT_OPTIONS.get(x, x),
+            key="sched_cats",
+        )
+
+        if st.button("💾 Guardar configuración", key="btn_save_sched", type="primary"):
+            _sch_obj.configure(
+                frequency=_sched_freq,
+                categories=_sched_cats or ["spam"],
+                hour=int(_sched_hour),
+                day_of_week=_sched_dow,
+                enabled=True,
+            )
+            _sch_obj.start()
+            st.session_state["schedule_saved"] = True
+            st.rerun()
+
+        if st.session_state.get("schedule_saved"):
+            st.success("Limpieza automática configurada y activada.")
+            st.session_state["schedule_saved"] = False
+
+        # Estado actual
+        _sch_live = _schedule_status()
+        _next_str = _sch_live.get("next_run")
+        if _next_str:
+            from gmail_processor.scheduler import format_next_run
+            st.info(f"Próxima limpieza: **{format_next_run(_next_str)}**")
+
+        _last_run = _sch_live.get("last_run")
+        _last_res = _sch_live.get("last_run_result")
+        if _last_run and _last_res:
+            _lrd = _last_run[:19].replace("T", " ")
+            if isinstance(_last_res, dict) and "error" in _last_res:
+                st.warning(f"Última limpieza ({_lrd}): error — {_last_res['error']}")
+            elif isinstance(_last_res, dict):
+                _lr_proc = _last_res.get("procesados", 0)
+                _lr_ok   = _last_res.get("exitos",     0)
+                st.success(
+                    f"Última limpieza ({_lrd}): "
+                    f"**{_lr_ok}** de {_lr_proc} correos movidos a la papelera."
+                )
+    else:
+        if _sch_status.get("enabled"):
+            _sch_obj.stop()
 
 st.divider()
 

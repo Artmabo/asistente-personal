@@ -1,9 +1,10 @@
 """
 ContactAnalyzer: análisis por lotes de remitentes con memoria persistente.
 
-Calcula un score 0-100 para cada remitente combinando señales de interacción real
-(respuestas, destinatarios directos) con señales negativas (ESP, noreply, List-Unsubscribe).
-Persiste el estado en analysis_state.json para poder reanudar análisis interrumpidos.
+Calcula un score 0-100 por remitente usando señales de interacción real.
+Aprende de las decisiones del usuario ajustando pesos de señales y votando
+dominios para clasificación automática futura.
+Persiste estado en analysis_state.json y aprendizaje en user_patterns.json.
 """
 import json
 import re
@@ -15,10 +16,39 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-# ── Constantes ────────────────────────────────────────────────────────────────
+# ── Constantes públicas ───────────────────────────────────────────────────────
 
-STATE_PATH = Path("analysis_state.json")
-_BATCH_SLEEP = 0.2
+STATE_PATH    = Path("analysis_state.json")
+PATTERNS_PATH = Path("user_patterns.json")
+_BATCH_SLEEP  = 0.2
+
+SCORE_AUTO_PERSONAL = 70
+SCORE_AUTO_SPAM     = 20
+_DOMAIN_AUTO_VOTES  = 3   # votos mínimos para auto-clasificar dominio
+
+# Señales y sus pesos base (+ positivo, - negativo)
+_SIGNAL_BASE: dict[str, int] = {
+    "replied":          40,
+    "non_mass_domain":  15,
+    "no_unsubscribe":   10,
+    "has_unsubscribe": -30,
+    "is_noreply":      -20,
+    "is_esp":          -20,
+    "marketing_words": -15,
+}
+
+# Etiquetas para la UI (clave → (texto, es_positiva))
+SIGNAL_LABELS: dict[str, tuple[str, bool]] = {
+    "replied":         ("respondiste alguna vez",        True),
+    "non_mass_domain": ("dominio corporativo/personal",  True),
+    "no_unsubscribe":  ("sin botón de baja",             True),
+    "has_unsubscribe": ("tiene botón de baja",           False),
+    "is_noreply":      ("dirección automática/noreply",  False),
+    "is_esp":          ("plataforma de email masivo",    False),
+    "marketing_words": ("palabras de marketing",         False),
+}
+
+# ── Clasificadores ────────────────────────────────────────────────────────────
 
 _FREE_PROVIDERS = frozenset([
     "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
@@ -47,14 +77,10 @@ _MARKETING_WORDS = frozenset([
     "exclusive", "exclusivo", "black friday", "cyber monday",
 ])
 
-SCORE_AUTO_PERSONAL = 70   # >= este score → personal automático
-SCORE_AUTO_SPAM     = 20   # <= este score → spam automático
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _parse_from(raw: str) -> tuple[str, str]:
-    """Returns (email_lower, display_name) from a raw From header."""
     if not raw:
         return "", ""
     pairs = email.utils.getaddresses([raw])
@@ -73,9 +99,9 @@ def _is_esp(addr: str) -> bool:
     return d in _ESP_DOMAINS or any(d.endswith("." + e) for e in _ESP_DOMAINS)
 
 
-def _has_marketing_subject(subject: str) -> bool:
-    sl = subject.lower()
-    return any(w in sl for w in _MARKETING_WORDS)
+def _has_marketing_subject(subjects: list[str]) -> bool:
+    text = " ".join(subjects).lower()
+    return any(w in text for w in _MARKETING_WORDS)
 
 
 def _date_filter(days: int | None) -> str:
@@ -93,15 +119,49 @@ def _get_header(headers: list[dict], name: str) -> str:
     return ""
 
 
+def _parse_date(date_str: str) -> datetime | None:
+    try:
+        return email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _default_weights() -> dict[str, float]:
+    return {k: 1.0 for k in _SIGNAL_BASE}
+
+
+def _empty_stats() -> dict:
+    return {"total_scanned": 0, "personal": 0, "spam": 0, "commercial": 0}
+
+
+def _empty_state() -> dict:
+    return {
+        "reviewed":            {},
+        "pending":             [],
+        "pending_meta":        {},
+        "last_processed_date": None,
+        "stats":               _empty_stats(),
+    }
+
+
+def _empty_patterns() -> dict:
+    return {
+        "domain_votes":    {},
+        "signal_weights":  _default_weights(),
+        "decisions_count": 0,
+    }
+
+
 # ── Core class ────────────────────────────────────────────────────────────────
 
 class ContactAnalyzer:
     def __init__(self, service, state_path: str | Path = STATE_PATH):
-        self.svc   = service
-        self.path  = Path(state_path)
-        self.state = self._load()
+        self.svc      = service
+        self.path     = Path(state_path)
+        self.state    = self._load_state()
+        self.patterns = self._load_patterns()
 
-    # ── Public ────────────────────────────────────────────────────────────────
+    # ── Análisis ──────────────────────────────────────────────────────────────
 
     def analyze_batch(
         self,
@@ -110,34 +170,31 @@ class ContactAnalyzer:
         progress_cb: Callable | None = None,
     ) -> dict:
         """
-        Scans inbox messages in pages of batch_size, scores new senders.
-        Returns {auto_personal, auto_spam, pending, already_reviewed}.
-        Persists state after each page (tolerant to interruptions).
+        Escanea hasta batch_size mensajes del inbox, agrupa por remitente,
+        y clasifica. Los nuevos datos ricos (asuntos, fechas) se acumulan
+        por remitente antes de decidir. Persiste después de cada página.
+        Returns {auto_personal, auto_spam, pending, already_reviewed, scanned}.
         """
-        date_q  = _date_filter(days_range)
-        query   = f"in:inbox -in:sent{date_q}"
-
-        # Build sent-thread index first (needed for reply signal)
-        sent_threads = self._index_sent_threads(days_range, progress_cb)
+        sent_addrs = self._index_sent_threads(days_range, progress_cb)
 
         reviewed    = self.state["reviewed"]
         pending_set = set(self.state["pending"])
 
-        auto_personal = 0
-        auto_spam     = 0
-        new_pending   = 0
-        already       = 0
-        scanned       = 0
-        page_token    = None
-        page          = 0
+        _working: dict[str, dict] = {}
+        scanned    = 0
+        page_token = None
+        page       = 0
+        date_q     = _date_filter(days_range)
+        query      = f"in:inbox -in:sent{date_q}"
 
-        while True:
+        while scanned < batch_size:
             page += 1
+            remaining = batch_size - scanned
             try:
                 result = self.svc.users().messages().list(
                     userId="me",
                     q=query,
-                    maxResults=min(batch_size, 500),
+                    maxResults=min(remaining, 500),
                     pageToken=page_token,
                 ).execute()
             except HttpError:
@@ -148,103 +205,128 @@ class ContactAnalyzer:
                 break
 
             for stub in stubs:
+                if scanned >= batch_size:
+                    break
                 scanned += 1
                 try:
                     msg = self.svc.users().messages().get(
                         userId="me",
                         id=stub["id"],
                         format="metadata",
-                        metadataHeaders=[
-                            "From", "Subject", "Date",
-                            "List-Unsubscribe", "List-Unsubscribe-Post",
-                        ],
+                        metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
                     ).execute()
                 except HttpError:
                     continue
 
-                headers = msg.get("payload", {}).get("headers", [])
-                addr, name = _parse_from(_get_header(headers, "From"))
+                headers        = msg.get("payload", {}).get("headers", [])
+                addr, name     = _parse_from(_get_header(headers, "From"))
                 if not addr:
                     continue
 
-                if addr in reviewed:
-                    already += 1
-                    continue
-                if addr in pending_set:
-                    already += 1
+                if addr in reviewed or addr in pending_set:
                     continue
 
                 subject   = _get_header(headers, "Subject")
-                has_unsub = bool(_get_header(headers, "List-Unsubscribe"))
                 date_hdr  = _get_header(headers, "Date")
+                has_unsub = bool(_get_header(headers, "List-Unsubscribe"))
 
-                score, signals = self._score(
-                    addr, name, subject, has_unsub, sent_threads,
-                )
-
-                entry = {
-                    "name":       name,
-                    "score":      score,
-                    "signals":    signals,
-                    "decided_at": datetime.now().isoformat(timespec="seconds"),
-                }
-
-                if score >= SCORE_AUTO_PERSONAL:
-                    entry["decision"] = "personal"
-                    entry["auto"]     = True
-                    reviewed[addr]    = entry
-                    auto_personal    += 1
-                elif score <= SCORE_AUTO_SPAM:
-                    entry["decision"] = "spam"
-                    entry["auto"]     = True
-                    reviewed[addr]    = entry
-                    auto_spam        += 1
-                else:
-                    pending_set.add(addr)
-                    self.state["pending_meta"] = self.state.get("pending_meta", {})
-                    self.state["pending_meta"][addr] = {
-                        "name":    name,
-                        "score":   score,
-                        "signals": signals,
+                if addr not in _working:
+                    _working[addr] = {
+                        "name":      name or "",
+                        "subjects":  [],
+                        "dates":     [],
+                        "has_unsub": False,
+                        "count":     0,
                     }
-                    new_pending += 1
+                w = _working[addr]
+                if name and not w["name"]:
+                    w["name"] = name
+                if subject and len(w["subjects"]) < 3 and subject not in w["subjects"]:
+                    w["subjects"].append(subject)
+                if date_hdr:
+                    w["dates"].append(date_hdr)
+                w["has_unsub"] = w["has_unsub"] or has_unsub
+                w["count"]    += 1
 
-            self.state["pending"] = list(pending_set)
+            # Persist running count so scan is resumable
             self.state["stats"]["total_scanned"] = (
                 self.state["stats"].get("total_scanned", 0) + len(stubs)
             )
-            self._save()
+            self._save_state()
 
             if progress_cb:
                 progress_cb(
                     scanned=scanned,
-                    total_estimated=scanned + 200,
-                    new_pending=new_pending,
-                    new_auto=auto_personal + auto_spam,
+                    total_estimated=batch_size,
+                    new_pending=0,
+                    new_auto=0,
+                    phase="inbox",
+                    page=page,
                 )
 
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
-
             time.sleep(_BATCH_SLEEP)
 
-        self.state["last_processed_date"] = datetime.now().isoformat(timespec="seconds")
+        # Classify all accumulated profiles
+        auto_personal = 0
+        auto_spam     = 0
+        new_pending   = 0
+        now           = datetime.now().isoformat(timespec="seconds")
+        pending_meta  = self.state.setdefault("pending_meta", {})
+
+        for addr, w in _working.items():
+            score, signals = self._score(addr, w["subjects"], w["has_unsub"], sent_addrs)
+            domain         = _domain(addr)
+            auto_dir       = self._check_domain_auto(domain)
+
+            dates_valid = [d for d in (_parse_date(s) for s in w["dates"]) if d]
+            first_seen  = min(dates_valid).strftime("%Y-%m-%d") if dates_valid else ""
+            last_seen   = max(dates_valid).strftime("%Y-%m-%d") if dates_valid else ""
+
+            entry_base = {"name": w["name"], "score": score, "signals": signals}
+
+            if auto_dir == "personal" or (score >= SCORE_AUTO_PERSONAL and auto_dir != "spam"):
+                reviewed[addr] = {**entry_base, "decision": "personal", "auto": True, "decided_at": now}
+                auto_personal += 1
+            elif auto_dir == "spam" or (score <= SCORE_AUTO_SPAM and auto_dir != "personal"):
+                reviewed[addr] = {**entry_base, "decision": "spam", "auto": True, "decided_at": now}
+                auto_spam     += 1
+            else:
+                pending_set.add(addr)
+                pending_meta[addr] = {
+                    **entry_base,
+                    "sample_subjects": w["subjects"][:3],
+                    "first_seen":      first_seen,
+                    "last_seen":       last_seen,
+                    "count":           w["count"],
+                    "asked_at":        now,
+                }
+                new_pending += 1
+
+        already_reviewed  = scanned - sum(w["count"] for w in _working.values())
+
+        self.state["pending"]             = list(pending_set)
+        self.state["pending_meta"]        = pending_meta
+        self.state["last_processed_date"] = now
         self._update_stats()
-        self._save()
+        self._save_state()
 
         return {
             "auto_personal":    auto_personal,
             "auto_spam":        auto_spam,
             "pending":          new_pending,
-            "already_reviewed": already,
+            "already_reviewed": already_reviewed,
             "scanned":          scanned,
         }
 
+    # ── Aplicar decisiones ────────────────────────────────────────────────────
+
     def apply_decisions(self, decisions: dict[str, str]) -> dict:
         """
-        Applies user decisions for pending senders.
-        decisions: {email: "personal" | "spam" | "skip"}
+        Aplica las decisiones del usuario para los pendientes.
+        Llama learn_from_decision por cada decisión para actualizar patrones.
         Returns {protected, trashed_senders, trashed_msgs, errors}.
         """
         protected       = 0
@@ -257,20 +339,24 @@ class ContactAnalyzer:
         pending_meta = self.state.get("pending_meta", {})
 
         for addr, decision in decisions.items():
-            meta = pending_meta.get(addr, {})
+            meta    = pending_meta.get(addr, {})
+            signals = meta.get("signals", [])
+            score   = meta.get("score",   0)
+            domain  = _domain(addr)
+
             entry = {
                 "name":       meta.get("name", ""),
-                "score":      meta.get("score", 0),
-                "signals":    meta.get("signals", []),
+                "score":      score,
+                "signals":    signals,
                 "decision":   decision,
                 "auto":       False,
                 "decided_at": datetime.now().isoformat(timespec="seconds"),
             }
 
             if decision == "personal":
-                result = self._write_contact_rule(addr, meta.get("name", ""))
-                if "error" in result:
-                    errors.append(f"{addr}: {result['error']}")
+                r = self._write_contact_rule(addr, meta.get("name", ""))
+                if "error" in r and not r.get("already_protected"):
+                    errors.append(f"{addr}: {r['error']}")
                 else:
                     protected += 1
             elif decision == "spam":
@@ -280,16 +366,18 @@ class ContactAnalyzer:
                     trashed_msgs    += n
                 else:
                     errors.append(f"{addr}: error al mover a papelera")
-            # "skip" → just mark reviewed, no action
 
             reviewed[addr] = entry
             pending_set.discard(addr)
             pending_meta.pop(addr, None)
 
+            # Aprender de esta decisión
+            self.learn_from_decision(addr, domain, decision, score, signals)
+
         self.state["pending"]      = list(pending_set)
         self.state["pending_meta"] = pending_meta
         self._update_stats()
-        self._save()
+        self._save_state()
 
         return {
             "protected":       protected,
@@ -298,17 +386,80 @@ class ContactAnalyzer:
             "errors":          errors,
         }
 
+    # ── Aprendizaje ───────────────────────────────────────────────────────────
+
+    def learn_from_decision(
+        self,
+        email_addr: str,
+        domain: str,
+        decision: str,
+        score: int,
+        signals: list[str],
+    ) -> None:
+        """
+        Actualiza user_patterns.json:
+        - domain_votes: vota el dominio hacia personal/spam/skip
+        - signal_weights: refuerza o debilita según las señales activas
+        Cada ajuste es ±0.05 con límites [0.1, 2.0].
+        """
+        # Votar dominio
+        domain_votes = self.patterns.setdefault("domain_votes", {})
+        dv = domain_votes.setdefault(domain, {"personal": 0, "spam": 0, "skip": 0})
+        if decision in dv:
+            dv[decision] = dv.get(decision, 0) + 1
+
+        # Ajustar pesos de señales
+        weights = self.patterns.setdefault("signal_weights", _default_weights())
+        for sig in signals:
+            base = _SIGNAL_BASE.get(sig, 0)
+            if sig not in weights:
+                weights[sig] = 1.0
+            current = weights[sig]
+            if decision == "personal":
+                if base > 0:
+                    weights[sig] = min(2.0, current + 0.05)
+                elif base < 0:
+                    weights[sig] = max(0.1, current - 0.05)
+            elif decision == "spam":
+                if base < 0:
+                    weights[sig] = min(2.0, current + 0.05)
+                elif base > 0:
+                    weights[sig] = max(0.1, current - 0.05)
+
+        self.patterns["decisions_count"] = self.patterns.get("decisions_count", 0) + 1
+        self._save_patterns()
+
+    def get_learning_stats(self) -> dict:
+        """Devuelve estadísticas de aprendizaje para la UI."""
+        domain_votes = self.patterns.get("domain_votes", {})
+        auto_domains = sum(
+            1 for d, votes in domain_votes.items()
+            if self._check_domain_auto_from_votes(votes) is not None
+        )
+        return {
+            "decisions_count": self.patterns.get("decisions_count", 0),
+            "auto_domains":    auto_domains,
+            "domain_votes":    domain_votes,
+            "signal_weights":  self.patterns.get("signal_weights", _default_weights()),
+        }
+
+    # ── Consultas de estado ───────────────────────────────────────────────────
+
     def get_pending(self) -> list[dict]:
-        """Returns pending senders with their metadata, sorted by score desc."""
+        """Devuelve pendientes con metadata completa, ordenados por score desc."""
         pending_meta = self.state.get("pending_meta", {})
         result = []
         for addr in self.state.get("pending", []):
             meta = pending_meta.get(addr, {})
             result.append({
-                "email":   addr,
-                "name":    meta.get("name", ""),
-                "score":   meta.get("score", 0),
-                "signals": meta.get("signals", []),
+                "email":           addr,
+                "name":            meta.get("name",            ""),
+                "score":           meta.get("score",           0),
+                "signals":         meta.get("signals",         []),
+                "sample_subjects": meta.get("sample_subjects", []),
+                "first_seen":      meta.get("first_seen",      ""),
+                "last_seen":       meta.get("last_seen",       ""),
+                "count":           meta.get("count",           0),
             })
         return sorted(result, key=lambda x: x["score"], reverse=True)
 
@@ -320,70 +471,70 @@ class ContactAnalyzer:
 
     def reset(self):
         self.state = _empty_state()
-        self._save()
+        self._save_state()
 
-    # ── Scoring ───────────────────────────────────────────────────────────────
+    # ── Score con pesos aprendidos ────────────────────────────────────────────
 
     def _score(
         self,
         addr: str,
-        name: str,
-        subject: str,
+        subjects: list[str],
         has_unsub: bool,
-        sent_threads: set[str],
+        sent_addrs: set[str],
     ) -> tuple[int, list[str]]:
-        score   = 50
-        signals = []
+        weights        = self.patterns.get("signal_weights", _default_weights())
+        active_signals = []
 
-        thread_id = None  # We don't have thread_id here, use domain heuristic
+        if addr in sent_addrs:
+            active_signals.append("replied")
 
-        # +40 replied (thread in sent)
-        # We check by addr in sent_threads (built as set of recipient emails)
-        if addr in sent_threads:
-            score += 40
-            signals.append("+40 respondiste a este remitente")
-
-        # +15 non-mass domain
         d = _domain(addr)
         if d and d not in _FREE_PROVIDERS and not _is_esp(addr):
-            score += 15
-            signals.append("+15 dominio corporativo/personal")
+            active_signals.append("non_mass_domain")
 
-        # +10 no List-Unsubscribe
         if not has_unsub:
-            score += 10
-            signals.append("+10 sin cabecera de baja")
+            active_signals.append("no_unsubscribe")
         else:
-            score -= 30
-            signals.append("-30 tiene List-Unsubscribe (newsletter)")
+            active_signals.append("has_unsubscribe")
 
-        # -20 noreply pattern
         if _NOREPLY_RE.match(addr):
-            score -= 20
-            signals.append("-20 dirección noreply/automatizada")
+            active_signals.append("is_noreply")
 
-        # -20 ESP domain
         if _is_esp(addr):
-            score -= 20
-            signals.append("-20 dominio de plataforma de email masivo")
+            active_signals.append("is_esp")
 
-        # -15 marketing subject
-        if _has_marketing_subject(subject):
-            score -= 15
-            signals.append("-15 asunto contiene palabras de marketing")
+        if subjects and _has_marketing_subject(subjects):
+            active_signals.append("marketing_words")
 
-        return max(0, min(100, score)), signals
+        score = 50
+        for sig in active_signals:
+            base = _SIGNAL_BASE[sig]
+            w    = weights.get(sig, 1.0)
+            score += int(base * w)
 
-    # ── Sent index ────────────────────────────────────────────────────────────
+        return max(0, min(100, score)), active_signals
+
+    def _check_domain_auto(self, domain: str) -> str | None:
+        votes = self.patterns.get("domain_votes", {}).get(domain, {})
+        return self._check_domain_auto_from_votes(votes)
+
+    def _check_domain_auto_from_votes(self, votes: dict) -> str | None:
+        for direction in ("personal", "spam"):
+            count    = votes.get(direction, 0)
+            opposite = votes.get("spam" if direction == "personal" else "personal", 0)
+            if count >= _DOMAIN_AUTO_VOTES and count > opposite:
+                return direction
+        return None
+
+    # ── Índice de enviados ────────────────────────────────────────────────────
 
     def _index_sent_threads(
         self,
         days_range: int | None,
         progress_cb: Callable | None,
     ) -> set[str]:
-        """Returns set of To: email addresses found in sent mail."""
-        date_q = _date_filter(days_range)
-        query  = f"in:sent{date_q}"
+        date_q     = _date_filter(days_range)
+        query      = f"in:sent{date_q}"
         addrs: set[str] = set()
         page_token = None
         fetched    = 0
@@ -393,10 +544,7 @@ class ContactAnalyzer:
             page += 1
             try:
                 result = self.svc.users().messages().list(
-                    userId="me",
-                    q=query,
-                    maxResults=500,
-                    pageToken=page_token,
+                    userId="me", q=query, maxResults=500, pageToken=page_token,
                 ).execute()
             except HttpError:
                 break
@@ -408,10 +556,8 @@ class ContactAnalyzer:
             for stub in stubs:
                 try:
                     msg = self.svc.users().messages().get(
-                        userId="me",
-                        id=stub["id"],
-                        format="metadata",
-                        metadataHeaders=["To", "Cc"],
+                        userId="me", id=stub["id"],
+                        format="metadata", metadataHeaders=["To", "Cc"],
                     ).execute()
                     headers = msg.get("payload", {}).get("headers", [])
                     for hname in ("To", "Cc"):
@@ -426,26 +572,20 @@ class ContactAnalyzer:
             fetched += len(stubs)
             if progress_cb:
                 progress_cb(
-                    scanned=fetched,
-                    total_estimated=fetched + 200,
-                    new_pending=0,
-                    new_auto=0,
-                    phase="sent",
-                    page=page,
+                    scanned=fetched, total_estimated=fetched + 200,
+                    new_pending=0, new_auto=0, phase="sent", page=page,
                 )
 
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
-
             time.sleep(_BATCH_SLEEP)
 
         return addrs
 
-    # ── Trash helper ─────────────────────────────────────────────────────────
+    # ── Borrar correos de un remitente ────────────────────────────────────────
 
     def _trash_sender(self, addr: str) -> int:
-        """Moves all inbox messages from addr to trash. Returns count or -1 on error."""
         query      = f"from:{addr}"
         page_token = None
         total      = 0
@@ -478,10 +618,9 @@ class ContactAnalyzer:
 
         return total
 
-    # ── Write to rules.py ─────────────────────────────────────────────────────
+    # ── Escribir en rules.py ──────────────────────────────────────────────────
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
-        """Adds email_addr to CONTACT_RULES in rules.py. Same logic as app.py _proteger_remitente."""
         try:
             import importlib
             import gmail_processor.rules as rules_mod
@@ -517,9 +656,9 @@ class ContactAnalyzer:
         except Exception as exc:
             return {"error": str(exc)}
 
-    # ── Persistence ───────────────────────────────────────────────────────────
+    # ── Persistencia ──────────────────────────────────────────────────────────
 
-    def _load(self) -> dict:
+    def _load_state(self) -> dict:
         if self.path.exists():
             try:
                 return json.loads(self.path.read_text(encoding="utf-8"))
@@ -527,10 +666,22 @@ class ContactAnalyzer:
                 pass
         return _empty_state()
 
-    def _save(self):
+    def _save_state(self):
         self.path.write_text(
-            json.dumps(self.state, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def _load_patterns(self) -> dict:
+        if PATTERNS_PATH.exists():
+            try:
+                return json.loads(PATTERNS_PATH.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+        return _empty_patterns()
+
+    def _save_patterns(self):
+        PATTERNS_PATH.write_text(
+            json.dumps(self.patterns, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
     def _update_stats(self):
@@ -542,20 +693,6 @@ class ContactAnalyzer:
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
-
-def _empty_stats() -> dict:
-    return {"total_scanned": 0, "personal": 0, "spam": 0, "commercial": 0}
-
-
-def _empty_state() -> dict:
-    return {
-        "reviewed":            {},
-        "pending":             [],
-        "pending_meta":        {},
-        "last_processed_date": None,
-        "stats":               _empty_stats(),
-    }
-
 
 def _derive_label(email_addr: str, name: str) -> str:
     if name:
