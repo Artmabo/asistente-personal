@@ -10,6 +10,12 @@ credentials.json
 # ── Estado del sistema (generado localmente) ──────────────────────────────────
 learning_state.json
 audit_log.jsonl
+analysis_state.json
+user_patterns.json
+contact_profiles.json
+chat_history.json
+morning_brief_cache.json
+cleanup_schedule.json
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log

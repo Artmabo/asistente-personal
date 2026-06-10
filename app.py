@@ -45,6 +45,11 @@ st.session_state.setdefault("storage_data",        None)
 st.session_state.setdefault("cleanup_size_data",   None)
 # Limpiezas automáticas
 st.session_state.setdefault("schedule_saved",      False)
+# Perfiles de contactos y chat
+st.session_state.setdefault("profiler_result",     None)
+st.session_state.setdefault("chat_messages",       [])
+st.session_state.setdefault("chat_open",           False)
+st.session_state.setdefault("chat_input_counter",  0)
 
 # ── Definición de categorías ───────────────────────────────────────────────────
 CATS = [
@@ -596,6 +601,76 @@ def _time_ago(date_str: str) -> str:
         return date_str
 
 
+# ── Helpers: perfiles de contactos y chat ────────────────────────────────────
+
+def _check_api_key() -> bool:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+    return bool(os.getenv("ANTHROPIC_API_KEY"))
+
+
+def _get_morning_brief() -> dict:
+    try:
+        from gmail_processor.morning_brief import MorningBrief
+        return MorningBrief().generate()
+    except Exception:
+        return {}
+
+
+@st.cache_resource
+def _get_chat():
+    from gmail_processor.assistant_chat import AssistantChat
+    return AssistantChat()
+
+
+def _get_important_contacts() -> list[str]:
+    """Devuelve los emails marcados como 'personal' en analysis_state.json."""
+    try:
+        import json as _json
+        from gmail_processor.contact_analyzer import STATE_PATH
+        if not STATE_PATH.exists():
+            return []
+        _state = _json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return [
+            _e for _e, _v in _state.get("reviewed", {}).items()
+            if _v.get("decision") == "personal"
+        ]
+    except Exception:
+        return []
+
+
+def _load_profiles() -> dict:
+    try:
+        from gmail_processor.contact_profiler import ContactProfiler, PROFILES_PATH
+        if not PROFILES_PATH.exists():
+            return {}
+        return ContactProfiler().get_profiles()
+    except Exception:
+        return {}
+
+
+def _run_build_profiles(important_contacts: list[str], status_ph) -> dict:
+    try:
+        from gmail_processor.contact_profiler import ContactProfiler
+
+        def _cb(current, total, contact_name):
+            status_ph.info(
+                f"Analizando contacto **{current}** de {total}: {contact_name}…"
+            )
+
+        profiler = ContactProfiler()
+        return profiler.build_profiles(
+            service=st.session_state.service,
+            important_contacts=important_contacts,
+            progress_cb=_cb,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 # ── Intentar conectar automáticamente si ya hay token guardado ─────────────────
 if st.session_state.service is None and os.path.exists("token.json"):
     _init_service()
@@ -691,6 +766,39 @@ else:
             st.rerun()
 
 connected = st.session_state.service is not None
+
+# ── Buenos días ────────────────────────────────────────────────────────────────
+_brief = _get_morning_brief()
+if _brief:
+    _bpend    = _brief.get("pending_decisions", 0)
+    _balerts  = _brief.get("alerts", [])
+    _bnif     = _brief.get("new_from_important", [])
+    _bpersonal = _brief.get("personal_count", 0)
+    _bhas     = _bpend > 0 or _balerts or _bnif or _bpersonal > 0
+
+    with st.container(border=True):
+        st.markdown(f"### {_brief.get('greeting', 'Hola')} 👋")
+        st.write(_brief.get("summary_text", ""))
+
+        if _bnif:
+            st.markdown("**Correos recientes de contactos importantes:**")
+            for _bm in _bnif[:5]:
+                st.markdown(
+                    f"- 📧 **{_bm.get('name', '')}**  ·  "
+                    f"último contacto: {_time_ago(_bm.get('date', ''))}"
+                )
+
+        if _bpend > 0:
+            st.info(
+                f"Tienes **{_bpend}** contacto{'s' if _bpend > 1 else ''} "
+                "esperando tu decisión → ve a la sección **Analizar correos** para revisarlos."
+            )
+
+        for _ba in _balerts[:3]:
+            st.warning(_ba)
+
+        if not _bhas:
+            st.success("Todo en orden por hoy ✓")
 
 # ── Resumen de almacenamiento ──────────────────────────────────────────────────
 if connected:
@@ -1423,6 +1531,162 @@ if connected:
 st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════════
+# MIS CONTACTOS IMPORTANTES
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.header("👤 Mis contactos importantes")
+st.caption(
+    "Perfiles detallados de tus contactos más importantes, "
+    "analizados con inteligencia artificial."
+)
+
+if not _check_api_key():
+    st.info(
+        "Para activar el asistente inteligente necesitas configurar tu clave de API. "
+        "Consulta el archivo **config/README.md** para instrucciones."
+    )
+else:
+    _profiles         = _load_profiles()
+    _important_emails = _get_important_contacts()
+
+    if not _important_emails and not _profiles:
+        st.info(
+            "Primero analiza tus correos en la sección **Analizar correos** "
+            "para identificar tus contactos importantes."
+        )
+    else:
+        _bp_c1, _bp_c2 = st.columns([3, 1])
+        with _bp_c1:
+            if _important_emails:
+                st.caption(
+                    f"**{len(_important_emails)}** contacto{'s' if len(_important_emails) > 1 else ''} "
+                    f"importantes detectados — **{len(_profiles)}** perfiles construidos."
+                )
+        with _bp_c2:
+            if st.button(
+                "🔄 Construir perfiles",
+                key="btn_build_profiles",
+                disabled=not connected or not _important_emails,
+                use_container_width=True,
+                help="Analiza los correos de tus contactos con inteligencia artificial.",
+            ):
+                _bp_status = st.empty()
+                _bp_r = _run_build_profiles(_important_emails, _bp_status)
+                st.session_state["profiler_result"] = _bp_r
+                st.rerun()
+
+        # ── Resultado de construir perfiles ───────────────────────────────────
+        _prof_r = st.session_state.get("profiler_result")
+        if _prof_r:
+            if _prof_r.get("error") == "no_api_key":
+                st.warning(
+                    "No se encontró la clave de API. "
+                    "Verifica que tu archivo .env tiene ANTHROPIC_API_KEY configurada."
+                )
+            elif _prof_r.get("error"):
+                st.error(f"Error al construir perfiles: {_prof_r['error']}")
+            elif "built" in _prof_r:
+                st.success(
+                    f"✓ {_prof_r['built']} de {_prof_r['total']} "
+                    "perfiles construidos correctamente."
+                )
+                if _prof_r.get("errors"):
+                    with st.expander(f"⚠️ {len(_prof_r['errors'])} errores"):
+                        for _pe in _prof_r["errors"]:
+                            st.caption(_pe)
+                # Recargar perfiles tras construcción
+                _profiles = _load_profiles()
+
+        # ── Grid de tarjetas ──────────────────────────────────────────────────
+        _RELATION_ICONS = {
+            "familiar": "👨‍👩‍👧",
+            "trabajo":  "💼",
+            "servicio": "🏢",
+            "gobierno": "🏛️",
+            "otro":     "👤",
+        }
+
+        if _profiles:
+            _profile_items = list(_profiles.items())
+            for _pi in range(0, len(_profile_items), 2):
+                _grid_cols = st.columns(2)
+                for _pj, _gcol in enumerate(_grid_cols):
+                    if _pi + _pj >= len(_profile_items):
+                        break
+                    _paddr, _pdata = _profile_items[_pi + _pj]
+                    _pname   = _pdata.get("name", _paddr) or _paddr
+                    _prel    = _pdata.get("relation_type", "otro")
+                    _picon   = _RELATION_ICONS.get(_prel, "👤")
+                    _plast   = _pdata.get("last_contact",  "")
+                    _ptotal  = _pdata.get("total_emails",   0)
+                    _pbidir  = _pdata.get("bidirectional",  False)
+                    _patts   = _pdata.get("attachments",   [])
+                    _ptopics = _pdata.get("key_topics",    [])
+                    _palerts = _pdata.get("alerts",        [])
+
+                    with _gcol:
+                        with st.container(border=True):
+                            st.markdown(f"**{_picon} {_pname}**")
+                            st.caption(_paddr)
+
+                            _tc1, _tc2 = st.columns(2)
+                            _tc1.metric("Correos", _ptotal)
+                            if _plast:
+                                _tc2.caption(f"Último: {_time_ago(_plast)}")
+
+                            st.caption(
+                                "💬 Conversación mutua" if _pbidir
+                                else "📥 Solo recibo correos"
+                            )
+                            if _patts:
+                                st.caption(f"📎 {len(_patts)} documento{'s' if len(_patts) > 1 else ''} adjunto{'s' if len(_patts) > 1 else ''}")
+
+                            if _ptopics:
+                                st.markdown(
+                                    "  ·  ".join(f"`{t}`" for t in _ptopics[:4])
+                                )
+
+                            with st.expander("Ver perfil completo"):
+                                _psummary = _pdata.get("summary", "")
+                                if _psummary:
+                                    st.markdown(_psummary)
+
+                                _ptimeline = _pdata.get("timeline", [])
+                                if _ptimeline:
+                                    st.markdown("**Historial por año:**")
+                                    for _tl in _ptimeline:
+                                        st.markdown(
+                                            f"- **{_tl.get('year', '')}**: "
+                                            f"{_tl.get('summary', '')}"
+                                        )
+
+                                if _patts:
+                                    st.markdown("**Documentos recibidos:**")
+                                    for _att in _patts[:10]:
+                                        st.markdown(
+                                            f"- 📎 {_att.get('name', '')} "
+                                            f"({_att.get('type', '')}) "
+                                            f"— {_att.get('date', '')}"
+                                        )
+
+                                if _palerts:
+                                    st.markdown("**Avisos:**")
+                                    for _pal in _palerts:
+                                        st.warning(_pal)
+
+                                _ptone = _pdata.get("tone",     "")
+                                _plang = _pdata.get("language", "")
+                                if _ptone or _plang:
+                                    st.caption(f"Tono: {_ptone}  ·  Idioma: {_plang}")
+        elif _important_emails:
+            st.info(
+                f"Hay {len(_important_emails)} contactos importantes. "
+                "Haz clic en **Construir perfiles** para analizarlos con inteligencia artificial."
+            )
+
+st.divider()
+
+# ══════════════════════════════════════════════════════════════════════════════
 # LIMPIEZAS AUTOMÁTICAS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1834,3 +2098,117 @@ with st.expander("⚙️ Opciones avanzadas"):
             if _dbg_l:
                 st.subheader("Traza de log completa")
                 st.text_area("Log DEBUG", value=_dbg_l, height=450, key="debug_log_area")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHAT FLOTANTE
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.markdown("""
+<style>
+/* Panel flotante simulado — posición fija en esquina inferior derecha */
+div[data-testid="stVerticalBlock"]:has(div.chat-float-root) {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1000;
+    width: 370px;
+    background: white;
+    border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    padding: 0 !important;
+}
+div.chat-float-root .chat-header {
+    background: #FF4B4B;
+    color: white;
+    padding: 10px 16px;
+    border-radius: 14px 14px 0 0;
+    font-weight: bold;
+    font-size: 15px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Marcador para CSS selector
+st.markdown('<div class="chat-float-root"></div>', unsafe_allow_html=True)
+
+_chat_open = st.session_state.get("chat_open", False)
+
+# ── Botón toggle ──────────────────────────────────────────────────────────────
+_, _ctog_c2 = st.columns([10, 1])
+with _ctog_c2:
+    if st.button(
+        "✕" if _chat_open else "💬",
+        key="btn_chat_toggle",
+        help="Asistente de correo",
+    ):
+        st.session_state["chat_open"] = not _chat_open
+        st.rerun()
+
+# ── Panel del chat ────────────────────────────────────────────────────────────
+if _chat_open:
+    with st.container(border=True):
+        st.markdown("#### 💬 Asistente de correo")
+        st.caption("Pregúntame lo que necesites sobre tu correo.")
+
+        if not _check_api_key():
+            st.warning(
+                "Para activar el asistente inteligente necesitas configurar "
+                "tu clave de API. Consulta el archivo **config/README.md**."
+            )
+        else:
+            _chat_msgs = st.session_state.get("chat_messages", [])
+
+            # Historial (últimos 10 mensajes)
+            _chat_display = _chat_msgs[-10:] if len(_chat_msgs) > 10 else _chat_msgs
+            for _cm in _chat_display:
+                if _cm["role"] == "user":
+                    with st.chat_message("user"):
+                        st.markdown(_cm["content"])
+                else:
+                    with st.chat_message("assistant"):
+                        st.markdown(_cm["content"])
+
+            # Input y envío
+            _chat_key = f"chat_input_{st.session_state.get('chat_input_counter', 0)}"
+            _chat_text = st.text_input(
+                "Mensaje",
+                placeholder="Escríbeme lo que necesitas…",
+                key=_chat_key,
+                label_visibility="collapsed",
+            )
+            _send_col1, _send_col2 = st.columns([3, 1])
+            with _send_col1:
+                _chat_send = st.button(
+                    "Enviar →",
+                    key="btn_chat_send",
+                    type="primary",
+                    use_container_width=True,
+                )
+            with _send_col2:
+                if st.button("🗑️", key="btn_chat_clear", help="Limpiar historial"):
+                    st.session_state["chat_messages"] = []
+                    st.rerun()
+
+            if _chat_send and _chat_text.strip():
+                _msg_text = _chat_text.strip()
+                _chat_msgs.append({"role": "user", "content": _msg_text})
+                st.session_state["chat_messages"] = _chat_msgs
+
+                with st.spinner("Pensando…"):
+                    try:
+                        _chat_obj = _get_chat()
+                        _chat_obj.refresh_context()
+                        _api_hist = [
+                            {"role": m["role"], "content": m["content"]}
+                            for m in _chat_msgs[:-1]
+                        ]
+                        _chat_response = _chat_obj.send_message(_msg_text, _api_hist)
+                    except Exception as _ce:
+                        _chat_response = f"Hubo un problema al contactar al asistente: {_ce}"
+
+                _chat_msgs.append({"role": "assistant", "content": _chat_response})
+                st.session_state["chat_messages"]      = _chat_msgs
+                st.session_state["chat_input_counter"] = (
+                    st.session_state.get("chat_input_counter", 0) + 1
+                )
+                st.rerun()
