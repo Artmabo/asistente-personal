@@ -35,6 +35,11 @@ st.session_state.setdefault("audit_data",          None)
 st.session_state.setdefault("feedback_result",     None)
 st.session_state.setdefault("smart_setup_result",  None)
 st.session_state.setdefault("debug_result",        None)
+# Análisis de contactos
+st.session_state.setdefault("ca_batch_result",     None)
+st.session_state.setdefault("ca_apply_result",     None)
+st.session_state.setdefault("ca_decisions",        {})
+st.session_state.setdefault("ca_running",          False)
 
 # ── Definición de categorías ───────────────────────────────────────────────────
 CATS = [
@@ -221,6 +226,86 @@ def _limpiar_remitente(email: str) -> dict | None:
         return None
 
 
+_FREE_EMAIL_PROVIDERS = frozenset([
+    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
+    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
+    "me.com", "aol.com", "msn.com",
+])
+
+
+def _derivar_label(email: str, name: str) -> str:
+    """Derive a short uppercase label from display name or domain.
+    For free email providers uses the local part (e.g. papa@gmail.com → PAPA)."""
+    if name:
+        word  = name.strip().split()[0]
+        clean = "".join(c for c in word if c.isalpha())[:10]
+        if clean:
+            return clean.upper()
+    domain = email.split("@")[-1] if "@" in email else ""
+    local  = email.split("@")[0]  if "@" in email else email
+    if domain in _FREE_EMAIL_PROVIDERS:
+        clean = "".join(c for c in local if c.isalpha())[:10]
+        if clean:
+            return clean.upper()
+    if domain:
+        part  = domain.split(".")[0]
+        clean = "".join(c for c in part if c.isalpha())[:8]
+        if clean:
+            return clean.upper()
+    return "CONTACTO"
+
+
+def _proteger_remitente(email: str, name: str) -> dict:
+    """
+    Adds email to CONTACT_RULES in gmail_processor/rules.py, then reloads the module.
+    Returns {"success": True, "label": str} | {"already_protected": True} | {"error": str}.
+    """
+    try:
+        import importlib
+        import gmail_processor.rules as rules_mod
+
+        if email in rules_mod.CONTACT_RULES:
+            return {"already_protected": True}
+
+        label      = _derivar_label(email, name)
+        rules_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "gmail_processor", "rules.py",
+        )
+
+        content = open(rules_path, encoding="utf-8").read()
+        lines   = content.split("\n")
+
+        # Find the closing } of CONTACT_RULES by tracking brace depth
+        in_cr     = False
+        depth     = 0
+        insert_at = -1
+        for i, line in enumerate(lines):
+            if not in_cr:
+                if "CONTACT_RULES" in line and "=" in line and "{" in line:
+                    in_cr = True
+                    depth = line.count("{") - line.count("}")
+            else:
+                depth += line.count("{") - line.count("}")
+                if depth <= 0:
+                    insert_at = i
+                    break
+
+        if insert_at == -1:
+            return {"error": "No se encontró CONTACT_RULES en rules.py"}
+
+        new_line = f'    "{email}": {{"label": "{label}", "mark_important": True}},'
+        lines.insert(insert_at, new_line)
+
+        with open(rules_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        importlib.reload(rules_mod)
+        return {"success": True, "email": email, "label": label}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 # ── Helpers: panel avanzado ───────────────────────────────────────────────────
 
 def _cargar_stats() -> dict:
@@ -369,6 +454,75 @@ def _ejecutar_debug() -> tuple[dict, str]:
     finally:
         root.removeHandler(handler)
         root.setLevel(prev_level)
+
+
+# ── Helpers: analizador de contactos ─────────────────────────────────────────
+
+def _ca_get_analyzer():
+    from gmail_processor.contact_analyzer import ContactAnalyzer
+    return ContactAnalyzer(st.session_state.service)
+
+
+def _ca_run_batch(days_range: int | None, batch_size: int, status_ph) -> dict:
+    try:
+        analyzer  = _ca_get_analyzer()
+        _counters = {"scanned": 0, "auto": 0, "pending": 0}
+
+        def _cb(scanned, total_estimated, new_pending, new_auto, phase="inbox", page=0):
+            _counters["scanned"]  = scanned
+            _counters["auto"]    += new_auto
+            _counters["pending"] += new_pending
+            if phase == "sent":
+                status_ph.info(
+                    f"📤 Indexando enviados… **{scanned:,}** mensajes | página {page}"
+                )
+            else:
+                status_ph.info(
+                    f"📥 Escaneando inbox… **{scanned:,}** correos procesados | "
+                    f"auto: {_counters['auto']} | para revisar: {_counters['pending']}"
+                )
+
+        result = analyzer.analyze_batch(
+            days_range=days_range,
+            batch_size=batch_size,
+            progress_cb=_cb,
+        )
+        result["pending_list"] = analyzer.get_pending()
+        result["stats"]        = analyzer.get_stats()
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _ca_apply(decisions: dict) -> dict:
+    try:
+        analyzer = _ca_get_analyzer()
+        result   = analyzer.apply_decisions(decisions)
+        result["stats"] = analyzer.get_stats()
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _ca_state_summary() -> dict | None:
+    from gmail_processor.contact_analyzer import ContactAnalyzer
+    analyzer = ContactAnalyzer(st.session_state.service)
+    if not analyzer.has_previous_state():
+        return None
+    stats = analyzer.get_stats()
+    pending = analyzer.get_pending()
+    return {
+        "stats":           stats,
+        "pending_count":   len(pending),
+        "pending_list":    pending,
+        "last_date":       analyzer.state.get("last_processed_date"),
+        "reviewed_count":  len(analyzer.state.get("reviewed", {})),
+    }
+
+
+def _ca_reset():
+    from gmail_processor.contact_analyzer import ContactAnalyzer
+    ContactAnalyzer(st.session_state.service).reset()
 
 
 # ── Intentar conectar automáticamente si ya hay token guardado ─────────────────
@@ -696,21 +850,33 @@ with _org_tab2:
     elif not _senders:
         st.info("No se encontraron remitentes en la bandeja de entrada.")
     else:
+        st.caption(
+            "🛡️ **Contactos protegidos**: al proteger un remitente, sus correos nunca serán "
+            "eliminados por ninguna operación de limpieza, aunque Gmail los clasifique como "
+            "promociones o tengan muchos mensajes acumulados."
+        )
+        st.write("")
         for _si, _sndr in enumerate(_senders):
-            _se_email   = _sndr["email"]
-            _se_name    = _sndr.get("name", "")
-            _se_count   = _sndr["count"]
-            _se_label   = f"{_se_name} <{_se_email}>" if _se_name else _se_email
-            _confirm_sk = f"confirm_trash_sender_{_si}"
-            _result_sk  = f"result_trash_sender_{_si}"
-            st.session_state.setdefault(_confirm_sk, False)
-            st.session_state.setdefault(_result_sk,  None)
+            _se_email    = _sndr["email"]
+            _se_name     = _sndr.get("name", "")
+            _se_count    = _sndr["count"]
+            _se_label    = f"{_se_name} <{_se_email}>" if _se_name else _se_email
+            _confirm_sk  = f"confirm_trash_sender_{_si}"
+            _result_sk   = f"result_trash_sender_{_si}"
+            _confirm_psk = f"confirm_protect_sender_{_si}"
+            _result_psk  = f"result_protect_sender_{_si}"
+            st.session_state.setdefault(_confirm_sk,  False)
+            st.session_state.setdefault(_result_sk,   None)
+            st.session_state.setdefault(_confirm_psk, False)
+            st.session_state.setdefault(_result_psk,  None)
 
-            _s_c1, _s_c2, _s_c3 = st.columns([6, 1, 2])
+            _s_c1, _s_c2, _s_c3, _s_c4 = st.columns([6, 1, 2, 2])
             with _s_c1:
                 st.markdown(f"**{_se_label}**")
             with _s_c2:
                 st.caption(f"{_se_count}")
+
+            # ── Botón Limpiar ──────────────────────────────────────────────────
             with _s_c3:
                 if not st.session_state[_confirm_sk]:
                     st.button(
@@ -721,7 +887,7 @@ with _org_tab2:
                         on_click=lambda k=_confirm_sk: st.session_state.update({k: True}),
                     )
                 else:
-                    st.warning(f"¿Mover todos los correos de **{_se_email}** a la papelera?")
+                    st.warning(f"¿Mover **todos** los correos de **{_se_email}** a la papelera?")
                     _ts_c1, _ts_c2 = st.columns(2)
                     with _ts_c1:
                         if st.button("✓ Sí", key=f"exec_ts_{_si}", type="primary", use_container_width=True):
@@ -735,6 +901,31 @@ with _org_tab2:
                             st.session_state[_confirm_sk] = False
                             st.rerun()
 
+            # ── Botón Proteger ─────────────────────────────────────────────────
+            with _s_c4:
+                if not st.session_state[_confirm_psk]:
+                    st.button(
+                        "🛡️ Proteger",
+                        key=f"btn_ps_{_si}",
+                        use_container_width=True,
+                        disabled=not connected,
+                        on_click=lambda k=_confirm_psk: st.session_state.update({k: True}),
+                    )
+                else:
+                    st.info(f"¿Agregar **{_se_email}** a los contactos protegidos?")
+                    _ps_c1, _ps_c2 = st.columns(2)
+                    with _ps_c1:
+                        if st.button("✓ Sí", key=f"exec_ps_{_si}", type="primary", use_container_width=True):
+                            _ps_r = _proteger_remitente(_se_email, _se_name)
+                            st.session_state[_result_psk]  = _ps_r
+                            st.session_state[_confirm_psk] = False
+                            st.rerun()
+                    with _ps_c2:
+                        if st.button("✗ No", key=f"cancel_ps_{_si}", use_container_width=True):
+                            st.session_state[_confirm_psk] = False
+                            st.rerun()
+
+            # ── Resultados ────────────────────────────────────────────────────
             if st.session_state.get(_result_sk):
                 _ts_res = st.session_state[_result_sk]
                 _ts_mov = _ts_res.get("exitos",     0)
@@ -743,7 +934,314 @@ with _org_tab2:
                     st.info(f"No se encontraron correos de {_se_email}.")
                 else:
                     st.success(f"✓ {_ts_mov} de {_ts_tot} correos de {_se_email} movidos a la papelera.")
+
+            if st.session_state.get(_result_psk):
+                _ps_res = st.session_state[_result_psk]
+                if _ps_res.get("already_protected"):
+                    st.info(f"{_se_email} ya estaba en la lista de contactos protegidos.")
+                elif _ps_res.get("success"):
+                    st.success(
+                        f"🛡️ **{_se_email}** agregado a contactos protegidos "
+                        f"con etiqueta **{_ps_res['label']}**. "
+                        "Sus correos nunca serán eliminados."
+                    )
+                elif _ps_res.get("error"):
+                    st.error(f"Error al proteger: {_ps_res['error']}")
+
             st.markdown("---")
+
+st.divider()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ANALIZAR CORREOS
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.header("🔬 Analizar correos")
+st.caption(
+    "Revisa quién te escribe y decide qué hacer con cada remitente: "
+    "protegerlo, mandarlo a la papelera, u omitirlo."
+)
+
+_ANALYZE_RANGES = {
+    "Últimos 3 meses":   90,
+    "Últimos 6 meses":   180,
+    "Último año":        365,
+    "Últimos 2 años":    730,
+    "Todo el historial": None,
+}
+
+_ca_col1, _ca_col2 = st.columns([3, 1])
+with _ca_col1:
+    _ca_range_label = st.selectbox(
+        "Rango de análisis",
+        options=list(_ANALYZE_RANGES.keys()),
+        index=1,
+        key="ca_range",
+        disabled=not connected,
+    )
+with _ca_col2:
+    _ca_batch_size = st.number_input(
+        "Correos por lote",
+        min_value=50, max_value=500, value=200, step=50,
+        key="ca_batch_size",
+        disabled=not connected,
+    )
+
+_ca_days = _ANALYZE_RANGES[_ca_range_label]
+
+# Estado previo
+if connected:
+    try:
+        _ca_prev = _ca_state_summary()
+    except Exception:
+        _ca_prev = None
+else:
+    _ca_prev = None
+
+if _ca_prev:
+    _cp_stats   = _ca_prev["stats"]
+    _cp_rev     = _ca_prev["reviewed_count"]
+    _cp_pend    = _ca_prev["pending_count"]
+    _cp_date    = (_ca_prev["last_date"] or "")[:19].replace("T", " ")
+    st.info(
+        f"**Análisis anterior** ({_cp_date}): "
+        f"**{_cp_rev}** remitentes revisados — "
+        f"{_cp_stats.get('personal', 0)} personales, "
+        f"{_cp_stats.get('spam', 0)} spam. "
+        f"**{_cp_pend}** pendientes por revisar."
+    )
+    _ca_btn_col1, _ca_btn_col2, _ca_btn_col3 = st.columns(3)
+    with _ca_btn_col1:
+        _ca_btn_continue = st.button(
+            "▶ Continuar análisis",
+            key="btn_ca_continue",
+            disabled=not connected,
+            use_container_width=True,
+        )
+    with _ca_btn_col2:
+        _ca_btn_new = st.button(
+            "🔄 Nuevo análisis",
+            key="btn_ca_new",
+            disabled=not connected,
+            use_container_width=True,
+        )
+    with _ca_btn_col3:
+        _ca_btn_review = st.button(
+            f"📋 Solo revisar pendientes ({_cp_pend})",
+            key="btn_ca_review",
+            disabled=not connected or _cp_pend == 0,
+            use_container_width=True,
+        )
+
+    if _ca_btn_new:
+        _ca_reset()
+        st.session_state["ca_batch_result"] = None
+        st.session_state["ca_apply_result"] = None
+        st.session_state["ca_decisions"]    = {}
+        st.rerun()
+
+    if _ca_btn_review:
+        # Load existing pending without scanning
+        st.session_state["ca_batch_result"] = {
+            "auto_personal":    0,
+            "auto_spam":        0,
+            "pending":          _cp_pend,
+            "already_reviewed": _cp_rev,
+            "scanned":          0,
+            "pending_list":     _ca_prev["pending_list"],
+            "stats":            _cp_stats,
+            "review_only":      True,
+        }
+        st.rerun()
+
+    if _ca_btn_continue:
+        _ca_status = st.empty()
+        _ca_r = _ca_run_batch(_ca_days, int(_ca_batch_size), _ca_status)
+        st.session_state["ca_batch_result"] = _ca_r
+        st.session_state["ca_decisions"]    = {}
+        st.rerun()
+
+else:
+    if st.button(
+        "🔍 Analizar siguiente lote",
+        key="btn_ca_start",
+        type="primary",
+        disabled=not connected,
+        use_container_width=True,
+    ):
+        _ca_status = st.empty()
+        _ca_r = _ca_run_batch(_ca_days, int(_ca_batch_size), _ca_status)
+        st.session_state["ca_batch_result"] = _ca_r
+        st.session_state["ca_decisions"]    = {}
+        st.rerun()
+
+# ── Resultados del lote ───────────────────────────────────────────────────────
+_ca_batch = st.session_state["ca_batch_result"]
+if _ca_batch is not None:
+    if "error" in _ca_batch:
+        st.error(f"Error en el análisis: {_ca_batch['error']}")
+    else:
+        _cb_auto_p  = _ca_batch.get("auto_personal",    0)
+        _cb_auto_s  = _ca_batch.get("auto_spam",        0)
+        _cb_pend    = _ca_batch.get("pending",           0)
+        _cb_already = _ca_batch.get("already_reviewed",  0)
+        _cb_scanned = _ca_batch.get("scanned",           0)
+        _cb_review_only = _ca_batch.get("review_only",  False)
+
+        if not _cb_review_only and _cb_scanned > 0:
+            st.success(
+                f"**Lote completado**: {_cb_scanned:,} correos escaneados — "
+                f"{_cb_already} ya revisados, "
+                f"{_cb_auto_p + _cb_auto_s} clasificados automáticamente "
+                f"({_cb_auto_p} personales + {_cb_auto_s} spam), "
+                f"**{_cb_pend} para revisar**."
+            )
+
+        # ── Tabla de pendientes ───────────────────────────────────────────────
+        _pend_list = _ca_batch.get("pending_list", [])
+        if not _pend_list:
+            st.info("No hay remitentes pendientes de revisión. Todo fue clasificado automáticamente.")
+        else:
+            st.subheader(f"📋 Revisión de pendientes ({len(_pend_list)} remitentes)")
+            st.caption(
+                "Decide qué hacer con cada remitente. "
+                "Los contactos ya revisados no volverán a aparecer."
+            )
+
+            _decisions = st.session_state["ca_decisions"]
+
+            # Header row
+            _ph1, _ph2, _ph3, _ph4, _ph5 = st.columns([4, 2, 1, 3, 3])
+            _ph1.markdown("**Remitente**")
+            _ph2.markdown("**Señales**")
+            _ph3.markdown("**Score**")
+            _ph4.markdown("")
+            _ph5.markdown("")
+
+            st.markdown("---")
+
+            for _pi, _ps in enumerate(_pend_list):
+                _pa  = _ps["email"]
+                _pn  = _ps.get("name", "")
+                _psc = _ps.get("score", 0)
+                _psi = _ps.get("signals", [])
+                _lbl = f"{_pn} <{_pa}>" if _pn else _pa
+                _dec = _decisions.get(_pa)
+
+                _pc1, _pc2, _pc3, _pc4, _pc5 = st.columns([4, 2, 1, 3, 3])
+                with _pc1:
+                    st.markdown(f"**{_lbl}**")
+                    if _psi:
+                        st.caption(" · ".join(_psi[:2]))
+                with _pc2:
+                    if len(_psi) > 2:
+                        with st.expander("ver señales"):
+                            for _sig in _psi:
+                                st.caption(_sig)
+                    else:
+                        st.write("")
+                with _pc3:
+                    _score_color = "🟢" if _psc >= 55 else "🟡" if _psc >= 40 else "🔴"
+                    st.markdown(f"{_score_color} **{_psc}**")
+
+                with _pc4:
+                    _btn_label_p = "🛡️ Personal ✓" if _dec == "personal" else "🛡️ Personal"
+                    if st.button(
+                        _btn_label_p,
+                        key=f"ca_personal_{_pi}",
+                        type="primary" if _dec == "personal" else "secondary",
+                        use_container_width=True,
+                    ):
+                        _decisions[_pa] = "personal"
+                        st.session_state["ca_decisions"] = _decisions
+                        st.rerun()
+
+                with _pc5:
+                    _btn_col_a, _btn_col_b = st.columns(2)
+                    with _btn_col_a:
+                        _btn_label_s = "🗑️ Spam ✓" if _dec == "spam" else "🗑️ Spam"
+                        if st.button(
+                            _btn_label_s,
+                            key=f"ca_spam_{_pi}",
+                            type="primary" if _dec == "spam" else "secondary",
+                            use_container_width=True,
+                        ):
+                            _decisions[_pa] = "spam"
+                            st.session_state["ca_decisions"] = _decisions
+                            st.rerun()
+                    with _btn_col_b:
+                        _btn_label_o = "⏭️ Omitir ✓" if _dec == "skip" else "⏭️ Omitir"
+                        if st.button(
+                            _btn_label_o,
+                            key=f"ca_skip_{_pi}",
+                            use_container_width=True,
+                        ):
+                            _decisions[_pa] = "skip"
+                            st.session_state["ca_decisions"] = _decisions
+                            st.rerun()
+
+                st.markdown("---")
+
+            # ── Aplicar decisiones ────────────────────────────────────────────
+            _decided_count = len(_decisions)
+            _total_pend    = len(_pend_list)
+            if _decided_count > 0:
+                st.info(
+                    f"**{_decided_count} de {_total_pend}** remitentes con decisión asignada. "
+                    f"({_total_pend - _decided_count} sin decidir — quedarán pendientes)"
+                )
+                if st.button(
+                    f"✅ Aplicar {_decided_count} decisiones",
+                    key="btn_ca_apply",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    with st.spinner("Aplicando decisiones…"):
+                        _apply_r = _ca_apply(_decisions)
+                    st.session_state["ca_apply_result"] = _apply_r
+                    st.session_state["ca_decisions"]    = {}
+                    # Refresh pending list
+                    try:
+                        _new_prev = _ca_state_summary()
+                        if _new_prev:
+                            st.session_state["ca_batch_result"]["pending_list"] = (
+                                _new_prev["pending_list"]
+                            )
+                            st.session_state["ca_batch_result"]["stats"] = (
+                                _new_prev["stats"]
+                            )
+                    except Exception:
+                        pass
+                    st.rerun()
+
+# ── Resultado de aplicar decisiones ──────────────────────────────────────────
+_ca_apply_r = st.session_state["ca_apply_result"]
+if _ca_apply_r is not None:
+    if "error" in _ca_apply_r:
+        st.error(f"Error al aplicar: {_ca_apply_r['error']}")
+    else:
+        _apr_p  = _ca_apply_r.get("protected",       0)
+        _apr_ts = _ca_apply_r.get("trashed_senders",  0)
+        _apr_tm = _ca_apply_r.get("trashed_msgs",     0)
+        _apr_e  = _ca_apply_r.get("errors",           [])
+        _apr_st = _ca_apply_r.get("stats",            {})
+
+        st.success(
+            f"✓ Decisiones aplicadas — "
+            f"**{_apr_p}** contactos protegidos · "
+            f"**{_apr_ts}** remitentes de spam eliminados "
+            f"({_apr_tm} correos movidos a la papelera)."
+        )
+        if _apr_e:
+            with st.expander(f"⚠️ {len(_apr_e)} errores al aplicar"):
+                for _e in _apr_e:
+                    st.caption(_e)
+
+        if _apr_st:
+            _as1, _as2, _as3 = st.columns(3)
+            _as1.metric("Personales (total)", _apr_st.get("personal",   0))
+            _as2.metric("Spam (total)",        _apr_st.get("spam",       0))
+            _as3.metric("Escaneados (total)",  _apr_st.get("total_scanned", 0))
 
 st.divider()
 
