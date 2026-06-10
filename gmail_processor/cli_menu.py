@@ -55,7 +55,10 @@ def run_menu():
             elif choice == "5": _menu_feedback()
             elif choice == "6": _menu_config()
             elif choice == "7": _menu_debug(_get_service)
-            elif choice == "8": _menu_smart_setup(_get_service)
+            elif choice == "8":  _menu_smart_setup(_get_service)
+            elif choice == "9":  _menu_limpiar_spam(_get_service)
+            elif choice == "10": _menu_limpiar_promo(_get_service)
+            elif choice == "11": _menu_limpiar_todo(_get_service)
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -72,18 +75,22 @@ def _print_header():
 
 def _main_menu() -> str:
     items = [
-        ("1", "Procesar inbox      clasificar y etiquetar"),
-        ("2", "Cleanup seguro      limpiar almacenamiento"),
-        ("3", "Estadísticas        métricas y aprendizaje"),
-        ("4", "Audit log           historial de decisiones"),
-        ("5", "Feedback            corregir una decisión"),
-        ("6", "Configuración       reglas y contactos"),
-        ("7", "Debug mode          traza completa del pipeline"),
-        ("8", "Configuración inicial  detectar contactos importantes"),
-        ("0", "Salir"),
+        ("1",  "Procesar inbox        clasificar y etiquetar"),
+        ("2",  "Cleanup seguro        limpiar con reglas inteligentes"),
+        ("3",  "Estadísticas          métricas y aprendizaje"),
+        ("4",  "Audit log             historial de decisiones"),
+        ("5",  "Feedback              corregir una decisión"),
+        ("6",  "Configuración         reglas y contactos"),
+        ("7",  "Debug mode            traza completa del pipeline"),
+        ("8",  "Configuración inicial  detectar contactos automáticamente"),
+        ("9",  "Limpiar spam          vaciar carpeta de spam"),
+        ("10", "Limpiar promociones   vaciar categoría promociones"),
+        ("11", "Limpiar todo          spam + promos + social + foros"),
+        ("0",  "Salir"),
     ]
     for key, label in items:
-        print(f"  {key}.  {label}")
+        pad = "  " if len(key) == 1 else " "
+        print(f"  {key}.{pad}{label}")
     print(_SEP)
     return input("  Opción: ").strip()
 
@@ -557,13 +564,10 @@ def _menu_smart_setup(get_svc: Callable):
     print()
     _phase_label = [""]
 
-    def progress(scanned: int, total: int, phase: str = "inbox"):
+    def progress(scanned: int, phase: str = "inbox", page: int = 0):
         _phase_label[0] = phase
         label = "Enviados indexados" if phase == "sent" else "Correos analizados"
-        pct   = min(100, int(scanned / max(total, 1) * 100))
-        done  = pct // 5
-        bar   = "█" * done + "░" * (20 - done)
-        print(f"\r  [{bar}] {pct:3d}%  {label}: {scanned}", end="", flush=True)
+        print(f"\r  {label}: {scanned:,}  (pag. {page})" + " " * 10, end="", flush=True)
 
     print("  Paso 1/2 — Indexando mensajes enviados...")
     try:
@@ -854,6 +858,77 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
         return True
     except OSError:
         return False
+
+
+# ── 9. Limpiar spam ───────────────────────────────────────────────────────────
+
+def _menu_limpiar_spam(get_svc: Callable):
+    _section("LIMPIAR SPAM")
+    print("  Mueve a la papelera todos los mensajes de la carpeta Spam.")
+    print("  Los correos permanecen 30 días en papelera antes de eliminarse.")
+    print()
+    if not _confirm("¿Continuar?"):
+        return
+    svc = get_svc()
+    if svc is None:
+        return
+    from limpiar_correos import limpiar_bandeja
+    r = limpiar_bandeja(svc, categorias=["spam"])
+    _resumen_limpieza(r)
+    _pause()
+
+
+# ── 10. Limpiar promociones ───────────────────────────────────────────────────
+
+def _menu_limpiar_promo(get_svc: Callable):
+    _section("LIMPIAR PROMOCIONES")
+    print("  Mueve a la papelera todos los correos de la categoría Promociones.")
+    print("  Los correos permanecen 30 días en papelera antes de eliminarse.")
+    print()
+    if not _confirm("¿Continuar?"):
+        return
+    svc = get_svc()
+    if svc is None:
+        return
+    from limpiar_correos import limpiar_bandeja
+    r = limpiar_bandeja(svc, categorias=["promociones"])
+    _resumen_limpieza(r)
+    _pause()
+
+
+# ── 11. Limpiar todo ──────────────────────────────────────────────────────────
+
+def _menu_limpiar_todo(get_svc: Callable):
+    _section("LIMPIAR TODO")
+    print("  Mueve a la papelera los correos de estas categorías:")
+    print("    • Spam")
+    print("    • Promociones")
+    print("    • Social")
+    print("    • Actualizaciones")
+    print("    • Foros")
+    print()
+    print("  Los correos permanecen 30 días en papelera antes de eliminarse.")
+    print()
+    if not _confirm("¿Continuar?"):
+        return
+    if not _confirm("  Confirmar: limpiar todas las categorías"):
+        return
+    svc = get_svc()
+    if svc is None:
+        return
+    from limpiar_correos import limpiar_todo_basura
+    limpiar_todo_basura(svc)
+    _pause()
+
+
+def _resumen_limpieza(r: dict):
+    print()
+    print(f"  {'─'*36}")
+    print(f"  Correos encontrados : {r['procesados']}")
+    print(f"  Movidos a papelera  : {r['exitos']}")
+    if r.get('errores'):
+        print(f"  Con error           : {r['errores']}")
+    print(f"  {'─'*36}")
 
 
 # ── Terminal helpers ──────────────────────────────────────────────────────────

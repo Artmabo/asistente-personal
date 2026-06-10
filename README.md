@@ -16,7 +16,63 @@ Sistema de automatización inteligente para Gmail con aprendizaje adaptativo, me
 
 ---
 
-## Instalación
+## Inicio rápido para usuarios sin experiencia técnica
+
+Si nunca has usado una terminal o no sabes qué es Python, esta es la sección para ti.
+
+### Paso 1 — Instala Python (solo la primera vez)
+
+Python es el motor que hace funcionar el programa. Es gratuito.
+
+**Windows y Mac:**
+1. Abre tu navegador y ve a **https://www.python.org/downloads/**
+2. Haz clic en el botón grande que dice "Download Python"
+3. Abre el archivo descargado y sigue las instrucciones
+
+> ⚠️ **Solo en Windows:** en la primera pantalla del instalador, marca la casilla **"Add Python to PATH"** antes de hacer clic en "Install Now". Si no la marcas, el programa no funcionará.
+
+### Paso 2 — Descarga el proyecto
+
+Descarga este repositorio como ZIP desde GitHub y descomprímelo en tu escritorio (o donde prefieras).
+
+### Paso 3 — Ejecuta el programa
+
+**En Windows:**
+1. Entra a la carpeta del proyecto
+2. Haz doble clic en el archivo **`iniciar.bat`**
+3. Se abrirá una ventana negra — espera unos segundos
+4. El programa se abrirá automáticamente en tu navegador
+
+**En Mac:**
+1. Abre la aplicación **Terminal** (búscala con Cmd+Espacio y escribe "Terminal")
+2. Arrastra el archivo **`iniciar.sh`** desde el Finder hacia la ventana de Terminal
+3. Presiona **Enter**
+4. El programa se abrirá automáticamente en tu navegador
+
+> La primera vez que ejecutes el programa tardará unos minutos en instalarse. Las veces siguientes arranca en segundos.
+
+### Paso 4 — Conecta tu cuenta de Gmail (solo la primera vez)
+
+1. Cuando el programa se abra en el navegador, haz clic en **"Conectar con Gmail"**
+2. Se abrirá una ventana de Google — inicia sesión con tu cuenta de Gmail
+3. Google te pedirá que autorices el acceso — haz clic en **"Permitir"**
+4. Vuelve a la página del programa — ya estará conectado
+
+> Tu contraseña nunca es vista ni guardada por el programa. Solo se guarda un archivo `token.json` en tu computadora.
+
+### Qué hacer si algo falla
+
+| Problema | Solución |
+|---|---|
+| "Python no está instalado" | Sigue el Paso 1 de esta guía |
+| La ventana negra se cierra sola | Haz doble clic en `iniciar.bat` de nuevo y lee el mensaje de error |
+| El navegador no se abre | Escribe `http://localhost:8501` en la barra del navegador |
+| "Falta el archivo de credenciales" | Lee el archivo `config/README.md` para obtener el archivo de Google Cloud |
+| El programa dice que expiró la sesión | Borra el archivo `token.json` y vuelve a conectar tu cuenta |
+
+---
+
+## Instalación (para usuarios técnicos)
 
 ### Requisitos
 
@@ -78,6 +134,7 @@ Sin argumentos se abre el **menú interactivo**. Es el modo recomendado para uso
   5.  Feedback            corregir una decisión
   6.  Configuración       reglas y contactos
   7.  Debug mode          traza completa del pipeline
+  8.  Configuración inicial  detectar contactos importantes
   0.  Salir
 ```
 
@@ -157,6 +214,48 @@ Gestiona las reglas del sistema:
 - **Ver keywords de spam** — palabras que activan clasificación automática
 - **Abrir rules.py en editor** — edición directa (Notepad en Windows)
 
+### Opción 8 — Configuración Inicial Inteligente
+
+Analiza los últimos **12 meses** de tu Gmail para detectar automáticamente qué remitentes son importantes y deben estar protegidos. Usa como señales principales el historial de respuestas enviadas, correos marcados con estrella, y la frecuencia de interacción real — penalizando agresivamente newsletters y correos promocionales que nunca reciben respuesta.
+
+**Qué hace:**
+1. Indexa hasta 400 mensajes enviados (para detectar hilos respondidos)
+2. Escanea hasta 500 correos recibidos en el último año
+3. Calcula un score por remitente con desglose explicado
+4. Muestra los candidatos ranqueados antes de tocar nada
+5. Permite aprobar todos, ninguno, o una selección numérica
+6. Escribe las entradas aprobadas en `rules.py` y recarga la configuración en vivo
+
+**Cómo interpreta el score:**
+
+| Señal | Peso |
+|---|---|
+| Hilo respondido | +25 por hilo, máx 5 |
+| Correo con estrella | +20 por correo, máx 2 |
+| Etiqueta IMPORTANT | +8 por correo, máx 3 (señal débil — Gmail auto-marca) |
+| Frecuencia recibida | +1 por correo, máx 20 |
+| Tipo de dominio | −60 a +25 según categoría |
+| Sin respuestas (≥15 correos) | −25 (uno a uno, típico newsletter) |
+| Local part sospechoso | −40 a −60 (noreply, newsletter, deals, etc.) |
+
+Umbral mínimo: **35 puntos** para ser sugerido como contacto.
+
+**Ejemplo de salida:**
+
+```
+  [ 1]  juan@empresa.com  "Juan García"
+        Score: 177  |  tipo: corporate
+          +  125  5 hilos respondidos
+          +   24  etiqueta IMPORTANT (×3) — señal débil
+          +   20  frecuencia (40 correos recibidos)
+          +    8  tipo de dominio: corporate
+        → CONTACT_RULES  label=TRABAJO  importante=Sí
+```
+
+> Recomendado como **primer paso** antes de usar Cleanup en LIVE.
+
+---
+
 ### Opción 7 — Debug mode
 
 Ejecuta el cleanup en **DRY RUN forzado** mostrando la traza completa del pipeline por cada correo:
@@ -199,11 +298,13 @@ Ejecuta el cleanup en **DRY RUN forzado** mostrando la traza completa del pipeli
 ```
 1. Instalar y configurar credenciales (ver Instalación)
 2. Abrir el menú: python procesar_correos.py
-3. Opción 6 → Agregar tus contactos importantes
-4. Opción 7 → Debug mode para ver qué haría el sistema
-5. Opción 2 → Cleanup en DRY RUN para revisar el output
-6. Revisar la lista, confirmar que nada importante aparece como TRASH
-7. Opción 2 → Cleanup en LIVE cuando estés conforme
+3. Opción 8 → Configuración Inicial Inteligente (detecta contactos automáticamente)
+4. Revisar el listado, aprobar los contactos que reconoces
+5. Opción 6 → Agregar contactos adicionales manualmente si es necesario
+6. Opción 7 → Debug mode para ver qué haría el sistema
+7. Opción 2 → Cleanup en DRY RUN para revisar el output
+8. Confirmar que nada importante aparece como TRASH
+9. Opción 2 → Cleanup en LIVE cuando estés conforme
 ```
 
 ### Uso regular
@@ -369,7 +470,8 @@ asistente-personal/
 │   ├── learning_engine.py       # Motor de aprendizaje adaptativo (v3)
 │   ├── audit_log.py             # Log estructurado JSONL por decisión
 │   ├── processor.py             # Orquestador principal
-│   └── cli_menu.py              # Menú interactivo CLI
+│   ├── cli_menu.py              # Menú interactivo CLI
+│   └── smart_setup.py           # Análisis inicial — scoring anti-newsletter
 └── limpiar_correos.py           # Script legacy (referencia)
 ```
 

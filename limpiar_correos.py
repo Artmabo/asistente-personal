@@ -1,7 +1,4 @@
 import os
-import time
-import sys
-import random
 from datetime import datetime, timedelta
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -9,25 +6,30 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# Scope correcto para acceso completo a Gmail
-SCOPES = ['https://mail.google.com/']
+SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
-# Configuración ULTRA RÁPIDA - sin barreras (40k correos)
-REQUEST_DELAY = 0             # SIN pausa entre requests
-MIN_DELAY = 0                 # SIN delay mínimo
-MAX_DELAY = 0.5               # Máximo muy bajo
-BATCH_SIZE = 500              # Máximo tamaño de lotes (API permite 500)
-PAGE_DELAY = 0                # SIN pausa entre páginas
-MAX_RETRIES = 3               # Reintentos rápidos
+CATEGORIAS = {
+    "spam":            "in:spam",
+    "promociones":     "category:promotions",
+    "social":          "category:social",
+    "actualizaciones": "category:updates",
+    "foros":           "category:forums",
+}
+
+_NOMBRES_ES = {
+    "spam":            "Spam",
+    "promociones":     "Promociones",
+    "social":          "Social",
+    "actualizaciones": "Actualizaciones",
+    "foros":           "Foros",
+}
 
 
 def obtener_servicio(creds_path="config/credentials.json", token_path="token.json"):
-    """Obtiene servicio de Gmail con autenticación OAuth."""
+    """OAuth flow para uso independiente del script."""
     creds = None
-    
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-    
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -36,193 +38,152 @@ def obtener_servicio(creds_path="config/credentials.json", token_path="token.jso
             creds = flow.run_local_server(port=0)
         with open(token_path, 'w') as token:
             token.write(creds.to_json())
-
     return build('gmail', 'v1', credentials=creds)
 
 
-class ThrottleManager:
-    """Gestor de throttling adaptativo."""
-    
-    def __init__(self, initial_delay=REQUEST_DELAY):
-        self.current_delay = initial_delay
-        self.error_count = 0
-        self.success_count = 0
-    
-    def record_success(self):
-        """Registra éxito y reduce delay ligeramente."""
-        self.success_count += 1
-        self.error_count = max(0, self.error_count - 1)
-        if self.success_count % 5 == 0:
-            self.current_delay = max(MIN_DELAY, self.current_delay * 0.99)
-    
-    def record_error(self):
-        """Registra error e incrementa delay."""
-        self.error_count += 1
-        self.success_count = 0
-        self.current_delay = min(MAX_DELAY, self.current_delay * 1.5)
-    
-    def get_wait_time(self):
-        """Devuelve delay con jitter."""
-        jitter = random.uniform(0, 0.2 * self.current_delay)
-        return self.current_delay + jitter
-
-
-
-def mover_a_papelera_con_reintentos(service, msg_id, throttle_manager, max_retries=MAX_RETRIES):
-    """Envía correo a papelera con reintentos y backoff exponencial."""
-    delay = 0.1
-    
-    for retry in range(1, max_retries + 1):
+def mover_lote_a_papelera(service, ids: list) -> int:
+    """Move up to 1000 IDs to trash via batchModify. Returns count successfully sent."""
+    if not ids:
+        return 0
+    total = 0
+    for i in range(0, len(ids), 1000):
+        chunk = ids[i:i + 1000]
         try:
-            service.users().messages().trash(userId='me', id=msg_id).execute()
-            throttle_manager.record_success()
-            # Sleep solo si REQUEST_DELAY > 0
-            if REQUEST_DELAY > 0:
-                time.sleep(throttle_manager.get_wait_time())
-            return True
-            
-        except HttpError as error:
-            status = None
-            try:
-                status = int(error.resp.status)
-            except Exception:
-                pass
-            
-            # Error crítico de permisos
-            if status == 403 and "insufficient" in str(error).lower():
-                print(f"\n❌ Error crítico de permisos [id={msg_id}]: {error}")
-                print("El token no tiene permisos suficientes. Deteniendo script.")
-                return False
-            
-            # Rate limits (403 quota o 429)
-            if status in (403, 429) and retry < max_retries:
-                throttle_manager.record_error()
-                print(f"  ⏱️  Rate limit ({status}). Reintentando en {delay:.1f}s... (retry {retry}/{max_retries})")
-                time.sleep(delay)
-                delay = min(MAX_DELAY, delay * 2)  # Exponencial backoff
-                continue
-            
-            # Otros errores
-            print(f"  ❌ Error {status} en id {msg_id}: {error}")
-            throttle_manager.record_error()
-            return False
-    
-    return False
+            service.users().messages().batchModify(
+                userId='me',
+                body={
+                    'ids': chunk,
+                    'addLabelIds': ['TRASH'],
+                    'removeLabelIds': ['INBOX'],
+                }
+            ).execute()
+            total += len(chunk)
+        except HttpError as e:
+            print(f"  Error en lote ({len(chunk)} mensajes): {e}")
+    return total
 
 
-
-def limpiar_bandeja(meses=6, solo_no_leidos=True, query_custom=None):
-    """Limpia correos antiguos con throttling adaptativo.
-    
-    Args:
-        meses: antigüedad en meses
-        solo_no_leidos: si True, solo elimina no leídos
-        query_custom: query personalizada (sobrescribe meses y solo_no_leidos)
+def limpiar_bandeja(service, query_custom=None, categorias=None):
     """
-    print(f"📧 Scope cargado: {SCOPES}")
-    print("⚡⚡⚡ MODO ULTRA RÁPIDO (40k+ correos) - SIN PAUSAS ⚡⚡⚡\n")
-    
-    # Inicializar throttle manager
-    throttle = ThrottleManager(initial_delay=REQUEST_DELAY)
-    
-    try:
-        service = obtener_servicio()
-        
-        # Construir query
-        if query_custom:
-            query = query_custom
-        else:
-            fecha_limite = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")
-            query = f"before:{fecha_limite}"
-            if solo_no_leidos:
-                query += " is:unread"
-        
-        print(f"🔍 Buscando correos: {query}\n")
-        
-        total_procesados = 0
-        total_exitos = 0
-        page_num = 0
+    Mueve a la papelera los correos que coincidan con la query o categorías.
+
+    Args:
+        service:      servicio Gmail autenticado
+        query_custom: query Gmail directa (se ignora si se pasan categorias)
+        categorias:   lista de claves de CATEGORIAS (spam, promociones, etc.)
+
+    Returns:
+        {'procesados': int, 'exitos': int, 'errores': int}
+    """
+    if categorias:
+        queries = {cat: CATEGORIAS[cat] for cat in categorias if cat in CATEGORIAS}
+    elif query_custom:
+        queries = {"consulta": query_custom}
+    else:
+        fecha = (datetime.now() - timedelta(days=180)).strftime("%Y/%m/%d")
+        queries = {"consulta": f"before:{fecha} is:unread"}
+
+    total_procesados = 0
+    total_exitos = 0
+
+    for nombre, query in queries.items():
+        print(f"\n  Buscando: {query}")
         page_token = None
-        
-        # Paginación
+        page_num = 0
+        cat_total = 0
+        cat_exitos = 0
+
         while True:
             page_num += 1
-            print(f"📄 Página {page_num}:")
-            
             try:
                 result = service.users().messages().list(
                     userId='me',
                     q=query,
                     maxResults=500,
-                    pageToken=page_token
+                    pageToken=page_token,
                 ).execute()
-                
-                messages = result.get('messages', [])
-                
-                if not messages:
-                    print("  ✓ No hay más correos\n")
-                    break
-                
-                print(f"  📧 Encontrados {len(messages)} correos")
-                
-                # Procesar por lotes
-                for batch_start in range(0, len(messages), BATCH_SIZE):
-                    batch_end = min(batch_start + BATCH_SIZE, len(messages))
-                    batch = messages[batch_start:batch_end]
-                    
-                    print(f"    Procesando lote {batch_start//BATCH_SIZE + 1} ({len(batch)} mensajes)...")
-                    
-                    for msg in batch:
-                        if mover_a_papelera_con_reintentos(service, msg['id'], throttle):
-                            total_exitos += 1
-                        total_procesados += 1
-                
-                # Sin pausa entre lotes (modo rápido)
-                
-                # Siguiente página
-                page_token = result.get('nextPageToken')
-                if not page_token:
-                    break
-                
-                # Sin pausa (modo ultra rápido)
-                
-            except HttpError as error:
-                if "403" in str(error):
-                    print(f"  ⚠️  Error 403. Circuit breaker activado.")
-                    break
-                raise
-        
-        print("\n" + "="*60)
-        print("--- RESUMEN FINAL ---")
-        print(f"✅ Correos enviados a papelera: {total_exitos}/{total_procesados}")
-        print(f"⏱️  Delay final: {throttle.current_delay:.2f}s")
-        print(f"📊 Éxitos: {throttle.success_count} | Errores: {throttle.error_count}")
-        print("="*60)
-        
-        return {
-            "procesados": total_procesados,
-            "exitos": total_exitos,
-            "errores": total_procesados - total_exitos
-        }
-        
-    except HttpError as error:
-        print(f"\n❌ Error en la API: {error}")
-        return None
+            except HttpError as e:
+                print(f"  Error al listar página {page_num}: {e}")
+                break
 
+            messages = result.get('messages', [])
+            if not messages:
+                if page_num == 1:
+                    print("  No se encontraron correos.")
+                break
+
+            ids = [m['id'] for m in messages]
+            print(f"  Página {page_num}: {len(ids)} correos → enviando a papelera...", end="", flush=True)
+            exitos = mover_lote_a_papelera(service, ids)
+            print(f" {exitos} movidos.")
+            cat_total += len(ids)
+            cat_exitos += exitos
+
+            page_token = result.get('nextPageToken')
+            if not page_token:
+                break
+
+        if len(queries) > 1:
+            nombre_es = _NOMBRES_ES.get(nombre, nombre)
+            print(f"  [{nombre_es}] {cat_exitos}/{cat_total} enviados a papelera")
+
+        total_procesados += cat_total
+        total_exitos += cat_exitos
+
+    return {
+        "procesados": total_procesados,
+        "exitos":     total_exitos,
+        "errores":    total_procesados - total_exitos,
+    }
+
+
+def limpiar_todo_basura(service) -> dict:
+    """Limpia spam + promociones + social + actualizaciones + foros en secuencia."""
+    resultados = {}
+    total_p = 0
+    total_e = 0
+
+    for cat in CATEGORIAS:
+        print(f"\n  {'─'*44}")
+        print(f"  {_NOMBRES_ES[cat].upper()}")
+        r = limpiar_bandeja(service, categorias=[cat])
+        resultados[cat] = r
+        total_p += r['procesados']
+        total_e += r['exitos']
+
+    print(f"\n  {'═'*44}")
+    print("  RESUMEN FINAL")
+    print(f"  {'═'*44}")
+    for cat, r in resultados.items():
+        barra = f"{r['exitos']}/{r['procesados']}"
+        print(f"  {_NOMBRES_ES[cat]:<18} {barra:>12}  enviados a papelera")
+    print(f"  {'─'*44}")
+    total_barra = f"{total_e}/{total_p}"
+    print(f"  {'TOTAL':<18} {total_barra:>12}")
+
+    return {"procesados": total_p, "exitos": total_e}
+
+
+# ── Compatibilidad con versiones anteriores ───────────────────────────────────
 
 def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False):
-    """Función compatible con interfaz anterior."""
-    return limpiar_bandeja(meses=meses, solo_no_leidos=solo_no_leidos)
+    if service is None:
+        service = obtener_servicio()
+    fecha = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")
+    q = f"before:{fecha}"
+    if solo_no_leidos:
+        q += " is:unread"
+    return limpiar_bandeja(service, query_custom=q)
 
 
 def borrar_correos_antiguos(service=None):
-    """Función legacy para compatibilidad."""
-    return limpiar_bandeja(meses=6, solo_no_leidos=True)
-
+    if service is None:
+        service = obtener_servicio()
+    return limpiar_correos(service=service)
 
 
 if __name__ == '__main__':
-    # Ejecutar limpieza con modo conservador (default)
-    resultado = limpiar_bandeja()
+    svc = obtener_servicio()
+    resultado = limpiar_bandeja(svc)
     if resultado:
-        print(f"\nResultado final: {resultado}")
+        print(f"\nResultado: {resultado}")

@@ -10,6 +10,16 @@ CONTACT_RULES: dict[str, dict] = {
     # "papa@gmail.com": {"label": "FAMILIA", "mark_important": False},
     # "mama@gmail.com": {"label": "FAMILIA", "mark_important": False},
     # "jefe@empresa.com": {"label": "TRABAJO", "mark_important": True},
+    "help@acct.epicgames.com": {"label": "TRABAJO", "mark_important": True},
+    "@anahuac.mx": {"label": "Escuela", "mark_important": True},
+    "@anahuacmayab.edu.mx": {"label": "Escuela", "mark_important": False},
+    "sistemas@grupotelnet.com.mx": {"label": "Florentina", "mark_important": True},
+    "notificaciones@banamex.com": {"label": "Banco", "mark_important": True},
+    "Facturacion_Electronica@banamex.com": {"label": "Banco", "mark_important": True},
+    "estadosdecuenta@banamex.com": {"label": "FINANZAS", "mark_important": True},
+    "facturacion_electronica@banamex.com": {"label": "FINANZAS", "mark_important": True},
+    "invoice+statements+acct_1ldl1bkzqzq0brf4@stripe.com": {"label": "FINANZAS", "mark_important": True},
+    "arturomari@gmail.com": {"label": "PERSONAL", "mark_important": False},
 }
 
 # ── Reglas por dominio del remitente ─────────────────────────────────────────
@@ -31,6 +41,11 @@ DOMAIN_RULES: list[dict] = [
     {
         "domains": ["sat.gob.mx", "imss.gob.mx", "issste.gob.mx"],
         "label": "GOBIERNO",
+        "action": "mark_important",
+    },
+    {
+        "domains": ["stripe.com"],
+        "label": "FINANZAS",
         "action": "mark_important",
     },
 ]

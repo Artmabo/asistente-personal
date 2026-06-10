@@ -34,6 +34,7 @@ Anti-newsletter signals:
   social       social-network notification domains
 """
 import logging
+import time
 from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
@@ -41,13 +42,14 @@ from googleapiclient.errors import HttpError
 logger = logging.getLogger("gmail_processor.smart_setup")
 
 # ── Scan limits ───────────────────────────────────────────────────────────────
-MAX_MESSAGES  = 500   # inbox messages to scan
-MAX_SENT      = 400   # sent messages to index for reply detection
-SCAN_DAYS     = 365   # 12-month look-back
+# MAX_MESSAGES / MAX_SENT no longer used — analyze() paginates until exhausted.
+SCAN_DAYS_DEFAULT = 365   # default look-back passed to analyze(scan_days=…)
 TOP_N         = 20    # max contact suggestions to present
 TOP_DOMAINS   = 8     # max domain suggestions
 MIN_SCORE     = 35    # must clear this threshold to appear as suggestion
 MIN_MESSAGES  = 2     # min emails received from sender
+
+_BATCH_SLEEP  = 0.2   # seconds between list-pagination calls (rate-limit headroom)
 
 # ── Scoring weights ───────────────────────────────────────────────────────────
 W_REPLY           = 25    # per thread where user replied
@@ -219,16 +221,19 @@ class SmartSetup:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def analyze(
-        self, progress_cb=None
+        self,
+        scan_days: int | None = SCAN_DAYS_DEFAULT,
+        progress_cb=None,
     ) -> tuple[list[SenderStats], list[DomainSuggestion]]:
         """
         Full scan. Returns (contact_suggestions, domain_suggestions).
-        progress_cb(scanned, total, phase) called during the scan.
+        scan_days: look-back window in days; None means all time.
+        progress_cb(scanned, phase, page) called after each paginated batch.
         """
         from . import rules as cfg
 
-        sent_threads = self._index_sent_threads(progress_cb)
-        senders      = self._scan_inbox(sent_threads, progress_cb)
+        sent_threads = self._index_sent_threads(scan_days, progress_cb)
+        senders      = self._scan_inbox(sent_threads, scan_days, progress_cb)
 
         existing_emails  = set(cfg.CONTACT_RULES.keys())
         existing_domains = {
@@ -240,7 +245,7 @@ class SmartSetup:
         # Score + classify every sender
         for stats in senders.values():
             stats.domain_type = _classify_domain(stats.domain)
-            stats.domain_type = _behavioral_reclassify(stats)   # override if warranted
+            stats.domain_type = _behavioral_reclassify(stats)
             stats.score, stats.score_factors = _score(stats)
 
         # Contact suggestions: score threshold + exclude clearly non-personal types
@@ -287,77 +292,26 @@ class SmartSetup:
         except Exception:
             return ""
 
-    def _index_sent_threads(self, progress_cb=None) -> set[str]:
+    def _index_sent_threads(
+        self, scan_days: int | None, progress_cb=None
+    ) -> set[str]:
+        """Paginate sent messages to build a set of thread IDs (for reply detection)."""
         thread_ids: set[str] = set()
-        query      = f"in:sent newer_than:{SCAN_DAYS}d"
-        page_token = None
-        fetched    = 0
+        date_filter = f" newer_than:{scan_days}d" if scan_days else ""
+        query       = f"in:sent{date_filter}"
+        page_token  = None
+        fetched     = 0
+        page        = 0
 
-        if progress_cb:
-            progress_cb(0, MAX_SENT, phase="sent")
-
-        while fetched < MAX_SENT:
+        while True:
             try:
                 result = self.service.users().messages().list(
                     userId="me", q=query,
-                    maxResults=min(100, MAX_SENT - fetched),
+                    maxResults=500,
                     pageToken=page_token,
                 ).execute()
             except HttpError as e:
                 logger.warning(f"Error al indexar enviados: {e}")
-                break
-
-            for stub in result.get("messages", []):
-                thread_ids.add(stub.get("threadId", ""))
-                fetched += 1
-
-            if progress_cb:
-                progress_cb(fetched, MAX_SENT, phase="sent")
-
-            page_token = result.get("nextPageToken")
-            if not page_token:
-                break
-
-        logger.debug(f"Sent threads indexados: {len(thread_ids)}")
-        return thread_ids
-
-    def _scan_inbox(
-        self, sent_threads: set[str], progress_cb=None
-    ) -> dict[str, SenderStats]:
-        senders: dict[str, SenderStats] = {}
-
-        # Pass A: IMPORTANT + STARRED first (highest-value messages)
-        self._fetch_and_process(
-            query=f"newer_than:{SCAN_DAYS}d (is:important OR is:starred) -in:sent",
-            cap=200, sent_threads=sent_threads, senders=senders,
-            progress_cb=progress_cb, offset=0, total=MAX_MESSAGES,
-        )
-
-        # Pass B: General inbox (frequency signals for remaining quota)
-        self._fetch_and_process(
-            query=f"newer_than:{SCAN_DAYS}d in:inbox -in:sent",
-            cap=MAX_MESSAGES - len(senders), sent_threads=sent_threads,
-            senders=senders, progress_cb=progress_cb,
-            offset=len(senders), total=MAX_MESSAGES,
-        )
-
-        return senders
-
-    def _fetch_and_process(
-        self, query, cap, sent_threads, senders, progress_cb, offset, total
-    ):
-        page_token = None
-        fetched    = 0
-
-        while fetched < cap:
-            try:
-                result = self.service.users().messages().list(
-                    userId="me", q=query,
-                    maxResults=min(100, cap - fetched),
-                    pageToken=page_token,
-                ).execute()
-            except HttpError as e:
-                logger.warning(f"Error al listar: {e}")
                 break
 
             stubs = result.get("messages", [])
@@ -365,8 +319,66 @@ class SmartSetup:
                 break
 
             for stub in stubs:
-                if fetched >= cap:
-                    break
+                thread_ids.add(stub.get("threadId", ""))
+                fetched += 1
+
+            page += 1
+            if progress_cb:
+                progress_cb(fetched, phase="sent", page=page)
+
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+
+            time.sleep(_BATCH_SLEEP)
+
+        logger.debug(f"Sent threads indexados: {len(thread_ids)} en {page} páginas")
+        return thread_ids
+
+    def _scan_inbox(
+        self,
+        sent_threads: set[str],
+        scan_days:    int | None,
+        progress_cb=None,
+    ) -> dict[str, SenderStats]:
+        """Single paginated pass through inbox; avoids the deduplication problem
+        that the old two-pass approach caused when both passes were uncapped."""
+        senders: dict[str, SenderStats] = {}
+        date_filter = f" newer_than:{scan_days}d" if scan_days else ""
+        self._fetch_and_process(
+            query=f"in:inbox -in:sent{date_filter}",
+            sent_threads=sent_threads,
+            senders=senders,
+            progress_cb=progress_cb,
+            phase="inbox",
+        )
+        return senders
+
+    def _fetch_and_process(
+        self, query, sent_threads, senders, progress_cb, phase
+    ):
+        """Paginate a Gmail query, fetch metadata per message, and ingest signals.
+        Sleeps _BATCH_SLEEP seconds between list pages to stay within rate limits."""
+        page_token = None
+        fetched    = 0
+        page       = 0
+
+        while True:
+            try:
+                result = self.service.users().messages().list(
+                    userId="me", q=query,
+                    maxResults=500,
+                    pageToken=page_token,
+                ).execute()
+            except HttpError as e:
+                logger.warning(f"Error al listar (fase {phase}): {e}")
+                break
+
+            stubs = result.get("messages", [])
+            if not stubs:
+                break
+
+            for stub in stubs:
                 try:
                     msg = self.service.users().messages().get(
                         userId="me", id=stub["id"],
@@ -375,19 +387,20 @@ class SmartSetup:
                 except HttpError:
                     fetched += 1
                     continue
-
                 self._ingest(msg, sent_threads, senders)
                 fetched += 1
 
-                if progress_cb and fetched % 50 == 0:
-                    progress_cb(offset + fetched, total, phase="inbox")
+            page += 1
+            if progress_cb:
+                progress_cb(fetched, phase=phase, page=page)
 
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
 
-        if progress_cb:
-            progress_cb(offset + fetched, total, phase="inbox")
+            time.sleep(_BATCH_SLEEP)
+
+        logger.debug(f"Fase '{phase}': {fetched} mensajes en {page} páginas")
 
     def _ingest(self, message, sent_threads, senders):
         headers   = message.get("payload", {}).get("headers", [])
