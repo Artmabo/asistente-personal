@@ -20,6 +20,10 @@ CONTACT_RULES: dict[str, dict] = {
     "facturacion_electronica@banamex.com": {"label": "FINANZAS", "mark_important": True},
     "invoice+statements+acct_1ldl1bkzqzq0brf4@stripe.com": {"label": "FINANZAS", "mark_important": True},
     "arturomari@gmail.com": {"label": "PERSONAL", "mark_important": False},
+    "valentinamari2704@gmail.com": {"label": "VALENTINA", "mark_important": True},
+    "arturomarid@gmail.com": {"label": "ARTURO", "mark_important": True},
+    "personalbanking@info.cibc.com": {"label": "CIBC", "mark_important": True},
+    "segurosbanamex@banamex.com": {"label": "SEGUROS", "mark_important": True},
 }
 
 # ── Reglas por dominio del remitente ─────────────────────────────────────────

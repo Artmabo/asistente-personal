@@ -10,7 +10,7 @@ from pathlib import Path
 
 CHAT_HISTORY_PATH = Path("chat_history.json")
 _MAX_HISTORY = 20   # máximo de pares usuario/asistente
-_MODEL       = "claude-sonnet-4-20250514"
+_MODEL       = "claude-sonnet-4-6"
 
 
 def _load_env():

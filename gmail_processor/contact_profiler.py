@@ -16,7 +16,7 @@ from googleapiclient.errors import HttpError
 PROFILES_PATH = Path("contact_profiles.json")
 _MAX_EMAILS   = 50
 _MAX_BODY     = 500
-_MODEL        = "claude-sonnet-4-20250514"
+_MODEL        = "claude-sonnet-4-6"
 
 
 def _load_env():
@@ -91,6 +91,8 @@ class ContactProfiler:
         profile = self.get_profile(email)
         if not profile:
             return True
+        if profile.get("summary", "").startswith("No se pudo"):
+            return True
         try:
             built_at = datetime.fromisoformat(profile.get("built_at", ""))
             return (datetime.now() - built_at).days > 7
@@ -99,8 +101,54 @@ class ContactProfiler:
 
     # ── Construcción de un perfil ─────────────────────────────────────────────
 
+    @staticmethod
+    def _pre_classify(addr: str) -> str | None:
+        """Pre-clasifica relation_type por reglas de dominio. Devuelve None si no aplica."""
+        addr_lower = addr.lower()
+        domain     = addr_lower.split("@")[-1] if "@" in addr_lower else ""
+        local      = addr_lower.split("@")[0]  if "@" in addr_lower else addr_lower
+
+        # Gobierno
+        if ".gob.mx" in domain or ".gob." in domain:
+            return "gobierno"
+        for kw in ("sat.", "imss.", "infonavit.", "issste.", "sep.", "consar."):
+            if kw in addr_lower:
+                return "gobierno"
+
+        # Servicio
+        _SVC = {
+            "banamex", "bbva", "santander", "hsbc", "banorte", "scotiabank",
+            "citibank", "netflix", "spotify", "amazon", "apple", "google",
+            "microsoft", "telmex", "telcel", "att", "izzi", "totalplay",
+            "cfe", "pemex", "mercadolibre", "mercadopago", "paypal", "uber",
+            "rappi", "didi", "zoom", "dropbox", "twitter", "facebook",
+            "instagram", "linkedin", "youtube",
+        }
+        for svc in _SVC:
+            if svc in domain:
+                return "servicio"
+
+        # Familiar: dominio personal + local que no parece bot o empresa
+        _PERSONAL = {
+            "gmail.com", "hotmail.com", "icloud.com", "yahoo.com",
+            "outlook.com", "live.com", "me.com", "mac.com",
+            "hotmail.es", "yahoo.com.mx",
+        }
+        if domain in _PERSONAL:
+            _NON_PERSONAL = (
+                "noreply", "no-reply", "notificacion", "notification",
+                "info", "ventas", "soporte", "support", "contacto", "contact",
+                "admin", "factura", "invoice", "billing", "newsletter",
+                "marketing", "promo",
+            )
+            if not any(kw in local for kw in _NON_PERSONAL):
+                return "familiar"
+
+        return None
+
     def _build_single(self, service, client, addr: str) -> dict:
         emails_data = self._fetch_emails(service, addr)
+        pre_type    = self._pre_classify(addr)
 
         name          = ""
         first_contact = None
@@ -140,11 +188,12 @@ class ContactProfiler:
         ]
 
         claude_result = self._call_claude(client, {
-            "email":        addr,
-            "name":         name,
-            "total_emails": len(emails_data),
+            "email":         addr,
+            "name":          name,
+            "total_emails":  len(emails_data),
             "bidirectional": bidirectional,
-            "emails":       emails_for_prompt,
+            "emails":        emails_for_prompt,
+            "pre_type":      pre_type,
         })
 
         return {
@@ -281,12 +330,35 @@ class ContactProfiler:
             if em.get("has_attachment"):
                 emails_text += "(tiene adjunto)\n"
 
+        pre_type = data.get("pre_type")
+        if pre_type:
+            relation_rule = (
+                f'IMPORTANTE: La dirección "{data["email"]}" fue pre-clasificada '
+                f'como "{pre_type}" por reglas de dominio. Usa ese valor en '
+                f'"relation_type" a menos que el contenido indique claramente otra categoría.'
+            )
+        else:
+            relation_rule = (
+                'Para elegir relation_type usa estas reglas estrictas:\n'
+                '- "familiar": nombre de persona física con dominio personal '
+                '(gmail/hotmail/icloud/yahoo/outlook/live)\n'
+                '- "trabajo": dominio corporativo, contenido laboral, facturas, contratos\n'
+                '- "gobierno": dominio .gob.mx, .gob. o palabras sat/imss/infonavit/issste/sep\n'
+                '- "servicio": empresa de servicios (banco, tienda, plataforma, '
+                'suscripción, utilidad como CFE/Telmex/Telcel)\n'
+                '- "otro": SOLO si genuinamente no encaja en ninguna categoría anterior\n'
+                'Ejemplos: juan@gmail.com→familiar, facturacion@banamex.com→servicio, '
+                'notificaciones@sat.gob.mx→gobierno, contacto@empresa.com.mx→trabajo, '
+                'receipts@netflix.com→servicio'
+            )
+
         user_prompt = (
             f"Analiza estos correos de {data['name'] or data['email']} "
             f"({data['email']}).\n"
             f"Total: {data['total_emails']} correos. "
             f"Conversación bidireccional: {'sí' if data['bidirectional'] else 'no'}.\n\n"
             f"Correos (más recientes primero):\n{emails_text}\n\n"
+            f"{relation_rule}\n\n"
             "Responde SOLO con JSON válido con estos campos:\n"
             '{\n'
             '  "name": "nombre completo o apodo que usa",\n'
