@@ -11,14 +11,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+from googleapiclient.errors import HttpError
+
+from .utils import get_api_key
+
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
 _CLAUDE_MAX_RETRIES = 3
 _CLAUDE_BASE_DELAY  = 2.0
-
-from googleapiclient.errors import HttpError
-
-from .utils import get_api_key
 
 PROFILES_PATH = Path("contact_profiles.json")
 _MAX_EMAILS   = 50
