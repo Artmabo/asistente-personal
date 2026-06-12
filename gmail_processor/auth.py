@@ -21,6 +21,13 @@ def get_service(
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            if not os.path.exists(creds_path):
+                raise FileNotFoundError(
+                    f"No se encontró el archivo de credenciales en '{creds_path}'. "
+                    "Descarga el archivo OAuth 2.0 desde Google Cloud Console y "
+                    "guárdalo como config/credentials.json. "
+                    "Consulta config/README.md para instrucciones detalladas."
+                )
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
             creds = flow.run_local_server(port=0)
         with open(token_path, "w") as f:

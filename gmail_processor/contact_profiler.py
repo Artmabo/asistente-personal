@@ -5,7 +5,7 @@ Analiza hasta 50 correos por contacto y genera un perfil persistente en JSON.
 import base64
 import email.utils
 import json
-import os
+import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,23 +13,17 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import get_api_key
+
+logger = logging.getLogger("gmail_processor.contact_profiler")
+
+_CLAUDE_MAX_RETRIES = 3
+_CLAUDE_BASE_DELAY  = 2.0
+
 PROFILES_PATH = Path("contact_profiles.json")
 _MAX_EMAILS   = 50
 _MAX_BODY     = 500
 _MODEL        = "claude-sonnet-4-6"
-
-
-def _load_env():
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-
-
-def _get_api_key() -> str | None:
-    _load_env()
-    return os.getenv("ANTHROPIC_API_KEY")
 
 
 def _empty_profiles() -> dict:
@@ -52,7 +46,7 @@ class ContactProfiler:
         Construye un perfil por cada email en important_contacts.
         Persiste después de cada contacto para tolerar interrupciones.
         """
-        api_key = _get_api_key()
+        api_key = get_api_key()
         if not api_key:
             return {"error": "no_api_key"}
 
@@ -376,31 +370,47 @@ class ContactProfiler:
             '}'
         )
 
-        try:
-            response = client.messages.create(
-                model=_MODEL,
-                max_tokens=1000,
-                system=(
-                    "Eres un asistente que analiza correos electrónicos para ayudar "
-                    "a personas mayores a entender quién les escribe y qué les han "
-                    "enviado. Responde siempre en español, con lenguaje simple y claro. "
-                    "Nunca uses términos técnicos."
-                ),
-                messages=[{"role": "user", "content": user_prompt}],
-            )
-            text = response.content[0].text.strip()
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-            return json.loads(text)
-        except Exception as exc:
-            return {
-                "name": "", "relation_type": "otro",
-                "summary": f"No se pudo generar el análisis: {exc}",
-                "tone": "formal", "language": "español",
-                "timeline": [], "alerts": [], "key_topics": [],
-            }
+        delay = _CLAUDE_BASE_DELAY
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(1, _CLAUDE_MAX_RETRIES + 1):
+            try:
+                response = client.messages.create(
+                    model=_MODEL,
+                    max_tokens=1000,
+                    system=(
+                        "Eres un asistente que analiza correos electrónicos para ayudar "
+                        "a personas mayores a entender quién les escribe y qué les han "
+                        "enviado. Responde siempre en español, con lenguaje simple y claro. "
+                        "Nunca uses términos técnicos."
+                    ),
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
+                text = response.content[0].text.strip()
+                if "```json" in text:
+                    text = text.split("```json")[1].split("```")[0].strip()
+                elif "```" in text:
+                    text = text.split("```")[1].split("```")[0].strip()
+                return json.loads(text)
+            except Exception as exc:
+                last_exc = exc
+                status = getattr(getattr(exc, "status_code", None), "__index__", lambda: None)()
+                is_retryable = status in (429, 500, 503) if status is not None else False
+                if is_retryable and attempt < _CLAUDE_MAX_RETRIES:
+                    logger.warning(
+                        f"Claude API error ({status}), retry {attempt}/{_CLAUDE_MAX_RETRIES} "
+                        f"in {delay:.0f}s"
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                break
+
+        return {
+            "name": "", "relation_type": "otro",
+            "summary": f"No se pudo generar el análisis: {last_exc}",
+            "tone": "formal", "language": "español",
+            "timeline": [], "alerts": [], "key_topics": [],
+        }
 
     # ── Persistencia ──────────────────────────────────────────────────────────
 

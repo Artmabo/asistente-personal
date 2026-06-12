@@ -7,6 +7,7 @@ dominios para clasificación automática futura.
 Persiste estado en analysis_state.json y aprendizaje en user_patterns.json.
 """
 import json
+import logging
 import re
 import time
 import email.utils
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Callable
 
 from googleapiclient.errors import HttpError
+
+logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
 
@@ -609,8 +612,8 @@ class ContactAnalyzer:
                     body={"ids": ids, "addLabelIds": ["TRASH"], "removeLabelIds": ["INBOX"]},
                 ).execute()
                 total += len(ids)
-            except HttpError:
-                pass
+            except HttpError as e:
+                logger.warning(f"batchModify failed for {len(ids)} msgs from {addr}: {e}")
 
             page_token = result.get("nextPageToken")
             if not page_token:

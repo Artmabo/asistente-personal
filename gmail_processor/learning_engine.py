@@ -633,13 +633,13 @@ def _gate_reason(source: str, confidence: float, total: int) -> str:
 def _is_critical(sender: str, domain: str) -> bool:
     if sender in cfg.CONTACT_RULES:
         return True
-    protected = {
-        d
+    if domain and f"@{domain}" in cfg.CONTACT_RULES:
+        return True
+    return any(
+        domain in rule["domains"]
         for rule in cfg.DOMAIN_RULES
         if rule.get("action") == "mark_important"
-        for d in rule["domains"]
-    }
-    return domain in protected
+    )
 
 
 def _decay(last_accepted: str, lam: float) -> float:

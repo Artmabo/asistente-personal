@@ -131,8 +131,8 @@ class GmailActions:
                 if status == 403 and "insufficient" in str(e).lower():
                     logger.error(f"Insufficient permissions: {e}")
                     raise
-                # Rate limit — retry with backoff
-                if status in (403, 429) and attempt < _MAX_RETRIES:
+                # Rate limit or transient server error — retry with backoff
+                if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
                     logger.warning(f"Rate limit ({status}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
                     time.sleep(delay)
                     delay *= 2
