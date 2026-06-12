@@ -6,7 +6,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+SCOPES = ["https://mail.google.com/"]
 
 CATEGORIAS = {
     "spam":            "in:spam",
