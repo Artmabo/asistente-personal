@@ -74,6 +74,24 @@ class MorningBrief:
             except Exception:
                 continue
 
+        # Last cleanup run info
+        last_cleanup = self._read_json("cleanup_summary.json", {})
+        last_cleanup_info = None
+        if last_cleanup.get("ts"):
+            try:
+                ts = datetime.fromisoformat(last_cleanup["ts"])
+                trashed = last_cleanup.get("trashed", 0)
+                dry = last_cleanup.get("dry_run", True)
+                if not dry and trashed > 0 and (today - ts).days <= 7:
+                    last_cleanup_info = {
+                        "ts":      last_cleanup["ts"],
+                        "trashed": trashed,
+                        "skipped": last_cleanup.get("skipped", 0),
+                        "kept":    last_cleanup.get("kept", 0),
+                    }
+            except Exception:
+                pass
+
         # Texto del resumen
         parts: list[str] = []
         if personal > 0:
@@ -94,6 +112,7 @@ class MorningBrief:
             "storage_percent":     None,
             "personal_count":      personal,
             "spam_count":          spam,
+            "last_cleanup":        last_cleanup_info,
             "generated_at":        datetime.now().isoformat(timespec="seconds"),
         }
 

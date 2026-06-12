@@ -5,7 +5,6 @@ Analiza hasta 50 correos por contacto y genera un perfil persistente en JSON.
 import base64
 import email.utils
 import json
-import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,23 +12,12 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import get_api_key
+
 PROFILES_PATH = Path("contact_profiles.json")
 _MAX_EMAILS   = 50
 _MAX_BODY     = 500
 _MODEL        = "claude-sonnet-4-6"
-
-
-def _load_env():
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-
-
-def _get_api_key() -> str | None:
-    _load_env()
-    return os.getenv("ANTHROPIC_API_KEY")
 
 
 def _empty_profiles() -> dict:
@@ -52,7 +40,7 @@ class ContactProfiler:
         Construye un perfil por cada email en important_contacts.
         Persiste después de cada contacto para tolerar interrupciones.
         """
-        api_key = _get_api_key()
+        api_key = get_api_key()
         if not api_key:
             return {"error": "no_api_key"}
 

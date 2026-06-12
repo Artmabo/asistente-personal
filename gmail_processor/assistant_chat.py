@@ -4,26 +4,14 @@ Carga perfiles, estado de análisis, agenda y almacenamiento para dar respuestas
 contextuales. Guarda historial en chat_history.json (máx. 20 pares).
 """
 import json
-import os
 from datetime import datetime
 from pathlib import Path
+
+from .utils import get_api_key
 
 CHAT_HISTORY_PATH = Path("chat_history.json")
 _MAX_HISTORY = 20   # máximo de pares usuario/asistente
 _MODEL       = "claude-sonnet-4-6"
-
-
-def _load_env():
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-
-
-def _get_api_key() -> str | None:
-    _load_env()
-    return os.getenv("ANTHROPIC_API_KEY")
 
 
 class AssistantChat:
@@ -54,7 +42,7 @@ class AssistantChat:
         conversation_history: list[dict] | None = None,
     ) -> str:
         """Envía un mensaje a Claude y devuelve la respuesta en texto."""
-        api_key = _get_api_key()
+        api_key = get_api_key()
         if not api_key:
             return (
                 "Para usar el asistente necesito que configures tu clave de API "

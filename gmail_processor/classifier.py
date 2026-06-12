@@ -35,8 +35,12 @@ class EmailClassifier:
         search_text = f"{sender} {subject}"
 
         # 1. Contact rules (highest priority — always protected)
-        if sender in cfg.CONTACT_RULES:
-            rule = cfg.CONTACT_RULES[sender]
+        # Supports exact email matches AND domain-prefix entries like "@anahuac.mx"
+        contact_key = sender if sender in cfg.CONTACT_RULES else (
+            f"@{domain}" if domain and f"@{domain}" in cfg.CONTACT_RULES else None
+        )
+        if contact_key:
+            rule = cfg.CONTACT_RULES[contact_key]
             action = "mark_important" if rule.get("mark_important") else "label_only"
             return Classification(
                 email_type="personal",

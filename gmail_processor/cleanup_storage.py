@@ -10,9 +10,14 @@ Decision pipeline per message:
 --debug mode adds a structured pipeline trace at DEBUG log level:
   EMAIL → RULES → SCORE → CONFIDENCE → DECISION
 """
+import json
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 from googleapiclient.errors import HttpError
+
+_SUMMARY_PATH = Path("cleanup_summary.json")
 
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
@@ -74,6 +79,7 @@ class StorageCleaner:
             self.audit.flush()
 
         self._print_summary()
+        self._write_summary()
         return self.stats
 
     # ── Target loop ───────────────────────────────────────────────────────────
@@ -263,6 +269,8 @@ class StorageCleaner:
 
         if email in cfg.CONTACT_RULES:
             return f"contacto protegido ({email})"
+        if domain and f"@{domain}" in cfg.CONTACT_RULES:
+            return f"dominio protegido por contacto ({domain})"
         if domain in self._protected_domains:
             return f"dominio protegido ({domain})"
 
@@ -273,6 +281,20 @@ class StorageCleaner:
         return None
 
     # ── Summary ───────────────────────────────────────────────────────────────
+
+    def _write_summary(self):
+        """Persists a cleanup summary to cleanup_summary.json for the UI."""
+        summary = {
+            "ts":      datetime.now().isoformat(timespec="seconds"),
+            "dry_run": cfg.DRY_RUN,
+            **self.stats,
+        }
+        try:
+            _SUMMARY_PATH.write_text(
+                json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError as e:
+            logger.warning(f"Could not write cleanup summary: {e}")
 
     def _print_summary(self):
         s = self.stats
