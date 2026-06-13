@@ -230,6 +230,11 @@ class LearningEngine:
         self.state   = self._load()
         self.metrics = Metrics(self.state.setdefault("metrics", _new_metrics()))
         self._dirty  = False
+        self._domain_action_cache: dict[str, str] = {
+            domain: rule["action"]
+            for rule in cfg.DOMAIN_RULES
+            for domain in rule["domains"]
+        }
 
     # ── Score calculation ─────────────────────────────────────────────────────
 
@@ -262,13 +267,11 @@ class LearningEngine:
         if "CATEGORY_UPDATES" in label_ids:
             score -= 8;  factors.append("-8  categoría Actualizaciones")
 
-        for drule in cfg.DOMAIN_RULES:
-            if domain in drule["domains"]:
-                if drule["action"] == "mark_important":
-                    score += 35; factors.append(f"+35 dominio seguro ({domain})")
-                elif drule["action"] == "archive":
-                    score -= 5;  factors.append(f"-5  dominio servicios ({domain})")
-                break
+        domain_action = self._domain_action_cache.get(domain)
+        if domain_action == "mark_important":
+            score += 35; factors.append(f"+35 dominio seguro ({domain})")
+        elif domain_action == "archive":
+            score -= 5;  factors.append(f"-5  dominio servicios ({domain})")
 
         if email in cfg.CONTACT_RULES:
             score += 50; factors.append(f"+50 contacto protegido ({email})")
@@ -484,8 +487,15 @@ class LearningEngine:
     def persist(self):
         if not self._dirty:
             return
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self.state, f, indent=2, ensure_ascii=False)
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, indent=2, ensure_ascii=False)
+            tmp.replace(self.path)
+        except OSError as exc:
+            logger.error(f"No se pudo guardar estado: {exc}")
+            tmp.unlink(missing_ok=True)
+            return
         logger.info(f"Estado guardado → {self.path}")
         self._dirty = False
 
@@ -579,7 +589,7 @@ class LearningEngine:
                     logger.info(f"Estado migrado v{v} → v3")
                 logger.debug(f"Estado cargado desde {self.path}")
                 return data
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 logger.warning(f"Estado corrupto en {self.path}, reiniciando.")
         return copy.deepcopy(_EMPTY_STATE_V3)
 

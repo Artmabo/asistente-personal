@@ -65,9 +65,16 @@ class AuditLogger:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
-            for entry in combined:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                for entry in combined:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            tmp.replace(self.path)
+        except OSError as exc:
+            logger.error(f"No se pudo escribir audit log: {exc}")
+            tmp.unlink(missing_ok=True)
+            return
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 

@@ -2,6 +2,7 @@
 GmailProcessor: orchestrates fetching, classifying, and acting on emails.
 """
 import logging
+from logging.handlers import RotatingFileHandler
 from googleapiclient.errors import HttpError
 
 from .auth import get_service
@@ -21,12 +22,15 @@ def setup_logging(
 ):
     """Configures logging to both console and a rotating log file."""
     fmt = "%(asctime)s [%(levelname)-8s] %(message)s"
+    rotating = RotatingFileHandler(
+        log_file, encoding="utf-8", maxBytes=5 * 1024 * 1024, backupCount=3
+    )
     logging.basicConfig(
         level=level,
         format=fmt,
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_file, encoding="utf-8"),
+            rotating,
         ],
     )
 

@@ -134,7 +134,7 @@ def _default_weights() -> dict[str, float]:
 
 
 def _empty_stats() -> dict:
-    return {"total_scanned": 0, "personal": 0, "spam": 0, "commercial": 0}
+    return {"total_scanned": 0, "personal": 0, "spam": 0, "commercial": 0, "stale_pending": 0}
 
 
 def _empty_state() -> dict:
@@ -200,7 +200,8 @@ class ContactAnalyzer:
                     maxResults=min(remaining, 500),
                     pageToken=page_token,
                 ).execute()
-            except HttpError:
+            except HttpError as e:
+                logger.error(f"Error listando mensajes del inbox (página {page}): {e}")
                 break
 
             stubs = result.get("messages", [])
@@ -218,7 +219,8 @@ class ContactAnalyzer:
                         format="metadata",
                         metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
                     ).execute()
-                except HttpError:
+                except HttpError as e:
+                    logger.warning(f"No se pudo obtener mensaje {stub['id']}: {e}")
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
@@ -598,7 +600,8 @@ class ContactAnalyzer:
                 result = self.svc.users().messages().list(
                     userId="me", q=query, maxResults=500, pageToken=page_token,
                 ).execute()
-            except HttpError:
+            except HttpError as e:
+                logger.error(f"Error listando mensajes de {addr}: {e}")
                 return -1
 
             msgs = result.get("messages", [])
@@ -618,12 +621,16 @@ class ContactAnalyzer:
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
+            time.sleep(_BATCH_SLEEP)
 
         return total
 
     # ── Escribir en rules.py ──────────────────────────────────────────────────
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
+        import re as _re
+        if not _re.fullmatch(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", email_addr):
+            return {"error": f"Dirección de email inválida: {email_addr!r}"}
         try:
             import importlib
             import gmail_processor.rules as rules_mod
@@ -670,9 +677,12 @@ class ContactAnalyzer:
         return _empty_state()
 
     def _save_state(self):
-        self.path.write_text(
-            json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        try:
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError as exc:
+            logger.error(f"No se pudo guardar estado de análisis: {exc}")
 
     def _load_patterns(self) -> dict:
         if PATTERNS_PATH.exists():
@@ -683,16 +693,26 @@ class ContactAnalyzer:
         return _empty_patterns()
 
     def _save_patterns(self):
-        PATTERNS_PATH.write_text(
-            json.dumps(self.patterns, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        try:
+            tmp = PATTERNS_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.patterns, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(PATTERNS_PATH)
+        except OSError as exc:
+            logger.error(f"No se pudo guardar patrones de usuario: {exc}")
 
     def _update_stats(self):
-        reviewed = self.state["reviewed"]
-        stats    = self.state.setdefault("stats", _empty_stats())
+        reviewed     = self.state["reviewed"]
+        pending_meta = self.state.get("pending_meta", {})
+        stats        = self.state.setdefault("stats", _empty_stats())
         stats["personal"]   = sum(1 for e in reviewed.values() if e.get("decision") == "personal")
         stats["spam"]       = sum(1 for e in reviewed.values() if e.get("decision") == "spam")
         stats["commercial"] = sum(1 for e in reviewed.values() if e.get("decision") == "commercial")
+
+        cutoff = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+        stats["stale_pending"] = sum(
+            1 for m in pending_meta.values()
+            if m.get("asked_at", "") < cutoff
+        )
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────

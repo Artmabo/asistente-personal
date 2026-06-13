@@ -207,6 +207,8 @@ def format_next_run(iso: str | None) -> str:
         now   = datetime.now()
         delta = dt - now
         days  = delta.days
+        if days < 0:
+            return f"vencida — {dt.strftime('%d/%m/%Y %H:%M')}"
         if days == 0:
             h = delta.seconds // 3600
             if h == 0:

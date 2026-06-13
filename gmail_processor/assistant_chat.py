@@ -163,6 +163,9 @@ class AssistantChat:
         return []
 
     def _save_history(self):
-        CHAT_HISTORY_PATH.write_text(
-            json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        try:
+            CHAT_HISTORY_PATH.write_text(
+                json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
