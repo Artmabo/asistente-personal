@@ -200,7 +200,8 @@ class ContactAnalyzer:
                     maxResults=min(remaining, 500),
                     pageToken=page_token,
                 ).execute()
-            except HttpError:
+            except HttpError as e:
+                logger.warning(f"Error al listar mensajes (página {page}): {e}")
                 break
 
             stubs = result.get("messages", [])
@@ -432,6 +433,53 @@ class ContactAnalyzer:
         self.patterns["decisions_count"] = self.patterns.get("decisions_count", 0) + 1
         self._save_patterns()
 
+    def get_unsubscribe_candidates(self, max_results: int = 20) -> list[dict]:
+        """
+        Returns senders that are good candidates for manual unsubscription:
+        - Have an unsubscribe link (has_unsubscribe signal)
+        - Score below 50 (leaning toward commercial/spam)
+        - Not yet reviewed as personal
+        - Not yet trashed (still in pending or auto-spam)
+
+        Results are sorted by email frequency (count) descending so the
+        highest-volume candidates appear first.
+        """
+        pending_meta = self.state.get("pending_meta", {})
+        reviewed     = self.state.get("reviewed",     {})
+
+        candidates: list[dict] = []
+
+        for addr, meta in pending_meta.items():
+            signals = meta.get("signals", [])
+            score   = meta.get("score",   50)
+            if "has_unsubscribe" in signals and score < 50:
+                candidates.append({
+                    "email":           addr,
+                    "name":            meta.get("name", ""),
+                    "score":           score,
+                    "count":           meta.get("count", 0),
+                    "sample_subjects": meta.get("sample_subjects", []),
+                    "last_seen":       meta.get("last_seen", ""),
+                })
+
+        # Also include auto-spam senders with unsubscribe links that are still deliverable
+        for addr, entry in reviewed.items():
+            if entry.get("decision") != "spam" or not entry.get("auto"):
+                continue
+            signals = entry.get("signals", [])
+            if "has_unsubscribe" in signals:
+                candidates.append({
+                    "email":           addr,
+                    "name":            entry.get("name", ""),
+                    "score":           entry.get("score", 0),
+                    "count":           0,
+                    "sample_subjects": [],
+                    "last_seen":       "",
+                })
+
+        candidates.sort(key=lambda x: x["count"], reverse=True)
+        return candidates[:max_results]
+
     def get_learning_stats(self) -> dict:
         """Devuelve estadísticas de aprendizaje para la UI."""
         domain_votes = self.patterns.get("domain_votes", {})
@@ -549,7 +597,8 @@ class ContactAnalyzer:
                 result = self.svc.users().messages().list(
                     userId="me", q=query, maxResults=500, pageToken=page_token,
                 ).execute()
-            except HttpError:
+            except HttpError as e:
+                logger.warning(f"Error al indexar enviados (página {page}): {e}")
                 break
 
             stubs = result.get("messages", [])
@@ -651,7 +700,9 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            new_line = f'    "{email_addr}": {{"label": "{label}", "mark_important": True}},'
+            # Escape characters that would break the Python string literal
+            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
+            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
             rules_path.write_text("\n".join(lines), encoding="utf-8")
             importlib.reload(rules_mod)

@@ -393,8 +393,8 @@ class ContactProfiler:
                 return json.loads(text)
             except Exception as exc:
                 last_exc = exc
-                status = getattr(getattr(exc, "status_code", None), "__index__", lambda: None)()
-                is_retryable = status in (429, 500, 503) if status is not None else False
+                status = getattr(exc, "status_code", None)
+                is_retryable = isinstance(status, int) and status in (429, 500, 503)
                 if is_retryable and attempt < _CLAUDE_MAX_RETRIES:
                     logger.warning(
                         f"Claude API error ({status}), retry {attempt}/{_CLAUDE_MAX_RETRIES} "
