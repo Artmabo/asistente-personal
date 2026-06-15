@@ -206,6 +206,8 @@ def format_next_run(iso: str | None) -> str:
         dt    = datetime.fromisoformat(iso)
         now   = datetime.now()
         delta = dt - now
+        if delta.total_seconds() < 0:
+            return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"
         days  = delta.days
         if days == 0:
             h = delta.seconds // 3600

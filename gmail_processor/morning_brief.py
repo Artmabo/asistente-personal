@@ -46,11 +46,24 @@ class MorningBrief:
         personal      = stats.get("personal", 0)
         spam          = stats.get("spam",     0)
 
-        # Alertas de los perfiles
+        # Alertas de los perfiles + perfiles desactualizados
         alerts: list[str] = []
-        for p in profiles.values():
+        stale_profiles: list[str] = []
+        for addr, p in profiles.items():
             for al in p.get("alerts", [])[:1]:
                 alerts.append(al)
+            try:
+                built_at = datetime.fromisoformat(p.get("built_at", ""))
+                if (today - built_at).days > 7:
+                    stale_profiles.append(p.get("name") or addr)
+            except Exception:
+                stale_profiles.append(p.get("name") or addr)
+        if stale_profiles:
+            n = len(stale_profiles)
+            alerts.append(
+                f"{n} perfil{'es' if n > 1 else ''} de contacto desactualizado{'s' if n > 1 else ''} "
+                f"(más de 7 días sin actualizar). Ve a Mis Contactos → Actualizar perfiles."
+            )
 
         # Correos nuevos de contactos importantes: leemos reviewed con fecha reciente
         new_from_important: list[dict] = []
