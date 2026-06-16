@@ -35,7 +35,7 @@ def get_gmail_service(creds_path="config/credentials.json", token_path="token.js
             print("\nSCOPES DEL TOKEN:")
             print(creds.scopes)
 
-        # Guardar token
+        # Guardar token (tanto si fue refrescado como si es nuevo)
         with open(token_path, "w") as token:
             token.write(creds.to_json())
 

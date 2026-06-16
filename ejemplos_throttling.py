@@ -4,7 +4,7 @@ Ejemplos de uso avanzado del sistema de throttling adaptativo.
 Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
 """
 
-from limpiar_correos import limpiar_correos, ThrottleManager
+from limpiar_correos import limpiar_correos
 from asistente_personal import get_gmail_service
 
 
@@ -89,37 +89,6 @@ def ejemplo_4_comparacion_modos():
     
     print("\n✅ RECOMENDACIÓN: Usar modo CONSERVADOR siempre")
 
-
-def ejemplo_5_monitorear_throttle():
-    """Crear custom throttle manager y monitorear estado."""
-    print("\n" + "="*60)
-    print("EJEMPLO 5: Monitoreo de Throttle Manager")
-    print("="*60)
-    
-    throttle = ThrottleManager(
-        initial_delay=0.5,
-        min_delay=0.3,
-        max_delay=5.0
-    )
-    
-    print(f"\n Estado inicial:")
-    print(f"   Delay: {throttle.current_delay}s")
-    print(f"   Éxitos: {throttle.success_count}")
-    print(f"   Errores: {throttle.error_count}")
-    print(f"   Circuit broken: {throttle.circuit_broken}")
-    
-    # Simular algunos éxitos
-    for _ in range(5):
-        throttle.record_success()
-    
-    print(f"\n Después de 5 éxitos:")
-    print(f"   Delay (reducido): {throttle.current_delay:.3f}s")
-    
-    # Simular error de rate limit
-    throttle.record_rate_limit_error()
-    
-    print(f"\n Después de error 429:")
-    print(f"   Delay (aumentado): {throttle.current_delay:.3f}s")
 
 
 def ejemplo_6_errores_comunes():

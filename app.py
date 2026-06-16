@@ -259,6 +259,10 @@ def _derivar_label(email: str, name: str) -> str:
 
 
 def _proteger_remitente(email: str, name: str) -> dict:
+    import re
+    if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
+        return {"error": f"Dirección de correo no válida: {email}"}
+
     try:
         import importlib
         import gmail_processor.rules as rules_mod
@@ -292,7 +296,8 @@ def _proteger_remitente(email: str, name: str) -> dict:
         if insert_at == -1:
             return {"error": "No se encontró CONTACT_RULES en rules.py"}
 
-        new_line = f'    "{email}": {{"label": "{label}", "mark_important": True}},'
+        # Use repr() so quotes, backslashes and special chars are safely escaped
+        new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
         lines.insert(insert_at, new_line)
 
         with open(rules_path, "w", encoding="utf-8") as f:
