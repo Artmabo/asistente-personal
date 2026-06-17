@@ -4,6 +4,7 @@ Carga perfiles, estado de análisis, agenda y almacenamiento para dar respuestas
 contextuales. Guarda historial en chat_history.json (máx. 20 pares).
 """
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from .utils import get_api_key
 
 CHAT_HISTORY_PATH = Path("chat_history.json")
 _MAX_HISTORY = 20   # máximo de pares usuario/asistente
-_MODEL       = "claude-sonnet-4-6"
+_MODEL       = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 
 class AssistantChat:

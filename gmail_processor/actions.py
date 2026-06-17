@@ -4,6 +4,7 @@ Actions: executes Gmail API operations with retry logic.
 All public methods return True on success, False on failure.
 In dry_run mode they log the intended action and return True without touching the API.
 """
+import json
 import time
 import logging
 from googleapiclient.errors import HttpError
@@ -127,8 +128,8 @@ class GmailActions:
                 return method(**kwargs).execute()
             except HttpError as e:
                 status = int(e.resp.status)
-                # Hard permission failure — raise immediately
-                if status == 403 and "insufficient" in str(e).lower():
+                # Hard permission failure — raise immediately (do not retry)
+                if status == 403 and _is_permission_error(e):
                     logger.error(f"Insufficient permissions: {e}")
                     raise
                 # Rate limit or transient server error — retry with backoff
@@ -140,3 +141,17 @@ class GmailActions:
                 logger.error(f"API error {status} on attempt {attempt}: {e}")
                 return None
         return None
+
+
+def _is_permission_error(exc: HttpError) -> bool:
+    """Returns True when the 403 signals missing OAuth scopes, not a quota hit."""
+    _PERMISSION_REASONS = {"insufficientPermissions", "authError"}
+    try:
+        body = json.loads(exc.content)
+        reasons = {
+            err.get("reason", "")
+            for err in body.get("error", {}).get("errors", [])
+        }
+        return bool(reasons & _PERMISSION_REASONS)
+    except Exception:
+        return "insufficient" in str(exc).lower()

@@ -1,12 +1,9 @@
 import os
+import sys
 from datetime import datetime, timedelta
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-SCOPES = ["https://mail.google.com/"]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 CATEGORIAS = {
     "spam":            "in:spam",
@@ -26,19 +23,9 @@ _NOMBRES_ES = {
 
 
 def obtener_servicio(creds_path="config/credentials.json", token_path="token.json"):
-    """OAuth flow para uso independiente del script."""
-    creds = None
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(token_path, 'w') as token:
-            token.write(creds.to_json())
-    return build('gmail', 'v1', credentials=creds)
+    """Builds an authenticated Gmail service. Delegates to gmail_processor.auth."""
+    from gmail_processor.auth import get_service
+    return get_service(creds_path=creds_path, token_path=token_path)
 
 
 def mover_lote_a_papelera(service, ids: list) -> int:
@@ -63,7 +50,7 @@ def mover_lote_a_papelera(service, ids: list) -> int:
     return total
 
 
-def limpiar_bandeja(service, query_custom=None, categorias=None):
+def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     """
     Mueve a la papelera los correos que coincidan con la query o categorías.
 
@@ -71,6 +58,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None):
         service:      servicio Gmail autenticado
         query_custom: query Gmail directa (se ignora si se pasan categorias)
         categorias:   lista de claves de CATEGORIAS (spam, promociones, etc.)
+        dry_run:      si True, sólo cuenta mensajes sin moverlos
 
     Returns:
         {'procesados': int, 'exitos': int, 'errores': int}
@@ -82,6 +70,9 @@ def limpiar_bandeja(service, query_custom=None, categorias=None):
     else:
         fecha = (datetime.now() - timedelta(days=180)).strftime("%Y/%m/%d")
         queries = {"consulta": f"before:{fecha} is:unread"}
+
+    if dry_run:
+        print("  [DRY RUN] Solo contando mensajes, no se moverá nada.")
 
     total_procesados = 0
     total_exitos = 0
@@ -113,9 +104,13 @@ def limpiar_bandeja(service, query_custom=None, categorias=None):
                 break
 
             ids = [m['id'] for m in messages]
-            print(f"  Página {page_num}: {len(ids)} correos → enviando a papelera...", end="", flush=True)
-            exitos = mover_lote_a_papelera(service, ids)
-            print(f" {exitos} movidos.")
+            if dry_run:
+                print(f"  Página {page_num}: {len(ids)} correos encontrados (no se mueven).")
+                exitos = len(ids)
+            else:
+                print(f"  Página {page_num}: {len(ids)} correos → enviando a papelera...", end="", flush=True)
+                exitos = mover_lote_a_papelera(service, ids)
+                print(f" {exitos} movidos.")
             cat_total += len(ids)
             cat_exitos += exitos
 
@@ -125,7 +120,8 @@ def limpiar_bandeja(service, query_custom=None, categorias=None):
 
         if len(queries) > 1:
             nombre_es = _NOMBRES_ES.get(nombre, nombre)
-            print(f"  [{nombre_es}] {cat_exitos}/{cat_total} enviados a papelera")
+            label = "encontrados" if dry_run else "enviados a papelera"
+            print(f"  [{nombre_es}] {cat_exitos}/{cat_total} {label}")
 
         total_procesados += cat_total
         total_exitos += cat_exitos
@@ -183,7 +179,21 @@ def borrar_correos_antiguos(service=None):
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="Limpiar bandeja de Gmail")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Solo cuenta los mensajes que se eliminarían, sin moverlos",
+    )
+    parser.add_argument(
+        "--categoria", choices=list(CATEGORIAS.keys()), default=None,
+        help="Categoría específica a limpiar (por defecto: no leídos > 6 meses)",
+    )
+    args = parser.parse_args()
+
     svc = obtener_servicio()
-    resultado = limpiar_bandeja(svc)
+    categorias = [args.categoria] if args.categoria else None
+    resultado = limpiar_bandeja(svc, categorias=categorias, dry_run=args.dry_run)
     if resultado:
-        print(f"\nResultado: {resultado}")
+        accion = "encontrados" if args.dry_run else "enviados a papelera"
+        print(f"\nTotal {accion}: {resultado['exitos']} / {resultado['procesados']}")
