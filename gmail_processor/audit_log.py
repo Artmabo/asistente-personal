@@ -73,15 +73,19 @@ class AuditLogger:
 
     def recent(self, n: int = 20) -> list[dict]:
         """Returns the n most recent entries (including un-flushed buffer)."""
-        return (self._load() + self._buf)[-n:]
+        buf_entries = self._buf[-n:]
+        if len(buf_entries) >= n:
+            return buf_entries
+        persisted = self._load_tail(n - len(buf_entries))
+        return (persisted + self._buf)[-n:]
 
     def stats_summary(self) -> dict:
         """Counts decisions from the persisted log."""
         counts: dict[str, int] = {"TRASH": 0, "KEEP": 0, "SKIP": 0}
         for entry in self._load():
-            counts[entry.get("decision", "")] = (
-                counts.get(entry.get("decision", ""), 0) + 1
-            )
+            decision = entry.get("decision", "")
+            if decision in counts:
+                counts[decision] += 1
         return counts
 
     # ── Private ───────────────────────────────────────────────────────────────
@@ -92,5 +96,17 @@ class AuditLogger:
         try:
             with open(self.path, encoding="utf-8") as f:
                 return [json.loads(line) for line in f if line.strip()]
+        except (OSError, json.JSONDecodeError):
+            return []
+
+    def _load_tail(self, n: int) -> list[dict]:
+        """Reads only the last n lines from the log file without loading all entries."""
+        if not self.path.exists() or n <= 0:
+            return []
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                lines = [ln for ln in f if ln.strip()]
+            tail = lines[-n:]
+            return [json.loads(ln) for ln in tail]
         except (OSError, json.JSONDecodeError):
             return []

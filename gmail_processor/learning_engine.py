@@ -484,8 +484,14 @@ class LearningEngine:
     def persist(self):
         if not self._dirty:
             return
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self.state, f, indent=2, ensure_ascii=False)
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, indent=2, ensure_ascii=False)
+            tmp.replace(self.path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
         logger.info(f"Estado guardado → {self.path}")
         self._dirty = False
 
