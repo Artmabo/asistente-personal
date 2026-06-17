@@ -46,6 +46,9 @@ class MorningBrief:
         personal      = stats.get("personal", 0)
         spam          = stats.get("spam",     0)
 
+        # FIX: define today before any code that uses it
+        today = datetime.now()
+
         # Alertas de los perfiles + perfiles desactualizados
         alerts: list[str] = []
         stale_profiles: list[str] = []
@@ -67,7 +70,6 @@ class MorningBrief:
 
         # Correos nuevos de contactos importantes: leemos reviewed con fecha reciente
         new_from_important: list[dict] = []
-        today = datetime.now()
         reviewed = state.get("reviewed", {})
         for addr, entry in reviewed.items():
             if entry.get("decision") != "personal":
@@ -86,6 +88,29 @@ class MorningBrief:
                     })
             except Exception:
                 continue
+
+        # Contactos importantes sin actividad reciente (nueva funcionalidad)
+        dormant_contacts: list[dict] = []
+        for addr, entry in reviewed.items():
+            if entry.get("decision") != "personal":
+                continue
+            profile   = profiles.get(addr, {})
+            last_c    = profile.get("last_contact", "")
+            if not last_c:
+                continue
+            try:
+                d          = datetime.strptime(last_c, "%Y-%m-%d")
+                days_since = (today - d).days
+                if 30 <= days_since <= 365:
+                    dormant_contacts.append({
+                        "name":         profile.get("name", addr) or addr,
+                        "email":        addr,
+                        "last_contact": last_c,
+                        "days_since":   days_since,
+                    })
+            except Exception:
+                continue
+        dormant_contacts.sort(key=lambda x: x["days_since"])
 
         # Last cleanup run info
         last_cleanup = self._read_json("cleanup_summary.json", {})
@@ -126,6 +151,7 @@ class MorningBrief:
             "personal_count":      personal,
             "spam_count":          spam,
             "last_cleanup":        last_cleanup_info,
+            "dormant_contacts":    dormant_contacts[:3],
             "generated_at":        datetime.now().isoformat(timespec="seconds"),
         }
 

@@ -227,9 +227,9 @@ class LearningEngine:
 
     def __init__(self, state_path: str = "learning_state.json"):
         self.path    = Path(state_path)
+        self._dirty  = False                   # must be set before _load() so migration can mark dirty
         self.state   = self._load()
         self.metrics = Metrics(self.state.setdefault("metrics", _new_metrics()))
-        self._dirty  = False
 
     # ── Score calculation ─────────────────────────────────────────────────────
 
@@ -583,6 +583,7 @@ class LearningEngine:
                 if v < 3:
                     data = _migrate_to_v3(data)
                     logger.info(f"Estado migrado v{v} → v3")
+                    self._dirty = True   # persist migrated state on next save
                 logger.debug(f"Estado cargado desde {self.path}")
                 return data
             except (json.JSONDecodeError, KeyError, TypeError):

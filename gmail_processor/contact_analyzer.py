@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from . import rules as cfg
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -638,6 +640,10 @@ class ContactAnalyzer:
     # ── Borrar correos de un remitente ────────────────────────────────────────
 
     def _trash_sender(self, addr: str) -> int:
+        if cfg.DRY_RUN:
+            logger.info(f"[DRY RUN] Would trash all emails from {addr}")
+            return 0
+
         query      = f"from:{addr}"
         page_token = None
         total      = 0
@@ -700,8 +706,13 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
+            # Strip control characters and escape for Python string literal
+            safe_addr = (
+                email_addr
+                .replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .translate(str.maketrans("", "", "\n\r\t\x00"))
+            )
             new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
             rules_path.write_text("\n".join(lines), encoding="utf-8")
@@ -721,9 +732,15 @@ class ContactAnalyzer:
         return _empty_state()
 
     def _save_state(self):
-        self.path.write_text(
-            json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(self.path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _load_patterns(self) -> dict:
         if PATTERNS_PATH.exists():
@@ -734,9 +751,15 @@ class ContactAnalyzer:
         return _empty_patterns()
 
     def _save_patterns(self):
-        PATTERNS_PATH.write_text(
-            json.dumps(self.patterns, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = PATTERNS_PATH.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self.patterns, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(PATTERNS_PATH)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _update_stats(self):
         reviewed = self.state["reviewed"]
