@@ -13,7 +13,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, atomic_write_json
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -423,6 +423,4 @@ class ContactProfiler:
         return _empty_profiles()
 
     def _save(self):
-        PROFILES_PATH.write_text(
-            json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_write_json(PROFILES_PATH, self.data, ensure_ascii=False, indent=2)

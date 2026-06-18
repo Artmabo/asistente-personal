@@ -14,7 +14,7 @@ This avoids one open() per message during high-volume runs.
 """
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger("gmail_processor.audit")
@@ -86,6 +86,27 @@ class AuditLogger:
             decision = entry.get("decision", "")
             if decision in counts:
                 counts[decision] += 1
+        return counts
+
+    def recent_24h_summary(self) -> dict:
+        """Counts decisions logged in the last 24 hours (from disk + buffer).
+
+        Returns {"trash": int, "keep": int, "skip": int, "total": int}.
+        Useful for surfacing daily activity in the morning brief.
+        """
+        cutoff = (datetime.now() - timedelta(hours=24)).isoformat(timespec="seconds")
+        counts: dict[str, int] = {"trash": 0, "keep": 0, "skip": 0}
+        all_entries = self._load() + self._buf
+        for entry in all_entries:
+            if entry.get("ts", "") >= cutoff:
+                decision = entry.get("decision", "").upper()
+                if decision == "TRASH":
+                    counts["trash"] += 1
+                elif decision == "KEEP":
+                    counts["keep"] += 1
+                elif decision == "SKIP":
+                    counts["skip"] += 1
+        counts["total"] = counts["trash"] + counts["keep"] + counts["skip"]
         return counts
 
     # ── Private ───────────────────────────────────────────────────────────────

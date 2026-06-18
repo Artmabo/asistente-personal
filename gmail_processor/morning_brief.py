@@ -47,6 +47,7 @@ class MorningBrief:
         spam          = stats.get("spam",     0)
 
         # Alertas de los perfiles + perfiles desactualizados
+        today  = datetime.now()
         alerts: list[str] = []
         stale_profiles: list[str] = []
         for addr, p in profiles.items():
@@ -67,7 +68,6 @@ class MorningBrief:
 
         # Correos nuevos de contactos importantes: leemos reviewed con fecha reciente
         new_from_important: list[dict] = []
-        today = datetime.now()
         reviewed = state.get("reviewed", {})
         for addr, entry in reviewed.items():
             if entry.get("decision") != "personal":
@@ -105,6 +105,17 @@ class MorningBrief:
             except Exception:
                 pass
 
+        # 24-hour audit activity (reads from audit_log.jsonl if it exists)
+        audit_24h: dict | None = None
+        try:
+            from .audit_log import AuditLogger
+            _audit = AuditLogger()
+            summary = _audit.recent_24h_summary()
+            if summary["total"] > 0:
+                audit_24h = summary
+        except Exception:
+            pass
+
         # Texto del resumen
         parts: list[str] = []
         if personal > 0:
@@ -126,6 +137,7 @@ class MorningBrief:
             "personal_count":      personal,
             "spam_count":          spam,
             "last_cleanup":        last_cleanup_info,
+            "audit_24h":           audit_24h,
             "generated_at":        datetime.now().isoformat(timespec="seconds"),
         }
 

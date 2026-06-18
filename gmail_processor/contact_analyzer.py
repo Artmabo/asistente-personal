@@ -17,6 +17,9 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import atomic_write_json
+from . import rules as cfg
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -655,14 +658,19 @@ class ContactAnalyzer:
                 break
 
             ids = [m["id"] for m in msgs]
-            try:
-                self.svc.users().messages().batchModify(
-                    userId="me",
-                    body={"ids": ids, "addLabelIds": ["TRASH"], "removeLabelIds": ["INBOX"]},
-                ).execute()
+
+            if cfg.DRY_RUN:
+                logger.info(f"[DRY RUN] _trash_sender: would trash {len(ids)} msgs from {addr}")
                 total += len(ids)
-            except HttpError as e:
-                logger.warning(f"batchModify failed for {len(ids)} msgs from {addr}: {e}")
+            else:
+                try:
+                    self.svc.users().messages().batchModify(
+                        userId="me",
+                        body={"ids": ids, "addLabelIds": ["TRASH"], "removeLabelIds": ["INBOX"]},
+                    ).execute()
+                    total += len(ids)
+                except HttpError as e:
+                    logger.warning(f"batchModify failed for {len(ids)} msgs from {addr}: {e}")
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -721,9 +729,7 @@ class ContactAnalyzer:
         return _empty_state()
 
     def _save_state(self):
-        self.path.write_text(
-            json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_write_json(self.path, self.state, ensure_ascii=False, indent=2)
 
     def _load_patterns(self) -> dict:
         if PATTERNS_PATH.exists():
@@ -734,9 +740,7 @@ class ContactAnalyzer:
         return _empty_patterns()
 
     def _save_patterns(self):
-        PATTERNS_PATH.write_text(
-            json.dumps(self.patterns, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_write_json(PATTERNS_PATH, self.patterns, ensure_ascii=False, indent=2)
 
     def _update_stats(self):
         reviewed = self.state["reviewed"]

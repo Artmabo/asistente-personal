@@ -1,7 +1,24 @@
 """
 Shared utilities for gmail_processor modules.
 """
+import json
 import os
+from pathlib import Path
+
+
+def atomic_write_json(path: Path, data, **kwargs) -> None:
+    """Writes JSON to `path` atomically via a temp file + rename.
+
+    Prevents corrupted state files if the process is interrupted mid-write.
+    Extra kwargs are forwarded to json.dumps (e.g. indent=2, ensure_ascii=False).
+    """
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(data, **kwargs), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def get_api_key() -> str | None:

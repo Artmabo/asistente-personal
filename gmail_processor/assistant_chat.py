@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from .utils import get_api_key
+from .utils import get_api_key, atomic_write_json
 
 CHAT_HISTORY_PATH = Path("chat_history.json")
 _MAX_HISTORY = 20   # máximo de pares usuario/asistente
@@ -164,6 +164,4 @@ class AssistantChat:
         return []
 
     def _save_history(self):
-        CHAT_HISTORY_PATH.write_text(
-            json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_write_json(CHAT_HISTORY_PATH, self.history, ensure_ascii=False, indent=2)
