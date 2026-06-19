@@ -4,11 +4,14 @@ Carga perfiles, estado de análisis, agenda y almacenamiento para dar respuestas
 contextuales. Guarda historial en chat_history.json (máx. 20 pares).
 """
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 
 from .utils import get_api_key
+
+logger = logging.getLogger("gmail_processor.chat")
 
 CHAT_HISTORY_PATH = Path("chat_history.json")
 _MAX_HISTORY = 20   # máximo de pares usuario/asistente
@@ -164,6 +167,9 @@ class AssistantChat:
         return []
 
     def _save_history(self):
-        CHAT_HISTORY_PATH.write_text(
-            json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        try:
+            CHAT_HISTORY_PATH.write_text(
+                json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError as e:
+            logger.warning(f"No se pudo guardar el historial de chat: {e}")

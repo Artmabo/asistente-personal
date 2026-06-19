@@ -385,12 +385,6 @@ class ContactProfiler:
                     ),
                     messages=[{"role": "user", "content": user_prompt}],
                 )
-                text = response.content[0].text.strip()
-                if "```json" in text:
-                    text = text.split("```json")[1].split("```")[0].strip()
-                elif "```" in text:
-                    text = text.split("```")[1].split("```")[0].strip()
-                return json.loads(text)
             except Exception as exc:
                 last_exc = exc
                 status = getattr(exc, "status_code", None)
@@ -403,6 +397,27 @@ class ContactProfiler:
                     time.sleep(delay)
                     delay *= 2
                     continue
+                break
+
+            # Parse JSON outside the retry loop — a malformed response is not retryable
+            try:
+                text = response.content[0].text.strip()
+                if "```json" in text:
+                    text = text.split("```json")[1].split("```")[0].strip()
+                elif "```" in text:
+                    text = text.split("```")[1].split("```")[0].strip()
+                return json.loads(text)
+            except (json.JSONDecodeError, IndexError, AttributeError) as exc:
+                raw_snippet = ""
+                try:
+                    raw_snippet = repr(response.content[0].text[:100])
+                except Exception:
+                    pass
+                logger.warning(
+                    f"Claude returned non-JSON for {data.get('email', '?')}: {exc}. "
+                    f"Raw start: {raw_snippet}"
+                )
+                last_exc = exc
                 break
 
         return {
