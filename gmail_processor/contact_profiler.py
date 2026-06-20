@@ -6,6 +6,7 @@ import base64
 import email.utils
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,7 +24,7 @@ _CLAUDE_BASE_DELAY  = 2.0
 PROFILES_PATH = Path("contact_profiles.json")
 _MAX_EMAILS   = 50
 _MAX_BODY     = 500
-_MODEL        = "claude-sonnet-4-6"
+_MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 
 def _empty_profiles() -> dict:

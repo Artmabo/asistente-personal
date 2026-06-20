@@ -12,6 +12,8 @@ when the cap is exceeded (keeps the most recent MAX_ENTRIES).
 Writes are buffered in memory and flushed to disk in one pass via flush().
 This avoids one open() per message during high-volume runs.
 """
+import csv
+import io
 import json
 import logging
 from datetime import datetime
@@ -87,6 +89,18 @@ class AuditLogger:
             if decision in counts:
                 counts[decision] += 1
         return counts
+
+    def export_csv(self, n: int = MAX_ENTRIES) -> str:
+        """Returns the most recent `n` log entries as a UTF-8 CSV string."""
+        entries = self.recent(n)
+        if not entries:
+            return ""
+        fieldnames = ["ts", "sender", "domain", "score", "decision", "rule", "reason", "learned", "protected", "dry_run", "msg_id"]
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(entries)
+        return buf.getvalue()
 
     # ── Private ───────────────────────────────────────────────────────────────
 

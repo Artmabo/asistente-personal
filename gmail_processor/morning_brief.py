@@ -25,6 +25,12 @@ class MorningBrief:
         self._save_cache(brief)
         return brief
 
+    def force_refresh(self) -> dict:
+        """Elimina la caché y regenera el resumen inmediatamente."""
+        if _CACHE_PATH.exists():
+            _CACHE_PATH.unlink()
+        return self.generate()
+
     # ── Construcción ─────────────────────────────────────────────────────────
 
     def _build(self) -> dict:
@@ -45,6 +51,8 @@ class MorningBrief:
         stats         = state.get("stats", {})
         personal      = stats.get("personal", 0)
         spam          = stats.get("spam",     0)
+
+        today = datetime.now()
 
         # Alertas de los perfiles + perfiles desactualizados
         alerts: list[str] = []
@@ -67,7 +75,6 @@ class MorningBrief:
 
         # Correos nuevos de contactos importantes: leemos reviewed con fecha reciente
         new_from_important: list[dict] = []
-        today = datetime.now()
         reviewed = state.get("reviewed", {})
         for addr, entry in reviewed.items():
             if entry.get("decision") != "personal":
