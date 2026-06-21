@@ -16,6 +16,7 @@ import csv
 import io
 import json
 import logging
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -114,13 +115,15 @@ class AuditLogger:
             return []
 
     def _load_tail(self, n: int) -> list[dict]:
-        """Reads only the last n lines from the log file without loading all entries."""
+        """Reads only the last n lines using a deque to avoid loading the whole file."""
         if not self.path.exists() or n <= 0:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                lines = [ln for ln in f if ln.strip()]
-            tail = lines[-n:]
+                tail = deque(
+                    (ln for ln in f if ln.strip()),
+                    maxlen=n,
+                )
             return [json.loads(ln) for ln in tail]
         except (OSError, json.JSONDecodeError):
             return []

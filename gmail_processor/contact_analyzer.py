@@ -23,7 +23,8 @@ logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 STATE_PATH    = Path("analysis_state.json")
 PATTERNS_PATH = Path("user_patterns.json")
-_BATCH_SLEEP  = 0.2
+_BATCH_SLEEP      = 0.2
+_MAX_SENT_INDEXED = 2_000   # cap on sent messages fetched to build the "replied" index
 
 SCORE_AUTO_PERSONAL = 70
 SCORE_AUTO_SPAM     = 20
@@ -591,11 +592,14 @@ class ContactAnalyzer:
         fetched    = 0
         page       = 0
 
-        while True:
+        while fetched < _MAX_SENT_INDEXED:
             page += 1
+            remaining = _MAX_SENT_INDEXED - fetched
             try:
                 result = self.svc.users().messages().list(
-                    userId="me", q=query, maxResults=500, pageToken=page_token,
+                    userId="me", q=query,
+                    maxResults=min(500, remaining),
+                    pageToken=page_token,
                 ).execute()
             except HttpError as e:
                 logger.warning(f"Error al indexar enviados (página {page}): {e}")
@@ -606,6 +610,8 @@ class ContactAnalyzer:
                 break
 
             for stub in stubs:
+                if fetched >= _MAX_SENT_INDEXED:
+                    break
                 try:
                     msg = self.svc.users().messages().get(
                         userId="me", id=stub["id"],
@@ -619,12 +625,12 @@ class ContactAnalyzer:
                                 if a:
                                     addrs.add(a.strip().lower())
                 except HttpError:
-                    continue
+                    pass
+                fetched += 1
 
-            fetched += len(stubs)
             if progress_cb:
                 progress_cb(
-                    scanned=fetched, total_estimated=fetched + 200,
+                    scanned=fetched, total_estimated=min(fetched + 200, _MAX_SENT_INDEXED),
                     new_pending=0, new_auto=0, phase="sent", page=page,
                 )
 
@@ -633,6 +639,8 @@ class ContactAnalyzer:
                 break
             time.sleep(_BATCH_SLEEP)
 
+        if fetched >= _MAX_SENT_INDEXED:
+            logger.info(f"Índice enviados: cap de {_MAX_SENT_INDEXED} alcanzado.")
         return addrs
 
     # ── Borrar correos de un remitente ────────────────────────────────────────
@@ -721,9 +729,7 @@ class ContactAnalyzer:
         return _empty_state()
 
     def _save_state(self):
-        self.path.write_text(
-            json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _atomic_write(self.path, self.state)
 
     def _load_patterns(self) -> dict:
         if PATTERNS_PATH.exists():
@@ -734,9 +740,7 @@ class ContactAnalyzer:
         return _empty_patterns()
 
     def _save_patterns(self):
-        PATTERNS_PATH.write_text(
-            json.dumps(self.patterns, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _atomic_write(PATTERNS_PATH, self.patterns)
 
     def _update_stats(self):
         reviewed = self.state["reviewed"]
@@ -747,6 +751,17 @@ class ContactAnalyzer:
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
+
+def _atomic_write(path: Path, data: dict) -> None:
+    """Write JSON to a temp file then atomically rename to avoid partial writes."""
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
 
 def _derive_label(email_addr: str, name: str) -> str:
     if name:

@@ -34,7 +34,8 @@ class MorningBrief:
     # ── Construcción ─────────────────────────────────────────────────────────
 
     def _build(self) -> dict:
-        hour = datetime.now().hour
+        today = datetime.now()
+        hour  = today.hour
         if hour < 12:
             greeting = "Buenos días"
         elif hour < 19:
@@ -97,20 +98,26 @@ class MorningBrief:
         # Last cleanup run info
         last_cleanup = self._read_json("cleanup_summary.json", {})
         last_cleanup_info = None
+        cleanup_recommended = False
         if last_cleanup.get("ts"):
             try:
                 ts = datetime.fromisoformat(last_cleanup["ts"])
                 trashed = last_cleanup.get("trashed", 0)
                 dry = last_cleanup.get("dry_run", True)
-                if not dry and trashed > 0 and (today - ts).days <= 7:
+                days_since = (today - ts).days
+                if not dry and trashed > 0 and days_since <= 7:
                     last_cleanup_info = {
                         "ts":      last_cleanup["ts"],
                         "trashed": trashed,
                         "skipped": last_cleanup.get("skipped", 0),
                         "kept":    last_cleanup.get("kept", 0),
                     }
+                if days_since > 14:
+                    cleanup_recommended = True
             except Exception:
                 pass
+        else:
+            cleanup_recommended = True
 
         # Texto del resumen
         parts: list[str] = []
@@ -124,16 +131,17 @@ class MorningBrief:
         summary_text = ("Hoy " + ", ".join(parts) + ".") if parts else "Todo está en orden. Tu correo está al día."
 
         return {
-            "greeting":            greeting,
-            "summary_text":        summary_text,
-            "new_from_important":  new_from_important[:5],
-            "pending_decisions":   pending_count,
-            "alerts":              alerts[:5],
-            "storage_percent":     None,
-            "personal_count":      personal,
-            "spam_count":          spam,
-            "last_cleanup":        last_cleanup_info,
-            "generated_at":        datetime.now().isoformat(timespec="seconds"),
+            "greeting":             greeting,
+            "summary_text":         summary_text,
+            "new_from_important":   new_from_important[:5],
+            "pending_decisions":    pending_count,
+            "alerts":               alerts[:5],
+            "storage_percent":      None,
+            "personal_count":       personal,
+            "spam_count":           spam,
+            "last_cleanup":         last_cleanup_info,
+            "cleanup_recommended":  cleanup_recommended,
+            "generated_at":         datetime.now().isoformat(timespec="seconds"),
         }
 
     # ── Caché y persistencia ──────────────────────────────────────────────────
