@@ -20,6 +20,10 @@ def setup_logging(
     log_file: str = "gmail_processor.log",
 ):
     """Configures logging to both console and a rotating log file."""
+    root = logging.getLogger()
+    if root.handlers:
+        root.setLevel(level)
+        return
     fmt = "%(asctime)s [%(levelname)-8s] %(message)s"
     logging.basicConfig(
         level=level,

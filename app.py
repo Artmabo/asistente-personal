@@ -182,9 +182,9 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
         from collections import Counter
         svc    = st.session_state.service
         result = svc.users().messages().list(
-            userId="me", q="in:inbox", maxResults=500,
+            userId="me", q="in:inbox", maxResults=150,
         ).execute()
-        stubs  = result.get("messages", [])[:150]
+        stubs  = result.get("messages", [])
         counts: Counter      = Counter()
         names:  dict[str, str] = {}
         for stub in stubs:
@@ -276,7 +276,8 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
+        with open(rules_path, encoding="utf-8") as _f:
+            content = _f.read()
         lines   = content.split("\n")
 
         in_cr     = False
@@ -502,6 +503,13 @@ def _ca_state_summary() -> dict | None:
 def _ca_reset():
     from gmail_processor.contact_analyzer import ContactAnalyzer
     ContactAnalyzer(st.session_state.service).reset()
+
+
+def _ca_unsubscribe_candidates(max_results: int = 20) -> list[dict]:
+    try:
+        return _ca_get_analyzer().get_unsubscribe_candidates(max_results=max_results)
+    except Exception:
+        return []
 
 
 def _ca_learning_summary() -> dict:
@@ -1626,6 +1634,41 @@ elif _current_page == "analizar":
                     f"{_cb_ap + _cb_as} clasificados automáticamente · "
                     f"**{_cb_pd} para revisar**"
                 )
+
+        # ── Candidatos para darse de baja ─────────────────────────────────────
+        if _ca_prev:
+            _unsub_candidates = _ca_unsubscribe_candidates()
+            if _unsub_candidates:
+                st.markdown("")
+                with st.expander(
+                    f"📧 {len(_unsub_candidates)} remitentes con enlace de baja que puedes desuscribir"
+                ):
+                    st.caption(
+                        "Estos remitentes tienen botón de baja y un puntaje bajo. "
+                        "Darte de baja directamente reduce el correo basura de forma definitiva."
+                    )
+                    for _uc in _unsub_candidates:
+                        _uc_name  = _uc.get("name", "")
+                        _uc_email = _uc["email"]
+                        _uc_count = _uc.get("count", 0)
+                        _uc_last  = _uc.get("last_seen", "")
+                        _uc_label = f"{_uc_name} <{_uc_email}>" if _uc_name else _uc_email
+                        _uc_ctx   = []
+                        if _uc_count:
+                            _uc_ctx.append(f"{_uc_count} correos")
+                        if _uc_last:
+                            _uc_ctx.append(f"último: {_time_ago(_uc_last)}")
+                        st.markdown(
+                            f"**{_uc_label}**"
+                            + (f"  ·  {' · '.join(_uc_ctx)}" if _uc_ctx else "")
+                        )
+                        _uc_subj = _uc.get("sample_subjects", [])
+                        if _uc_subj:
+                            st.caption("Asuntos: " + "  ·  ".join(f'"{s[:50]}"' for s in _uc_subj[:2]))
+                    st.info(
+                        "Para darte de baja: abre uno de estos correos en Gmail y "
+                        "busca el enlace «Cancelar suscripción» al pie del mensaje."
+                    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PÁGINA: LIMPIAR CORREOS
