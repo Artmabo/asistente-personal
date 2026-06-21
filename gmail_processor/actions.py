@@ -134,7 +134,8 @@ class GmailActions:
                     raise
                 # Rate limit or transient server error — retry with backoff
                 if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
-                    logger.warning(f"Rate limit ({status}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
+                    kind = "Rate limit" if status in (403, 429) else "Server error"
+                    logger.warning(f"{kind} ({status}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
                     time.sleep(delay)
                     delay *= 2
                     continue
