@@ -53,8 +53,6 @@ class MorningBrief:
         personal      = stats.get("personal", 0)
         spam          = stats.get("spam",     0)
 
-        today = datetime.now()
-
         # Alertas de los perfiles + perfiles desactualizados
         alerts: list[str] = []
         stale_profiles: list[str] = []
@@ -159,9 +157,12 @@ class MorningBrief:
         return None
 
     def _save_cache(self, brief: dict):
-        _CACHE_PATH.write_text(
-            json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = _CACHE_PATH.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(_CACHE_PATH)
+        except OSError:
+            tmp.unlink(missing_ok=True)
 
     def _read_json(self, path: str, default: dict) -> dict:
         p = Path(path)

@@ -175,9 +175,10 @@ class GmailProcessor:
 
 
 def _header(message: dict, name: str) -> str:
+    name_lower = name.lower()
     for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
+        if h.get("name", "").lower() == name_lower:
+            return h.get("value", "")
     return ""
 
 
