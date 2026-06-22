@@ -660,8 +660,8 @@ def _decay(last_accepted: str, lam: float) -> float:
 
 def _email_from_headers(headers: list[dict]) -> str:
     for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
+        if h.get("name", "").lower() == "from":
+            raw = h.get("value", "")
             return (raw.split("<")[1].rstrip(">").strip().lower()
                     if "<" in raw else raw.strip().lower())
     return ""

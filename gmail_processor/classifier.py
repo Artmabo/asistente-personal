@@ -86,9 +86,10 @@ class EmailClassifier:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _extract_header(headers: list[dict], name: str) -> str:
+    name_lower = name.lower()
     for h in headers:
-        if h["name"].lower() == name.lower():
-            return h["value"]
+        if h.get("name", "").lower() == name_lower:
+            return h.get("value", "")
     return ""
 
 

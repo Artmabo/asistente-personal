@@ -439,6 +439,10 @@ class ContactProfiler:
         return _empty_profiles()
 
     def _save(self):
-        PROFILES_PATH.write_text(
-            json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = PROFILES_PATH.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(PROFILES_PATH)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise

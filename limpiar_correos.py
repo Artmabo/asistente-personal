@@ -133,7 +133,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     }
 
 
-def limpiar_todo_basura(service) -> dict:
+def limpiar_todo_basura(service, dry_run: bool = False) -> dict:
     """Limpia spam + promociones + social + actualizaciones + foros en secuencia."""
     resultados = {}
     total_p = 0
@@ -142,7 +142,7 @@ def limpiar_todo_basura(service) -> dict:
     for cat in CATEGORIAS:
         print(f"\n  {'─'*44}")
         print(f"  {_NOMBRES_ES[cat].upper()}")
-        r = limpiar_bandeja(service, categorias=[cat])
+        r = limpiar_bandeja(service, categorias=[cat], dry_run=dry_run)
         resultados[cat] = r
         total_p += r['procesados']
         total_e += r['exitos']
