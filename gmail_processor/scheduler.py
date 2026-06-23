@@ -193,9 +193,15 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
-            json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = self.config_path.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(self.config_path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def format_next_run(iso: str | None) -> str:

@@ -10,6 +10,7 @@ Priority order (first match wins):
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
+from .utils import get_header, extract_email_address
 
 
 @dataclass
@@ -31,7 +32,7 @@ class EmailClassifier:
 
         sender  = _extract_email(headers)
         domain  = sender.split("@")[-1] if "@" in sender else ""
-        subject = _extract_header(headers, "Subject")
+        subject = get_header(headers, "Subject")
         search_text = f"{sender} {subject}"
 
         # 1. Contact rules (highest priority — always protected)
@@ -85,18 +86,8 @@ class EmailClassifier:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _extract_header(headers: list[dict], name: str) -> str:
-    for h in headers:
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
-
-
 def _extract_email(headers: list[dict]) -> str:
-    raw = _extract_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _matches_any(text: str, keywords: list[str], case_sensitive: bool) -> bool:

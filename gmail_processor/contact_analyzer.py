@@ -481,6 +481,41 @@ class ContactAnalyzer:
         candidates.sort(key=lambda x: x["count"], reverse=True)
         return candidates[:max_results]
 
+    def get_stale_pending(self, days: int = 30) -> list[dict]:
+        """
+        Returns pending contacts that have been waiting for a decision for
+        more than `days` days, sorted by how long they've been waiting.
+
+        Useful for surfacing forgotten contacts so the user can bulk-expire
+        them (auto-classify as spam) rather than letting them accumulate.
+        """
+        cutoff    = datetime.now() - timedelta(days=days)
+        pending_meta = self.state.get("pending_meta", {})
+        stale: list[dict] = []
+
+        for addr in self.state.get("pending", []):
+            meta     = pending_meta.get(addr, {})
+            asked_at = meta.get("asked_at", "")
+            try:
+                dt = datetime.fromisoformat(asked_at)
+            except Exception:
+                continue
+            if dt < cutoff:
+                stale.append({
+                    "email":           addr,
+                    "name":            meta.get("name",            ""),
+                    "score":           meta.get("score",           0),
+                    "count":           meta.get("count",           0),
+                    "sample_subjects": meta.get("sample_subjects", []),
+                    "first_seen":      meta.get("first_seen",      ""),
+                    "last_seen":       meta.get("last_seen",       ""),
+                    "pending_since":   asked_at,
+                    "days_pending":    (datetime.now() - dt).days,
+                })
+
+        stale.sort(key=lambda x: x["days_pending"], reverse=True)
+        return stale
+
     def get_learning_stats(self) -> dict:
         """Devuelve estadísticas de aprendizaje para la UI."""
         domain_votes = self.patterns.get("domain_votes", {})
@@ -688,6 +723,14 @@ class ContactAnalyzer:
             if email_addr in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
+            # Reject addresses that contain characters which could break the
+            # Python string literal we're about to write into rules.py.
+            # Valid email local parts and domains use only printable ASCII
+            # (letters, digits, and a handful of safe symbols).
+            _SAFE_EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$')
+            if not _SAFE_EMAIL_RE.match(email_addr):
+                return {"error": f"Dirección de correo con caracteres no permitidos: {email_addr!r}"}
+
             label      = _derive_label(email_addr, name)
             rules_path = Path(__file__).parent / "rules.py"
             content    = rules_path.read_text(encoding="utf-8")
@@ -708,11 +751,11 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            new_line = f'    "{email_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path = rules_path.with_suffix(".tmp")
+            tmp_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path.replace(rules_path)
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:
