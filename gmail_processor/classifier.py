@@ -93,10 +93,10 @@ def _extract_header(headers: list[dict], name: str) -> str:
 
 
 def _extract_email(headers: list[dict]) -> str:
+    import email.utils
     raw = _extract_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    _, addr = email.utils.parseaddr(raw)
+    return addr.strip().lower() if addr else raw.strip().lower()
 
 
 def _matches_any(text: str, keywords: list[str], case_sensitive: bool) -> bool:

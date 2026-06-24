@@ -7,6 +7,7 @@ import email.utils
 import json
 import logging
 import os
+import stat
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -62,6 +63,8 @@ class ContactProfiler:
         errors: list[str] = []
 
         for i, addr in enumerate(important_contacts):
+            if i > 0:
+                time.sleep(0.5)  # Avoid hammering the Claude API across sequential contacts
             if progress_cb:
                 progress_cb(i + 1, total, addr)
             try:
@@ -246,9 +249,8 @@ class ContactProfiler:
             return ""
 
         from_raw   = hdr("From")
-        from_name  = ""
-        if "<" in from_raw:
-            from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
+        from_name, _ = email.utils.parseaddr(from_raw)
+        from_name = from_name.strip().strip('"').strip("'")
 
         date_str    = hdr("Date")
         date_parsed = None
@@ -439,6 +441,13 @@ class ContactProfiler:
         return _empty_profiles()
 
     def _save(self):
-        PROFILES_PATH.write_text(
-            json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = PROFILES_PATH.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0o600 — profiles contain personal data
+            tmp.replace(PROFILES_PATH)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
