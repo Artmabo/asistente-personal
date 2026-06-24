@@ -106,7 +106,7 @@ class GmailActions:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _modify(self, msg_id: str, add: list = None, remove: list = None) -> bool:
+    def _modify(self, msg_id: str, add: list | None = None, remove: list | None = None) -> bool:
         body = {}
         if add:
             body["addLabelIds"] = add

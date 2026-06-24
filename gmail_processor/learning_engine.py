@@ -41,6 +41,7 @@ LearningEngine — adaptive scoring with confidence-filtered, drift-controlled l
 """
 
 import copy
+import email.utils
 import json
 import logging
 import math
@@ -482,6 +483,7 @@ class LearningEngine:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def persist(self):
+        self._expire_pending_feedback()
         if not self._dirty:
             return
         tmp = self.path.with_suffix(".tmp")
@@ -494,6 +496,20 @@ class LearningEngine:
             raise
         logger.info(f"Estado guardado → {self.path}")
         self._dirty = False
+
+    def _expire_pending_feedback(self, max_age_days: int = 30):
+        """Removes pending feedback entries older than max_age_days to prevent unbounded growth."""
+        today = date.today()
+        expired = [
+            sender
+            for sender, p in self.state["pending_feedback"].items()
+            if (today - date.fromisoformat(p.get("first_seen", str(today)))).days > max_age_days
+        ]
+        if expired:
+            for sender in expired:
+                del self.state["pending_feedback"][sender]
+            self._dirty = True
+            logger.info(f"Expirados {len(expired)} feedback(s) pendientes (>{max_age_days}d)")
 
     # ── Summaries ─────────────────────────────────────────────────────────────
 
@@ -661,9 +677,8 @@ def _decay(last_accepted: str, lam: float) -> float:
 def _email_from_headers(headers: list[dict]) -> str:
     for h in headers:
         if h["name"].lower() == "from":
-            raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
+            _, addr = email.utils.parseaddr(h["value"])
+            return addr.strip().lower() if addr else h["value"].strip().lower()
     return ""
 
 
@@ -685,14 +700,17 @@ def _migrate_to_v3(old: dict) -> dict:
         entry["last_accepted"]      = src.get("last_feedback", src.get("last_accepted", ""))
         return entry
 
-    # v1 used sender_scores/domain_scores; v2 used same names
+    # v1 uses sender_scores/domain_scores; v2 uses sender_model/domain_model
+    # Migrate sender entries: try v1 key first, then v2 key (mutually exclusive)
     for old_key, new_key in [
-        ("sender_scores", "sender_model"),
-        ("domain_model",  "domain_model"),
+        ("sender_scores", "sender_model"),   # v1
+        ("sender_model",  "sender_model"),   # v2 — was missing, caused data loss on v2→v3
+        ("domain_model",  "domain_model"),   # v1 and v2
     ]:
         for k, v in old.get(old_key, {}).items():
-            new[new_key][k] = _to_v3_entry(v)
-    # v2 already has domain_model
+            if k not in new[new_key]:   # avoid overwriting already-migrated entries
+                new[new_key][k] = _to_v3_entry(v)
+    # domain_scores is an alternate v2 key
     for k, v in old.get("domain_scores", {}).items():
         if k not in new["domain_model"]:
             new["domain_model"][k] = _to_v3_entry(v)
