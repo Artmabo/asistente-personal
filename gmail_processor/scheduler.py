@@ -67,6 +67,9 @@ class CleanupScheduler:
     def available(self) -> bool:
         return _APSCHEDULER_OK
 
+    _VALID_FREQUENCIES = frozenset({"daily", "weekly", "monthly"})
+    _VALID_DAYS        = frozenset(_DAYS_ES.keys())
+
     def configure(
         self,
         frequency:   str,
@@ -76,6 +79,18 @@ class CleanupScheduler:
         enabled:     bool = True,
     ) -> None:
         """Guarda configuración y reprograma si el scheduler está corriendo."""
+        if frequency not in self._VALID_FREQUENCIES:
+            raise ValueError(
+                f"frequency inválida: {frequency!r}. "
+                f"Valores válidos: {sorted(self._VALID_FREQUENCIES)}"
+            )
+        if not (0 <= hour <= 23):
+            raise ValueError(f"hour debe estar entre 0 y 23, recibido: {hour}")
+        if frequency == "weekly" and day_of_week not in self._VALID_DAYS:
+            raise ValueError(
+                f"day_of_week inválido: {day_of_week!r}. "
+                f"Valores válidos: {sorted(self._VALID_DAYS)}"
+            )
         self.config.update({
             "frequency":   frequency,
             "categories":  categories,

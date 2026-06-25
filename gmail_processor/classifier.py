@@ -8,6 +8,7 @@ Priority order (first match wins):
   4. Domain rules   — sender domain matches
   5. Default        — unknown, no action
 """
+import email.utils
 from dataclasses import dataclass, field
 from . import rules as cfg
 
@@ -94,8 +95,12 @@ def _extract_header(headers: list[dict], name: str) -> str:
 
 def _extract_email(headers: list[dict]) -> str:
     raw = _extract_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
+    if not raw:
+        return ""
+    pairs = email.utils.getaddresses([raw])
+    if pairs:
+        _, addr = pairs[0]
+        return addr.strip().lower()
     return raw.strip().lower()
 
 

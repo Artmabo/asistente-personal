@@ -71,7 +71,13 @@ class ContactProfiler:
                 self.data["total_profiles"] = len(self.data["profiles"])
                 self._save()
                 built += 1
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.error(f"Error de I/O para {addr}: {exc}")
+                errors.append(f"{addr}: error de archivo — {exc}")
             except Exception as exc:
+                if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+                    raise
+                logger.warning(f"Error inesperado para {addr}: {exc}")
                 errors.append(f"{addr}: {exc}")
 
         return {"built": built, "total": total, "errors": errors}
@@ -439,6 +445,12 @@ class ContactProfiler:
         return _empty_profiles()
 
     def _save(self):
-        PROFILES_PATH.write_text(
-            json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = PROFILES_PATH.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(PROFILES_PATH)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise

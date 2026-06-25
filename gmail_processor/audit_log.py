@@ -91,6 +91,25 @@ class AuditLogger:
                 counts[decision] += 1
         return counts
 
+    def top_senders_trashed(self, top_n: int = 10) -> list[dict]:
+        """Returns the top_n senders by number of trashed messages.
+
+        Useful for identifying high-volume senders that are consistently filtered.
+        Returns a list of dicts sorted by count descending:
+          [{"sender": "...", "domain": "...", "count": N}, ...]
+        """
+        sender_counts: dict[str, dict] = {}
+        for entry in self._load():
+            if entry.get("decision") != "TRASH":
+                continue
+            sender = entry.get("sender", "")
+            domain = entry.get("domain", "")
+            if sender not in sender_counts:
+                sender_counts[sender] = {"sender": sender, "domain": domain, "count": 0}
+            sender_counts[sender]["count"] += 1
+        ranked = sorted(sender_counts.values(), key=lambda x: x["count"], reverse=True)
+        return ranked[:top_n]
+
     def export_csv(self, n: int = MAX_ENTRIES) -> str:
         """Returns the most recent `n` log entries as a UTF-8 CSV string."""
         entries = self.recent(n)
@@ -111,7 +130,7 @@ class AuditLogger:
         try:
             with open(self.path, encoding="utf-8") as f:
                 return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return []
 
     def _load_tail(self, n: int) -> list[dict]:
