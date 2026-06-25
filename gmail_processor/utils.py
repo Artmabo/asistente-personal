@@ -1,6 +1,7 @@
 """
 Shared utilities for gmail_processor modules.
 """
+import email.utils
 import os
 
 
@@ -24,7 +25,15 @@ def get_header(headers: list[dict], name: str) -> str:
 
 
 def extract_email_address(raw: str) -> str:
-    """Extracts a bare email address from a raw From/To header value."""
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
+    """Extracts a bare email address from a raw From/To header value.
+
+    Uses email.utils.getaddresses for RFC 5322 compliance, handling edge cases
+    like quoted names and multiple angle-bracket groups that naive splitting misses.
+    """
+    if not raw:
+        return ""
+    pairs = email.utils.getaddresses([raw])
+    if pairs:
+        _, addr = pairs[0]
+        return addr.strip().lower()
     return raw.strip().lower()

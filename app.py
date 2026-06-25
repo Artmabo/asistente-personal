@@ -300,8 +300,12 @@ def _proteger_remitente(email: str, name: str) -> dict:
         new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
         lines.insert(insert_at, new_line)
 
-        with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        import tempfile
+        new_content = "\n".join(lines)
+        tmp_path = rules_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        os.replace(tmp_path, rules_path)
 
         importlib.reload(rules_mod)
         return {"success": True, "email": email, "label": label}
@@ -1158,7 +1162,7 @@ if _current_page == "inicio":
 
         with _mc1:
             _msgs = _qm.get("messages_total")
-            st.metric("📨 Correos totales", f"{_msgs:,}" if _msgs else "—")
+            st.metric("📨 Correos totales", f"{_msgs:,}" if _msgs is not None else "—")
         with _mc2:
             st.metric("👤 Contactos importantes", _qm.get("personal", 0))
         with _mc3:
