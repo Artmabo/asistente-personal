@@ -131,13 +131,21 @@ class CleanupScheduler:
     # ── Ejecución de limpieza ─────────────────────────────────────────────────
 
     def _run_cleanup(self) -> None:
-        """Ejecuta la limpieza programada. Crea su propio servicio desde token.json."""
+        """Ejecuta la limpieza programada con todas las protecciones activas."""
         logger.info("Limpieza automática iniciada")
         try:
-            from limpiar_correos import obtener_servicio, limpiar_bandeja
-            service = obtener_servicio()
-            cats    = self.config.get("categories", ["spam"])
-            result  = limpiar_bandeja(service, categorias=cats)
+            from .auth import get_service
+            from .actions import GmailActions
+            from .cleanup_storage import StorageCleaner
+            from .learning_engine import LearningEngine
+            from .audit_log import AuditLogger
+
+            service = get_service()
+            actions = GmailActions(service, dry_run=False)
+            engine  = LearningEngine()
+            audit   = AuditLogger()
+            cleaner = StorageCleaner(service, actions, engine=engine, audit=audit)
+            result  = cleaner.run()
         except Exception as exc:
             result = {"error": str(exc)}
             logger.error(f"Error en limpieza automática: {exc}")
