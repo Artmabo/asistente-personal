@@ -10,6 +10,7 @@ Priority order (first match wins):
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
+from .utils import extract_email_address
 
 
 @dataclass
@@ -94,9 +95,7 @@ def _extract_header(headers: list[dict], name: str) -> str:
 
 def _extract_email(headers: list[dict]) -> str:
     raw = _extract_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(raw)
 
 
 def _matches_any(text: str, keywords: list[str], case_sensitive: bool) -> bool:

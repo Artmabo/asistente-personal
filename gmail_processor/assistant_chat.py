@@ -22,6 +22,7 @@ class AssistantChat:
     def __init__(self):
         self.context: dict = {}
         self.history: list[dict] = self._load_history()
+        self._client = None
         self.refresh_context()
 
     # ── API pública ───────────────────────────────────────────────────────────
@@ -40,24 +41,32 @@ class AssistantChat:
             "patterns":  patterns,
         }
 
+    def _get_client(self):
+        """Returns a cached Anthropic client, creating it on first call."""
+        if self._client is not None:
+            return self._client, None
+        api_key = get_api_key()
+        if not api_key:
+            return None, (
+                "Para usar el asistente necesito que configures tu clave de API "
+                "en el archivo .env (la línea ANTHROPIC_API_KEY=...)."
+            )
+        try:
+            import anthropic
+            self._client = anthropic.Anthropic(api_key=api_key)
+            return self._client, None
+        except ImportError:
+            return None, "No está instalado el módulo necesario. Ejecuta: pip install anthropic"
+
     def send_message(
         self,
         user_message: str,
         conversation_history: list[dict] | None = None,
     ) -> str:
         """Envía un mensaje a Claude y devuelve la respuesta en texto."""
-        api_key = get_api_key()
-        if not api_key:
-            return (
-                "Para usar el asistente necesito que configures tu clave de API "
-                "en el archivo .env (la línea ANTHROPIC_API_KEY=...)."
-            )
-
-        try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
-        except ImportError:
-            return "No está instalado el módulo necesario. Ejecuta: pip install anthropic"
+        client, err = self._get_client()
+        if err:
+            return err
 
         self.refresh_context()
         system_prompt = self._build_system_prompt()
@@ -72,11 +81,12 @@ class AssistantChat:
 
         try:
             resp   = client.messages.create(
-                model=_MODEL, max_tokens=1000,
+                model=_MODEL, max_tokens=1024,
                 system=system_prompt, messages=api_messages,
             )
             answer = resp.content[0].text.strip()
         except Exception as exc:
+            self._client = None  # Reset client on API error so next call retries connection
             return f"Ocurrió un problema al contactar al asistente: {exc}"
 
         # Guardar en historial

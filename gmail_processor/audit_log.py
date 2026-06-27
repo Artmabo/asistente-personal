@@ -63,14 +63,20 @@ class AuditLogger:
         })
 
     def flush(self):
-        """Writes buffered entries to disk. Called once per run."""
+        """Writes buffered entries to disk atomically. Called once per run."""
         if not self._buf:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
-            for entry in combined:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                for entry in combined:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            tmp.replace(self.path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 

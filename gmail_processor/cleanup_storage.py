@@ -22,6 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -42,6 +43,7 @@ class StorageCleaner:
         self.audit         = audit
         self.learning_mode = learning_mode
         self._protected_domains = _build_protected_domains()
+        self._safe_domains = frozenset(cfg.CLEANUP_RULES.get("safe_domains", []))
         self.stats = {
             "examined": 0,
             "trashed":  0,
@@ -274,8 +276,7 @@ class StorageCleaner:
         if domain in self._protected_domains:
             return f"dominio protegido ({domain})"
 
-        extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
-        if domain in extra:
+        if domain in self._safe_domains:
             return f"dominio seguro adicional ({domain})"
 
         return None
@@ -329,9 +330,7 @@ def _get_header(message: dict, name: str) -> str:
 
 def _sender_email(message: dict) -> str:
     raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(raw)
 
 
 def _sender_display(message: dict) -> str:

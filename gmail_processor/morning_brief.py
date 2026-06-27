@@ -73,7 +73,9 @@ class MorningBrief:
             )
 
         # Correos nuevos de contactos importantes: leemos reviewed con fecha reciente
+        # También detectamos contactos que llevan >30 días en silencio
         new_from_important: list[dict] = []
+        silent_important: list[dict] = []
         reviewed = state.get("reviewed", {})
         for addr, entry in reviewed.items():
             if entry.get("decision") != "personal":
@@ -84,14 +86,23 @@ class MorningBrief:
                 continue
             try:
                 d = datetime.strptime(last_c, "%Y-%m-%d")
-                if (today - d).days <= 7:
+                days_ago = (today - d).days
+                if days_ago <= 7:
                     new_from_important.append({
                         "name":  profile.get("name", addr) or addr,
                         "email": addr,
                         "date":  last_c,
                     })
+                elif days_ago > 30:
+                    silent_important.append({
+                        "name":     profile.get("name", addr) or addr,
+                        "email":    addr,
+                        "date":     last_c,
+                        "days_ago": days_ago,
+                    })
             except Exception:
                 continue
+        silent_important.sort(key=lambda x: x["days_ago"], reverse=True)
 
         # Last cleanup run info
         last_cleanup = self._read_json("cleanup_summary.json", {})
@@ -132,6 +143,7 @@ class MorningBrief:
             "greeting":             greeting,
             "summary_text":         summary_text,
             "new_from_important":   new_from_important[:5],
+            "silent_important":     silent_important[:5],
             "pending_decisions":    pending_count,
             "alerts":               alerts[:5],
             "storage_percent":      None,
@@ -157,9 +169,15 @@ class MorningBrief:
         return None
 
     def _save_cache(self, brief: dict):
-        _CACHE_PATH.write_text(
-            json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = _CACHE_PATH.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(_CACHE_PATH)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _read_json(self, path: str, default: dict) -> dict:
         p = Path(path)
