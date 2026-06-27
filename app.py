@@ -1123,10 +1123,11 @@ if _current_page == "inicio":
             )
 
             _bnif    = _brief.get("new_from_important", [])
+            _bsilent = _brief.get("silent_important",   [])
             _bpend   = _brief.get("pending_decisions",  0)
             _balerts = _brief.get("alerts",             [])
 
-            if _bnif or _bpend > 0 or _balerts:
+            if _bnif or _bsilent or _bpend > 0 or _balerts:
                 with st.container(border=True):
                     if _bnif:
                         st.markdown("**Novedades de tus contactos importantes:**")
@@ -1134,6 +1135,16 @@ if _current_page == "inicio":
                             st.markdown(
                                 f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
+                                unsafe_allow_html=True,
+                            )
+                        st.markdown("")
+                    if _bsilent:
+                        st.markdown("**Sin noticias de:**")
+                        for _bs in _bsilent[:5]:
+                            _days = _bs.get("days_ago", 0)
+                            st.markdown(
+                                f"&nbsp;&nbsp;🔇 **{_bs.get('name', '')}** "
+                                f"· hace {_days} días",
                                 unsafe_allow_html=True,
                             )
                         st.markdown("")

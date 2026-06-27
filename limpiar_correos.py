@@ -157,7 +157,7 @@ def limpiar_todo_basura(service) -> dict:
     total_barra = f"{total_e}/{total_p}"
     print(f"  {'TOTAL':<18} {total_barra:>12}")
 
-    return {"procesados": total_p, "exitos": total_e}
+    return {"procesados": total_p, "exitos": total_e, "errores": total_p - total_e}
 
 
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
