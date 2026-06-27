@@ -167,9 +167,12 @@ class AssistantChat:
         return []
 
     def _save_history(self):
+        tmp = CHAT_HISTORY_PATH.with_suffix(".tmp")
         try:
-            CHAT_HISTORY_PATH.write_text(
+            tmp.write_text(
                 json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            tmp.replace(CHAT_HISTORY_PATH)
         except OSError as e:
+            tmp.unlink(missing_ok=True)
             logger.warning(f"No se pudo guardar el historial de chat: {e}")

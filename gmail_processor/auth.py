@@ -20,8 +20,12 @@ def get_service(
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                # Refresh token revoked or network failure — force full re-auth
+                creds = None
+        if not creds or not creds.valid:
             if not os.path.exists(creds_path):
                 raise FileNotFoundError(
                     f"No se encontró el archivo de credenciales en '{creds_path}'. "

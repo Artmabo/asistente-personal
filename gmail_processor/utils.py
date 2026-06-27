@@ -24,7 +24,16 @@ def get_header(headers: list[dict], name: str) -> str:
 
 
 def extract_email_address(raw: str) -> str:
-    """Extracts a bare email address from a raw From/To header value."""
+    """Extracts a bare email address from a raw From/To header value.
+
+    Uses rfind to handle display names that contain angle brackets, e.g.:
+    '"User <nickname>" <user@example.com>' → 'user@example.com'
+    """
+    if not raw:
+        return ""
     if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
+        start = raw.rfind("<")
+        end   = raw.find(">", start)
+        if end > start:
+            return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()

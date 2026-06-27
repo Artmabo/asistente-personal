@@ -110,12 +110,34 @@ class StorageAnalyzer:
         result["total_gb"] = round(total_mb / 1000, 2)
         return result
 
-    def _list_all_ids(self, query: str) -> tuple[list[str], int]:
-        """Lista todos los IDs de mensajes que coinciden con la query."""
+    def get_category_counts(self, categories: list[str] | None = None) -> dict[str, int]:
+        """Returns approximate message counts per category without fetching all IDs.
+
+        Uses Gmail's resultSizeEstimate for a fast, single-API-call-per-category
+        count. Suitable for dashboard stats where exact counts are not critical.
+        """
+        if categories is None:
+            categories = list(_CATEGORY_QUERIES.keys())
+        result: dict[str, int] = {}
+        for cat in categories:
+            query = _CATEGORY_QUERIES.get(cat)
+            if not query:
+                continue
+            try:
+                resp = self.svc.users().messages().list(
+                    userId="me", q=query, maxResults=1,
+                ).execute()
+                result[cat] = resp.get("resultSizeEstimate", 0)
+            except HttpError:
+                result[cat] = 0
+        return result
+
+    def _list_all_ids(self, query: str, max_ids: int = 5_000) -> tuple[list[str], int]:
+        """Lista los IDs de mensajes que coinciden con la query, hasta max_ids."""
         ids: list[str] = []
         page_token     = None
 
-        while True:
+        while len(ids) < max_ids:
             try:
                 resp = self.svc.users().messages().list(
                     userId="me", q=query, maxResults=500, pageToken=page_token,
@@ -133,4 +155,4 @@ class StorageAnalyzer:
                 break
             time.sleep(0.1)
 
-        return ids, len(ids)
+        return ids[:max_ids], len(ids[:max_ids])

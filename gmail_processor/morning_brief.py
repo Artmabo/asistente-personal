@@ -53,8 +53,6 @@ class MorningBrief:
         personal      = stats.get("personal", 0)
         spam          = stats.get("spam",     0)
 
-        today = datetime.now()
-
         # Alertas de los perfiles + perfiles desactualizados
         alerts: list[str] = []
         stale_profiles: list[str] = []
