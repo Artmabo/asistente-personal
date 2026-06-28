@@ -91,6 +91,23 @@ class AuditLogger:
                 counts[decision] += 1
         return counts
 
+    def rule_summary(self) -> dict[str, dict[str, int]]:
+        """Returns per-rule TRASH/KEEP/SKIP counts from the persisted log.
+
+        Useful for displaying per-rule accuracy in the UI without needing
+        the LearningEngine state file.
+        """
+        rules: dict[str, dict[str, int]] = {}
+        for entry in self._load():
+            rule = entry.get("rule", "")
+            if not rule:
+                continue
+            r = rules.setdefault(rule, {"TRASH": 0, "KEEP": 0, "SKIP": 0})
+            decision = entry.get("decision", "")
+            if decision in r:
+                r[decision] += 1
+        return rules
+
     def export_csv(self, n: int = MAX_ENTRIES) -> str:
         """Returns the most recent `n` log entries as a UTF-8 CSV string."""
         entries = self.recent(n)

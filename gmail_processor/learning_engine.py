@@ -46,7 +46,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -479,6 +479,47 @@ class LearningEngine:
         return (self.state["rule_stats"].get(rule_name, {}).get("threshold_days")
                 or default)
 
+    # ── Maintenance ───────────────────────────────────────────────────────────
+
+    def prune_stale_entries(self, max_age_days: int = 365) -> dict[str, int]:
+        """Removes sender/domain entries with no feedback in `max_age_days` days.
+
+        Prevents unbounded growth of the state file over time. Protected contacts
+        and critical domains are never pruned even if they have no feedback history.
+        Returns counts of removed entries per model.
+        """
+        cutoff = date.today() - timedelta(days=max_age_days)
+        pruned: dict[str, int] = {"sender_model": 0, "domain_model": 0}
+
+        critical_senders = set(cfg.CONTACT_RULES.keys())
+        critical_domains: set[str] = set()
+        for rule in cfg.DOMAIN_RULES:
+            if rule.get("action") == "mark_important":
+                critical_domains.update(rule["domains"])
+
+        for model_key, protected in (
+            ("sender_model", critical_senders),
+            ("domain_model", critical_domains),
+        ):
+            model = self.state[model_key]
+            stale = [
+                k for k, v in model.items()
+                if k not in protected
+                and v.get("last_accepted")
+                and date.fromisoformat(v["last_accepted"]) < cutoff
+            ]
+            for k in stale:
+                del model[k]
+            pruned[model_key] = len(stale)
+
+        if any(pruned.values()):
+            self._dirty = True
+            logger.info(
+                f"Pruned stale entries older than {max_age_days}d: "
+                f"senders={pruned['sender_model']} domains={pruned['domain_model']}"
+            )
+        return pruned
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def persist(self):
@@ -662,8 +703,12 @@ def _email_from_headers(headers: list[dict]) -> str:
     for h in headers:
         if h["name"].lower() == "from":
             raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
+            if "<" in raw:
+                start = raw.rfind("<")
+                end = raw.find(">", start)
+                if end > start:
+                    return raw[start + 1 : end].strip().lower()
+            return raw.strip().lower()
     return ""
 
 

@@ -148,7 +148,7 @@ class CleanupScheduler:
             result  = cleaner.run()
         except Exception as exc:
             result = {"error": str(exc)}
-            logger.error(f"Error en limpieza automática: {exc}")
+            logger.error(f"Error en limpieza automática: {exc}", exc_info=True)
 
         self.config["last_run"]        = datetime.now().isoformat(timespec="seconds")
         self.config["last_run_result"] = result

@@ -645,15 +645,20 @@ class ContactAnalyzer:
 
     # ── Borrar correos de un remitente ────────────────────────────────────────
 
+    _MAX_TRASH_PER_SENDER = 500   # guard against exhausting quota on a single sender
+
     def _trash_sender(self, addr: str) -> int:
-        query      = f"from:{addr}"
+        query      = f'from:"{addr}"'   # quotes prevent injection of Gmail query operators
         page_token = None
         total      = 0
 
-        while True:
+        while total < self._MAX_TRASH_PER_SENDER:
+            remaining = self._MAX_TRASH_PER_SENDER - total
             try:
                 result = self.svc.users().messages().list(
-                    userId="me", q=query, maxResults=500, pageToken=page_token,
+                    userId="me", q=query,
+                    maxResults=min(500, remaining),
+                    pageToken=page_token,
                 ).execute()
             except HttpError:
                 return -1
@@ -676,6 +681,8 @@ class ContactAnalyzer:
             if not page_token:
                 break
 
+        if total >= self._MAX_TRASH_PER_SENDER:
+            logger.warning(f"_trash_sender cap ({self._MAX_TRASH_PER_SENDER}) reached for {addr}")
         return total
 
     # ── Escribir en rules.py ──────────────────────────────────────────────────
@@ -712,7 +719,10 @@ class ContactAnalyzer:
             safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
             new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+            # Atomic write: temp file then rename to prevent partial-write corruption
+            tmp_path = rules_path.with_suffix(".py.tmp")
+            tmp_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path.replace(rules_path)
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:
