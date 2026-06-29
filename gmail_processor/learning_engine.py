@@ -585,7 +585,7 @@ class LearningEngine:
                     logger.info(f"Estado migrado v{v} → v3")
                 logger.debug(f"Estado cargado desde {self.path}")
                 return data
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 logger.warning(f"Estado corrupto en {self.path}, reiniciando.")
         return copy.deepcopy(_EMPTY_STATE_V3)
 
