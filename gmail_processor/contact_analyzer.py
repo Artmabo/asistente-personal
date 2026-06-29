@@ -525,6 +525,37 @@ class ContactAnalyzer:
         self.state = _empty_state()
         self._save_state()
 
+    def purge_stale_pending(self, max_age_days: int = 60) -> int:
+        """
+        Removes pending contacts that have been waiting for a decision longer than
+        max_age_days without user action.  Returns the count of purged entries.
+
+        This prevents the pending list from growing indefinitely when the user
+        never revisits old analysis batches.  Entries without an 'asked_at'
+        timestamp (from pre-v2 state) are left untouched.
+        """
+        cutoff      = (datetime.now() - timedelta(days=max_age_days)).isoformat(timespec="seconds")
+        pending_set = set(self.state.get("pending", []))
+        pending_meta = self.state.get("pending_meta", {})
+
+        to_purge: set[str] = set()
+        for addr in list(pending_set):
+            asked_at = pending_meta.get(addr, {}).get("asked_at", "")
+            if asked_at and asked_at < cutoff:
+                to_purge.add(addr)
+
+        if to_purge:
+            pending_set -= to_purge
+            for addr in to_purge:
+                pending_meta.pop(addr, None)
+            self.state["pending"]      = list(pending_set)
+            self.state["pending_meta"] = pending_meta
+            self._update_stats()
+            self._save_state()
+            logger.info(f"Purged {len(to_purge)} stale pending entries (>{max_age_days}d old)")
+
+        return len(to_purge)
+
     # ── Score con pesos aprendidos ────────────────────────────────────────────
 
     def _score(
@@ -708,9 +739,7 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            new_line = f'    {repr(email_addr)}: {{"label": {repr(label)}, "mark_important": True}},'
             lines.insert(insert_at, new_line)
             rules_path.write_text("\n".join(lines), encoding="utf-8")
             importlib.reload(rules_mod)

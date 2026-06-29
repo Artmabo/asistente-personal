@@ -42,6 +42,7 @@ class StorageCleaner:
         self.audit         = audit
         self.learning_mode = learning_mode
         self._protected_domains = _build_protected_domains()
+        self._safe_domains      = frozenset(cfg.CLEANUP_RULES.get("safe_domains", []))
         self.stats = {
             "examined": 0,
             "trashed":  0,
@@ -274,8 +275,7 @@ class StorageCleaner:
         if domain in self._protected_domains:
             return f"dominio protegido ({domain})"
 
-        extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
-        if domain in extra:
+        if domain in self._safe_domains:
             return f"dominio seguro adicional ({domain})"
 
         return None

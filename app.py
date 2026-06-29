@@ -199,8 +199,10 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                     "",
                 )
                 if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
+                    _start = raw.rfind("<")
+                    _end   = raw.find(">", _start)
+                    email  = raw[_start + 1 : _end].strip().lower() if _end > _start else raw.strip().lower()
+                    name   = raw[:_start].strip().strip('"').strip("'")
                 else:
                     email = raw.strip().lower()
                     name  = ""
@@ -276,7 +278,8 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
+        with open(rules_path, encoding="utf-8") as _f:
+            content = _f.read()
         lines   = content.split("\n")
 
         in_cr     = False
