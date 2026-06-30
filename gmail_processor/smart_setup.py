@@ -580,7 +580,10 @@ def _get_header(headers: list[dict], name: str) -> str:
 def _extract_email(headers: list[dict]) -> str:
     raw = _get_header(headers, "From")
     if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
+        start = raw.rfind("<")
+        end = raw.find(">", start)
+        if end > start:
+            return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
 
 

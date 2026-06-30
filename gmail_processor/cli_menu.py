@@ -771,8 +771,9 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         if f'"{email}"' in line and not line.strip().startswith("#"):
             return False  # already exists
 
+    safe_email = email.replace("\\", "\\\\").replace('"', '\\"')
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f'    "{safe_email}": {{"label": "{label}", "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:

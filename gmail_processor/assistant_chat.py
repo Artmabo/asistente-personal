@@ -6,6 +6,7 @@ contextuales. Guarda historial en chat_history.json (máx. 20 pares).
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -14,8 +15,10 @@ from .utils import get_api_key
 logger = logging.getLogger("gmail_processor.chat")
 
 CHAT_HISTORY_PATH = Path("chat_history.json")
-_MAX_HISTORY = 20   # máximo de pares usuario/asistente
-_MODEL       = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+_MAX_HISTORY     = 20    # máximo de pares usuario/asistente
+_MODEL           = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+_MAX_RETRIES     = 3
+_BASE_DELAY      = 2.0   # seconds; doubles on each retry
 
 
 class AssistantChat:
@@ -70,14 +73,30 @@ class AssistantChat:
         ]
         api_messages.append({"role": "user", "content": user_message})
 
-        try:
-            resp   = client.messages.create(
-                model=_MODEL, max_tokens=1000,
-                system=system_prompt, messages=api_messages,
-            )
-            answer = resp.content[0].text.strip()
-        except Exception as exc:
-            return f"Ocurrió un problema al contactar al asistente: {exc}"
+        delay = _BASE_DELAY
+        answer: str = ""
+        last_exc: Exception | None = None
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                resp = client.messages.create(
+                    model=_MODEL, max_tokens=1000,
+                    system=system_prompt, messages=api_messages,
+                )
+                answer = resp.content[0].text.strip()
+                break
+            except Exception as exc:
+                last_exc = exc
+                status = getattr(exc, "status_code", None)
+                if isinstance(status, int) and status in (429, 500, 503) and attempt < _MAX_RETRIES:
+                    logger.warning(
+                        f"Chat API error ({status}), retry {attempt}/{_MAX_RETRIES} in {delay:.0f}s"
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                return f"Ocurrió un problema al contactar al asistente: {exc}"
+        else:
+            return f"Ocurrió un problema al contactar al asistente: {last_exc}"
 
         # Guardar en historial
         ts = datetime.now().isoformat(timespec="seconds")

@@ -330,7 +330,10 @@ def _get_header(message: dict, name: str) -> str:
 def _sender_email(message: dict) -> str:
     raw = _get_header(message, "From")
     if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
+        start = raw.rfind("<")
+        end = raw.find(">", start)
+        if end > start:
+            return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
 
 
