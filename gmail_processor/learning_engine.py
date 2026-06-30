@@ -662,8 +662,12 @@ def _email_from_headers(headers: list[dict]) -> str:
     for h in headers:
         if h["name"].lower() == "from":
             raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
+            if "<" in raw:
+                start = raw.rfind("<")
+                end = raw.find(">", start)
+                if end > start:
+                    return raw[start + 1 : end].strip().lower()
+            return raw.strip().lower()
     return ""
 
 

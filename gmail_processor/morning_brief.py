@@ -93,6 +93,12 @@ class MorningBrief:
             except Exception:
                 continue
 
+        # Unsubscribe candidates: pending senders with unsubscribe link and low score
+        unsubscribe_count = sum(
+            1 for meta in state.get("pending_meta", {}).values()
+            if "has_unsubscribe" in meta.get("signals", []) and meta.get("score", 50) < 50
+        )
+
         # Last cleanup run info
         last_cleanup = self._read_json("cleanup_summary.json", {})
         last_cleanup_info = None
@@ -125,6 +131,8 @@ class MorningBrief:
             parts.append(f"{pending_count} contacto{'s' if pending_count > 1 else ''} pendiente{'s' if pending_count > 1 else ''} de revisión")
         if alerts:
             parts.append(f"{len(alerts)} aviso{'s' if len(alerts) > 1 else ''} de tus contactos")
+        if unsubscribe_count > 0:
+            parts.append(f"{unsubscribe_count} remitente{'s' if unsubscribe_count > 1 else ''} del que{'s' if unsubscribe_count > 1 else ''} podrías darte de baja")
 
         summary_text = ("Hoy " + ", ".join(parts) + ".") if parts else "Todo está en orden. Tu correo está al día."
 
@@ -139,6 +147,7 @@ class MorningBrief:
             "spam_count":           spam,
             "last_cleanup":         last_cleanup_info,
             "cleanup_recommended":  cleanup_recommended,
+            "unsubscribe_count":    unsubscribe_count,
             "generated_at":         datetime.now().isoformat(timespec="seconds"),
         }
 
