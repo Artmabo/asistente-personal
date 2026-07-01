@@ -20,12 +20,13 @@ class GmailActions:
         self.service  = service
         self.dry_run  = dry_run
         self._labels: dict[str, str] = {}   # label name → label id cache
+        self._labels_loaded = False
 
     # ── Label management ──────────────────────────────────────────────────────
 
     def ensure_label(self, name: str) -> str:
         """Returns the label ID for `name`, creating it in Gmail if needed."""
-        if not self._labels:
+        if not self._labels_loaded:
             self._load_labels()
 
         if name in self._labels:
@@ -54,7 +55,8 @@ class GmailActions:
 
     def _load_labels(self):
         result = self._call(self.service.users().labels().list, userId="me")
-        if result:
+        if result is not None:
+            self._labels_loaded = True
             for lbl in result.get("labels", []):
                 self._labels[lbl["name"]] = lbl["id"]
 
@@ -70,7 +72,7 @@ class GmailActions:
         return self._modify(msg_id, add=[label_id])
 
     def remove_label(self, msg_id: str, label_name: str) -> bool:
-        if not self._labels:
+        if not self._labels_loaded:
             self._load_labels()
         label_id = self._labels.get(label_name)
         if not label_id:
