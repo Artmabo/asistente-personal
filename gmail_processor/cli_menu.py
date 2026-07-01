@@ -768,15 +768,15 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         return False
 
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if (f'"{email}"' in line or repr(email) in line) and not line.strip().startswith("#"):
             return False  # already exists
 
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f'    {email!r}: {{"label": {label!r}, "mark_important": {important!r}}},'
     lines.insert(end_idx, new_entry)
 
     try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        from .utils import atomic_write_text
+        atomic_write_text(str(rules_path), "\n".join(lines) + "\n")
         return True
     except OSError:
         return False
@@ -792,7 +792,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if (f'"{email}"' in line or repr(email) in line) and not line.strip().startswith("#"):
             removed = True
             continue
         new_lines.append(line)
@@ -801,7 +801,8 @@ def _patch_rules_remove_contact(email: str) -> bool:
         return False
 
     try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        from .utils import atomic_write_text
+        atomic_write_text(str(rules_path), "\n".join(new_lines) + "\n")
         return True
     except OSError:
         return False
@@ -841,20 +842,21 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if f'"{domain}"' in block_text or repr(domain) in block_text:
         return False
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{domain!r}],\n'
+        f'        "label": {label!r},\n'
+        f'        "action": {action!r},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
 
     try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        from .utils import atomic_write_text
+        atomic_write_text(str(rules_path), "\n".join(lines) + "\n")
         return True
     except OSError:
         return False

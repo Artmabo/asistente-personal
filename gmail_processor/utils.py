@@ -23,6 +23,19 @@ def get_header(headers: list[dict], name: str) -> str:
     return ""
 
 
+def atomic_write_text(path: str, content: str) -> None:
+    """Writes `content` to `path` via a temp file + os.replace.
+
+    Prevents a crash or interruption mid-write from leaving `path`
+    truncated or corrupted (important for files like rules.py that
+    are imported/reloaded as live Python source).
+    """
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp_path, path)
+
+
 def extract_email_address(raw: str) -> str:
     """Extracts a bare email address from a raw From/To header value.
 

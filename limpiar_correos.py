@@ -1,9 +1,29 @@
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+_MAX_RETRIES = 3
+_BASE_DELAY  = 1.0   # seconds before first retry (doubles each attempt)
+
+
+def _call_with_retry(request):
+    """Executes a Gmail API request with exponential-backoff retry on 429/5xx."""
+    delay = _BASE_DELAY
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return request.execute()
+        except HttpError as e:
+            status = int(e.resp.status)
+            if status in (429, 500, 503) and attempt < _MAX_RETRIES:
+                print(f"  Rate limit/server error ({status}), reintento {attempt}/{_MAX_RETRIES} en {delay:.1f}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
 
 CATEGORIAS = {
     "spam":            "in:spam",
@@ -36,14 +56,14 @@ def mover_lote_a_papelera(service, ids: list) -> int:
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
         try:
-            service.users().messages().batchModify(
+            _call_with_retry(service.users().messages().batchModify(
                 userId='me',
                 body={
                     'ids': chunk,
                     'addLabelIds': ['TRASH'],
                     'removeLabelIds': ['INBOX'],
                 }
-            ).execute()
+            ))
             total += len(chunk)
         except HttpError as e:
             print(f"  Error en lote ({len(chunk)} mensajes): {e}")
@@ -87,12 +107,12 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         while True:
             page_num += 1
             try:
-                result = service.users().messages().list(
+                result = _call_with_retry(service.users().messages().list(
                     userId='me',
                     q=query,
                     maxResults=500,
                     pageToken=page_token,
-                ).execute()
+                ))
             except HttpError as e:
                 print(f"  Error al listar página {page_num}: {e}")
                 break
@@ -162,7 +182,7 @@ def limpiar_todo_basura(service) -> dict:
 
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
 
-def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False):
+def limpiar_correos(service=None, meses=6, solo_no_leidos=True):
     if service is None:
         service = obtener_servicio()
     fecha = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")
@@ -186,14 +206,14 @@ if __name__ == '__main__':
         help="Solo cuenta los mensajes que se eliminarían, sin moverlos",
     )
     parser.add_argument(
-        "--categoria", choices=list(CATEGORIAS.keys()), default=None,
-        help="Categoría específica a limpiar (por defecto: no leídos > 6 meses)",
+        "--categoria", nargs="+", choices=list(CATEGORIAS.keys()), default=None,
+        help="Una o más categorías a limpiar, separadas por espacio "
+             "(por defecto: no leídos > 6 meses)",
     )
     args = parser.parse_args()
 
     svc = obtener_servicio()
-    categorias = [args.categoria] if args.categoria else None
-    resultado = limpiar_bandeja(svc, categorias=categorias, dry_run=args.dry_run)
+    resultado = limpiar_bandeja(svc, categorias=args.categoria, dry_run=args.dry_run)
     if resultado:
         accion = "encontrados" if args.dry_run else "enviados a papelera"
         print(f"\nTotal {accion}: {resultado['exitos']} / {resultado['procesados']}")
