@@ -5,7 +5,7 @@ Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
 """
 
 from limpiar_correos import limpiar_correos
-from asistente_personal import get_gmail_service
+from gmail_processor.auth import get_service
 
 
 def ejemplo_1_modo_conservador():
@@ -17,14 +17,13 @@ def ejemplo_1_modo_conservador():
     print("✅ Circuit breaker automático")
     print("✅ Respeita límites de Gmail API")
     print("❌ Más lento pero confiable")
-    
+
     resultado = limpiar_correos(
         meses=6,
         solo_no_leidos=True,
-        aggressive=False  # Conservative mode
     )
-    
-    print(f"\n✓ Resultado: {resultado['eliminados']} correos eliminados")
+
+    print(f"\n✓ Resultado: {resultado['exitos']} de {resultado['procesados']} correos eliminados")
 
 
 def ejemplo_2_listar_sin_borrar():
@@ -32,8 +31,8 @@ def ejemplo_2_listar_sin_borrar():
     print("\n" + "="*60)
     print("EJEMPLO 2: Verificación Previa (Dry Run)")
     print("="*60)
-    
-    service = get_gmail_service()
+
+    service = get_service()
     
     # Buscar sin eliminar (seguro para previsualizacion)
     from datetime import datetime, timedelta
@@ -58,15 +57,14 @@ def ejemplo_3_limpieza_personalizada():
     print("\n" + "="*60)
     print("EJEMPLO 3: Limpieza Personalizada")
     print("="*60)
-    
+
     # Eliminar TODOS los correos (leídos y no leídos) de más de 1 año
     resultado = limpiar_correos(
-        meses=12,           # Más de 1 año
+        meses=12,              # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
     )
-    
-    print(f"\n✓ Se eliminaron {resultado['eliminados']} correos")
+
+    print(f"\n✓ Se eliminaron {resultado['exitos']} de {resultado['procesados']} correos")
 
 
 def ejemplo_4_comparacion_modos():

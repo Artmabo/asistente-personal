@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import get_header as _get_header
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -113,14 +115,6 @@ def _date_filter(days: int | None) -> str:
         return ""
     since = (datetime.now() - timedelta(days=days)).strftime("%Y/%m/%d")
     return f" after:{since}"
-
-
-def _get_header(headers: list[dict], name: str) -> str:
-    name_l = name.lower()
-    for h in headers:
-        if h.get("name", "").lower() == name_l:
-            return h.get("value", "")
-    return ""
 
 
 def _parse_date(date_str: str) -> datetime | None:
