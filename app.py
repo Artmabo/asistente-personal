@@ -48,6 +48,7 @@ st.session_state.setdefault("profiler_result",    None)
 st.session_state.setdefault("chat_messages",      [])
 st.session_state.setdefault("chat_open",          False)
 st.session_state.setdefault("chat_input_counter", 0)
+st.session_state.setdefault("unsub_data",         None)
 
 # ── Constantes ──────────────────────────────────────────────────────────────────
 CATS = [
@@ -180,6 +181,7 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
         from collections import Counter
+        from gmail_processor.utils import get_header, extract_email_address
         svc    = st.session_state.service
         result = svc.users().messages().list(
             userId="me", q="in:inbox", maxResults=500,
@@ -193,17 +195,9 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                     userId="me", id=stub["id"],
                     format="metadata", metadataHeaders=["From"],
                 ).execute()
-                raw = next(
-                    (h["value"] for h in msg.get("payload", {}).get("headers", [])
-                     if h["name"].lower() == "from"),
-                    "",
-                )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
+                raw   = get_header(msg.get("payload", {}).get("headers", []), "From")
+                email = extract_email_address(raw)
+                name  = raw.split("<")[0].strip().strip('"').strip("'") if "<" in raw else ""
                 if email:
                     counts[email] += 1
                     if email not in names and name:
@@ -481,6 +475,17 @@ def _ca_apply(decisions: dict) -> dict:
         return result
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def _cargar_candidatos_unsubscribe() -> list[dict]:
+    """Remitentes con enlace de baja (List-Unsubscribe) y bajo score, detectados
+    por el último 'Analizar correos'. Usa solo estado local — no llama a Gmail."""
+    try:
+        analyzer = _ca_get_analyzer()
+        return analyzer.get_unsubscribe_candidates()
+    except Exception as exc:
+        st.error(f"Error al cargar candidatos: {exc}")
+        return []
 
 
 def _ca_state_summary() -> dict | None:
@@ -1881,6 +1886,62 @@ elif _current_page == "limpiar":
                             st.success(f"🛡️ **{_se_email}** protegido con etiqueta **{_ps_res['label']}**.")
                         elif _ps_res.get("error"):
                             st.error(f"Error: {_ps_res['error']}")
+                    st.markdown("---")
+
+        # ── Candidatos para darse de baja ───────────────────────────────────────
+        st.markdown("")
+        with st.expander("📭 Candidatos para darte de baja (unsubscribe)"):
+            st.caption(
+                "Remitentes con opción de darse de baja y baja probabilidad de ser "
+                "un contacto personal, según tu último análisis en 'Analizar correos'. "
+                "Es instantáneo — no vuelve a consultar Gmail, solo lee el análisis guardado."
+            )
+            if st.button("🔍 Buscar candidatos", key="btn_load_unsub"):
+                with st.spinner("Buscando…"):
+                    st.session_state["unsub_data"] = _cargar_candidatos_unsubscribe()
+                st.rerun()
+
+            _unsub = st.session_state["unsub_data"]
+            if _unsub is None:
+                st.info(
+                    "Haz clic en 'Buscar candidatos' para ver remitentes candidatos a dar de baja."
+                )
+            elif not _unsub:
+                st.info(
+                    "No se encontraron candidatos todavía. Ejecuta primero "
+                    "'Analizar correos' para tener más datos."
+                )
+            else:
+                for _ui, _ucand in enumerate(_unsub):
+                    _u_email = _ucand["email"]
+                    _u_name  = _ucand.get("name", "")
+                    _u_label = f"{_u_name} <{_u_email}>" if _u_name else _u_email
+                    _u_subj  = _ucand.get("sample_subjects", [])
+                    _ursk    = f"result_unsub_{_ui}"
+                    st.session_state.setdefault(_ursk, None)
+
+                    _u_c1, _u_c2, _u_c3 = st.columns([6, 2, 2])
+                    with _u_c1:
+                        st.markdown(f"**{_u_label}**")
+                        if _u_subj:
+                            st.caption("  ·  ".join(f'"{s[:40]}"' for s in _u_subj[:2]))
+                    with _u_c2:
+                        st.caption(f"{_ucand.get('count', 0)} correos · score {_ucand.get('score', 0)}")
+                    with _u_c3:
+                        if st.button("🗑️ Limpiar", key=f"btn_unsub_{_ui}", use_container_width=True):
+                            with st.spinner(f"Limpiando {_u_email}…"):
+                                _u_r = _limpiar_remitente(_u_email)
+                            st.session_state[_ursk] = _u_r
+                            st.rerun()
+
+                    if st.session_state.get(_ursk):
+                        _u_res = st.session_state[_ursk]
+                        _u_mov = _u_res.get("exitos", 0)
+                        _u_tot = _u_res.get("procesados", 0)
+                        if _u_tot == 0:
+                            st.info(f"No se encontraron correos de {_u_email}.")
+                        else:
+                            st.success(f"✓ {_u_mov} de {_u_tot} correos de {_u_email} movidos.")
                     st.markdown("---")
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -10,6 +10,7 @@ from .actions import GmailActions
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
+from .utils import get_header
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
@@ -125,7 +126,7 @@ class GmailProcessor:
         self.stats["processed"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):
-        sender  = _header(message, "From")  or "?"
+        sender  = _header(message, "From")    or "?"
         subject = _header(message, "Subject") or "(sin asunto)"
 
         logger.info(
@@ -175,10 +176,7 @@ class GmailProcessor:
 
 
 def _header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
+    return get_header(message.get("payload", {}).get("headers", []), name)
 
 
 def _short(text: str, n: int) -> str:
