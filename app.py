@@ -2,6 +2,7 @@
 Gmail Cleanup — Interfaz web para usuarios no técnicos.
 Ejecutar con:  streamlit run app.py
 """
+import html
 import os
 import sys
 import json
@@ -167,11 +168,9 @@ def _mostrar_resultado_cat(r: dict | None, nombre: str):
 def _ejecutar_procesador(dry_run: bool) -> dict:
     try:
         import logging
-        import gmail_processor.rules as cfg
         from gmail_processor import GmailProcessor, setup_logging
-        cfg.DRY_RUN = dry_run
         setup_logging(level=logging.INFO)
-        processor = GmailProcessor(service=st.session_state.service)
+        processor = GmailProcessor(service=st.session_state.service, dry_run=dry_run)
         return processor.run()
     except Exception as exc:
         return {"error": str(exc)}
@@ -180,6 +179,7 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
         from collections import Counter
+        from gmail_processor.utils import get_header, parse_from_header
         svc    = st.session_state.service
         result = svc.users().messages().list(
             userId="me", q="in:inbox", maxResults=500,
@@ -193,17 +193,8 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                     userId="me", id=stub["id"],
                     format="metadata", metadataHeaders=["From"],
                 ).execute()
-                raw = next(
-                    (h["value"] for h in msg.get("payload", {}).get("headers", [])
-                     if h["name"].lower() == "from"),
-                    "",
-                )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
+                headers = msg.get("payload", {}).get("headers", [])
+                email, name = parse_from_header(get_header(headers, "From"))
                 if email:
                     counts[email] += 1
                     if email not in names and name:
@@ -266,42 +257,17 @@ def _proteger_remitente(email: str, name: str) -> dict:
     try:
         import importlib
         import gmail_processor.rules as rules_mod
+        from gmail_processor import contact_rules_store
 
         if email in rules_mod.CONTACT_RULES:
             return {"already_protected": True}
 
-        label      = _derivar_label(email, name)
-        rules_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "gmail_processor", "rules.py",
+        label = _derivar_label(email, name)
+        added = contact_rules_store.add_contact(
+            email, label, mark_important=True, existing=rules_mod.CONTACT_RULES,
         )
-
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
-
-        in_cr     = False
-        depth     = 0
-        insert_at = -1
-        for i, line in enumerate(lines):
-            if not in_cr:
-                if "CONTACT_RULES" in line and "=" in line and "{" in line:
-                    in_cr = True
-                    depth = line.count("{") - line.count("}")
-            else:
-                depth += line.count("{") - line.count("}")
-                if depth <= 0:
-                    insert_at = i
-                    break
-
-        if insert_at == -1:
-            return {"error": "No se encontró CONTACT_RULES en rules.py"}
-
-        # Use repr() so quotes, backslashes and special chars are safely escaped
-        new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
-        lines.insert(insert_at, new_line)
-
-        with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        if not added:
+            return {"already_protected": True}
 
         importlib.reload(rules_mod)
         return {"success": True, "email": email, "label": label}
@@ -410,10 +376,8 @@ def _ejecutar_smart_setup(scan_days: int | None, status_ph) -> dict:
 
 def _ejecutar_debug() -> tuple[dict, str]:
     import logging
-    import gmail_processor.rules as cfg
     from gmail_processor import GmailProcessor
 
-    cfg.DRY_RUN   = True
     log_lines: list[str] = []
 
     class _BufHandler(logging.Handler):
@@ -427,7 +391,7 @@ def _ejecutar_debug() -> tuple[dict, str]:
     root.setLevel(logging.DEBUG)
     root.addHandler(handler)
     try:
-        processor = GmailProcessor(service=st.session_state.service)
+        processor = GmailProcessor(service=st.session_state.service, dry_run=True)
         stats     = processor.run()
         return stats, "\n".join(log_lines)
     except Exception as exc:
@@ -508,6 +472,16 @@ def _ca_learning_summary() -> dict:
     from gmail_processor.contact_analyzer import ContactAnalyzer
     a = ContactAnalyzer(st.session_state.service)
     return a.get_learning_stats()
+
+
+def _ca_unsubscribe_candidates() -> list[dict]:
+    """Senders with an unsubscribe link and a low (commercial/spam-leaning) score.
+
+    Reads only local state (no Gmail calls) — safe to call on every page render.
+    """
+    from gmail_processor.contact_analyzer import ContactAnalyzer
+    a = ContactAnalyzer(st.session_state.service)
+    return a.get_unsubscribe_candidates()
 
 
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
@@ -1131,8 +1105,10 @@ if _current_page == "inicio":
                     if _bnif:
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
+                            # _bm['name'] comes from the sender's Gmail display name — escape
+                            # before interpolating into an unsafe_allow_html block.
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{html.escape(_bm.get('name', ''))}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1336,8 +1312,10 @@ elif _current_page == "contactos":
                                         unsafe_allow_html=True,
                                     )
                                 if _cptopics:
+                                    # key_topics is AI-generated from email content — escape
+                                    # before interpolating into an unsafe_allow_html block.
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(t)}</span>' for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")
@@ -1538,6 +1516,45 @@ elif _current_page == "analizar":
                     with st.expander(f"⚠️ {len(_apr_e)} errores"):
                         for _e in _apr_e:
                             st.caption(_e)
+
+        # ── Candidatos para darte de baja ──────────────────────────────────────
+        if _ca_prev:
+            try:
+                _unsub_candidates = _ca_unsubscribe_candidates()
+            except Exception:
+                _unsub_candidates = []
+
+            if _unsub_candidates:
+                st.markdown("")
+                with st.expander(
+                    f"📤 {len(_unsub_candidates)} remitentes con enlace para darte de baja",
+                    expanded=False,
+                ):
+                    st.caption(
+                        "Correos con puntaje bajo (comerciales/spam) que incluyen un enlace "
+                        "de cancelación de suscripción. Suelen ser buenos candidatos para "
+                        "darte de baja en vez de solo eliminar los correos uno a uno."
+                    )
+                    _pend_emails = {p["email"] for p in _pend_list}
+                    for _uc in _unsub_candidates[:10]:
+                        _uc_addr  = _uc["email"]
+                        _uc_label = f"{_uc['name']} <{_uc_addr}>" if _uc.get("name") else _uc_addr
+                        _uc1, _uc2 = st.columns([5, 2])
+                        with _uc1:
+                            st.markdown(f"**{_uc_label}**")
+                            st.caption(f"📧 {_uc['count']} correos · puntaje {_uc['score']}/100")
+                        with _uc2:
+                            if _uc_addr in _pend_emails:
+                                if st.button(
+                                    "🗑️ Marcar como spam",
+                                    key=f"ca_unsub_spam_{_uc_addr}",
+                                    use_container_width=True,
+                                ):
+                                    _decisions[_uc_addr] = "spam"
+                                    st.session_state["ca_decisions"] = _decisions
+                                    st.rerun()
+                            else:
+                                st.caption("Ya marcado como spam")
 
         # ── Configuración del análisis ────────────────────────────────────────
         st.markdown("")

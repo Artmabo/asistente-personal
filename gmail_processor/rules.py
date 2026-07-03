@@ -1,7 +1,13 @@
 """
 Reglas editables del procesador de correos.
 Modifica este archivo para personalizar el comportamiento del sistema.
+
+Los contactos/dominios añadidos en tiempo de ejecución (botón "Proteger
+remitente", asistente de configuración, análisis de contactos) NO se escriben
+aquí — se guardan en config/contact_rules.json (ver contact_rules_store.py) y
+se fusionan sobre estos valores por defecto al final de este archivo.
 """
+from . import contact_rules_store as _store
 
 # ── Contactos protegidos ──────────────────────────────────────────────────────
 # Estos remitentes NUNCA serán eliminados ni archivados. Solo se etiquetan.
@@ -134,3 +140,9 @@ MAX_RESULTS_PER_PAGE = 100   # Correos por página al listar (máx 500)
 QUERY_FILTER = "is:inbox"    # Query Gmail para filtrar qué correos procesar
 DRY_RUN = True               # True = solo simula acciones (no hace cambios reales)
                              # Cambia a False cuando quieras ejecutar en producción
+
+# ── Overrides añadidos en tiempo de ejecución ─────────────────────────────────
+# Fusiona config/contact_rules.json (gitignored) sobre los valores por defecto.
+_overrides = _store.load()
+CONTACT_RULES.update(_overrides["contacts"])
+DOMAIN_RULES.extend(_overrides["domains"])

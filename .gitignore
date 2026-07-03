@@ -4,6 +4,9 @@ config/credentials.json
 credentials.json
 *.json.bak
 
+# ── Contactos añadidos en tiempo de ejecución (datos personales) ─────────────
+config/contact_rules.json
+
 # ── Claude Code internal settings ────────────────────────────────────────────
 .claude/
 

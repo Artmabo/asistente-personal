@@ -212,7 +212,9 @@ def format_next_run(iso: str | None) -> str:
         return "No programada"
     try:
         dt    = datetime.fromisoformat(iso)
-        now   = datetime.now()
+        # job.next_run_time from APScheduler is tz-aware; match now()'s
+        # awareness so the subtraction below doesn't raise a TypeError.
+        now   = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
         delta = dt - now
         if delta.total_seconds() < 0:
             return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"

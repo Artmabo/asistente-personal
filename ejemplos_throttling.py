@@ -24,7 +24,7 @@ def ejemplo_1_modo_conservador():
         aggressive=False  # Conservative mode
     )
     
-    print(f"\n✓ Resultado: {resultado['eliminados']} correos eliminados")
+    print(f"\n✓ Resultado: {resultado['exitos']} correos eliminados")
 
 
 def ejemplo_2_listar_sin_borrar():
@@ -66,7 +66,7 @@ def ejemplo_3_limpieza_personalizada():
         aggressive=False
     )
     
-    print(f"\n✓ Se eliminaron {resultado['eliminados']} correos")
+    print(f"\n✓ Se eliminaron {resultado['exitos']} correos")
 
 
 def ejemplo_4_comparacion_modos():
@@ -120,7 +120,7 @@ def ejemplo_6_errores_comunes():
             "causa": "Token expirado o inválido",
             "solucion": [
                 "1. Elimina token.json",
-                "2. Ejecuta: python asistente-personal.py",
+                "2. Ejecuta: python asistente_personal.py",
                 "3. Autoriza de nuevo en navegador"
             ]
         }
