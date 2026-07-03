@@ -24,7 +24,7 @@ _CLAUDE_BASE_DELAY  = 2.0
 PROFILES_PATH = Path("contact_profiles.json")
 _MAX_EMAILS   = 50
 _MAX_BODY     = 500
-_MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+_MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 
 
 def _empty_profiles() -> dict:
@@ -245,10 +245,8 @@ class ContactProfiler:
                     return h.get("value", "")
             return ""
 
-        from_raw   = hdr("From")
-        from_name  = ""
-        if "<" in from_raw:
-            from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
+        from_name, _addr = email.utils.parseaddr(hdr("From"))
+        from_name = from_name.strip().strip('"').strip("'")
 
         date_str    = hdr("Date")
         date_parsed = None

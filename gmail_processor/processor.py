@@ -10,6 +10,7 @@ from .actions import GmailActions
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
+from .utils import extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
@@ -32,12 +33,20 @@ def setup_logging(
 
 
 class GmailProcessor:
-    def __init__(self, service=None):
+    def __init__(self, service=None, dry_run: bool | None = None):
+        """`dry_run` defaults to cfg.DRY_RUN when not given explicitly.
+
+        Pass it explicitly (rather than mutating cfg.DRY_RUN before calling
+        this) in contexts where multiple runs could be in flight at once —
+        e.g. a multi-session Streamlit app — since cfg.DRY_RUN is a shared
+        module-level global.
+        """
+        self.dry_run    = cfg.DRY_RUN if dry_run is None else dry_run
         self.service    = service or get_service()
         self.classifier = EmailClassifier()
-        self.actions    = GmailActions(self.service, dry_run=cfg.DRY_RUN)
+        self.actions    = GmailActions(self.service, dry_run=self.dry_run)
         self.engine     = LearningEngine()
-        self.audit      = AuditLogger(dry_run=cfg.DRY_RUN)
+        self.audit      = AuditLogger(dry_run=self.dry_run)
         self.stats      = {
             "processed": 0,
             "labeled":   0,
@@ -55,7 +64,7 @@ class GmailProcessor:
         learning=True → enables writing to learning_state.json and threshold adjustments.
         """
         query = query or cfg.QUERY_FILTER
-        mode  = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode  = "DRY RUN" if self.dry_run else "LIVE"
         logger.info(f"{'='*55}")
         logger.info(f"  Gmail Processor — mode={mode}  query='{query}'")
         logger.info(f"{'='*55}")
@@ -89,6 +98,7 @@ class GmailProcessor:
                 break
 
         self._print_summary()
+        self.audit.flush()
 
         if cleanup:
             cleaner = StorageCleaner(
@@ -127,6 +137,8 @@ class GmailProcessor:
     def _apply(self, msg_id: str, message: dict, c: Classification):
         sender  = _header(message, "From")  or "?"
         subject = _header(message, "Subject") or "(sin asunto)"
+        email   = extract_email_address(sender)
+        domain  = email.split("@")[-1] if "@" in email else ""
 
         logger.info(
             f"[{c.email_type.upper():<12}] {_short(sender, 40)} | {_short(subject, 50)}"
@@ -139,24 +151,37 @@ class GmailProcessor:
                 self.stats["labeled"] += 1
 
         # Execute primary action
+        decision = "SKIP"
         match c.action:
             case "trash":
                 if c.protected:
                     logger.warning(f"  Blocked trash on protected message {msg_id}")
                     self.stats["skipped"] += 1
+                    decision = "SKIP"
                 elif self.actions.trash(msg_id):
                     self.stats["trashed"] += 1
+                    decision = "TRASH"
 
             case "archive":
                 if self.actions.archive(msg_id):
                     self.stats["archived"] += 1
+                    decision = "KEEP"
 
             case "mark_important":
                 if self.actions.mark_important(msg_id):
                     self.stats["important"] += 1
+                    decision = "KEEP"
 
             case _:  # "label_only" or "unknown"
                 self.stats["skipped"] += 1
+                decision = "SKIP"
+
+        self.audit.log(
+            msg_id=msg_id, sender=email, domain=domain, score=0.0,
+            decision=decision, action=c.action, rule=c.email_type,
+            reason=f"classifier:{c.email_type}",
+            protected=c.protected,
+        )
 
     def _print_summary(self):
         s = self.stats

@@ -32,6 +32,9 @@ Usa inteligencia artificial (Claude de Anthropic) para analizar contactos, respo
 - Clasifica automáticamente tus correos en: personal, publicidad, notificación, suscripción, spam
 - Modo simulación: ver las decisiones sin aplicar cambios reales
 - Aprendizaje: el sistema mejora con el tiempo según tu feedback
+- Sugerencias de remitentes para darte de baja: detecta correos con enlace de
+  cancelación de suscripción y los prioriza por volumen, para que sepas de
+  quién conviene darte de baja en vez de solo borrar correos uno a uno
 
 ### Limpiar correos
 - Limpieza segura de correos no importantes

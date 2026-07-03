@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
+from .utils import get_header, extract_email_address
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -126,33 +127,40 @@ def _empty_cat() -> dict:
 class Metrics:
     """Persistent quality metrics backed by the state dict."""
 
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, on_change=None):
         self._d = data
+        self._on_change = on_change or (lambda: None)
 
     def record_processed(self):
         self._d["total_processed"] += 1
+        self._on_change()
 
     def record_keep(self, category: str = ""):
         self._d["total_keep"] += 1
         if category:
             self._d["by_category"].setdefault(category, _empty_cat())["kept"] += 1
+        self._on_change()
 
     def record_trash(self, rule_name: str = ""):
         self._d["total_trash"] += 1
         if rule_name:
             self._d["by_category"].setdefault(rule_name, _empty_cat())["trashed"] += 1
+        self._on_change()
 
     def record_false_positive(self, rule_name: str = ""):
         self._d["false_positives"] += 1
         if rule_name:
             self._d["by_category"].setdefault(rule_name, _empty_cat())["false_positives"] += 1
+        self._on_change()
 
     def record_manual_override(self):
         self._d["manual_overrides"] += 1
+        self._on_change()
 
     def touch_run(self):
         self._d["last_run"]    = datetime.now().isoformat(timespec="seconds")
         self._d["runs_total"] += 1
+        self._on_change()
 
     def accuracy_estimate(self) -> dict[str, float]:
         result: dict[str, float] = {}
@@ -228,8 +236,14 @@ class LearningEngine:
     def __init__(self, state_path: str = "learning_state.json"):
         self.path    = Path(state_path)
         self.state   = self._load()
-        self.metrics = Metrics(self.state.setdefault("metrics", _new_metrics()))
         self._dirty  = False
+        self.metrics = Metrics(
+            self.state.setdefault("metrics", _new_metrics()),
+            on_change=self._mark_dirty,
+        )
+
+    def _mark_dirty(self):
+        self._dirty = True
 
     # ── Score calculation ─────────────────────────────────────────────────────
 
@@ -659,12 +673,7 @@ def _decay(last_accepted: str, lam: float) -> float:
 
 
 def _email_from_headers(headers: list[dict]) -> str:
-    for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
-    return ""
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _fmt(n: float) -> str:

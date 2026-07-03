@@ -684,35 +684,18 @@ class ContactAnalyzer:
         try:
             import importlib
             import gmail_processor.rules as rules_mod
+            from . import contact_rules_store
 
             if email_addr in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
-            label      = _derive_label(email_addr, name)
-            rules_path = Path(__file__).parent / "rules.py"
-            content    = rules_path.read_text(encoding="utf-8")
-            lines      = content.split("\n")
+            label = _derive_label(email_addr, name)
+            added = contact_rules_store.add_contact(
+                email_addr, label, mark_important=True, existing=rules_mod.CONTACT_RULES,
+            )
+            if not added:
+                return {"already_protected": True}
 
-            in_cr = False; depth = 0; insert_at = -1
-            for i, line in enumerate(lines):
-                if not in_cr:
-                    if "CONTACT_RULES" in line and "=" in line and "{" in line:
-                        in_cr = True
-                        depth = line.count("{") - line.count("}")
-                else:
-                    depth += line.count("{") - line.count("}")
-                    if depth <= 0:
-                        insert_at = i
-                        break
-
-            if insert_at == -1:
-                return {"error": "CONTACT_RULES closing brace not found"}
-
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
-            lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:

@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
+from .utils import get_header, parse_from_header
+
 logger = logging.getLogger("gmail_processor.smart_setup")
 
 # ── Scan limits ───────────────────────────────────────────────────────────────
@@ -407,11 +409,10 @@ class SmartSetup:
         label_ids = message.get("labelIds", [])
         thread_id = message.get("threadId", "")
 
-        email = _extract_email(headers)
+        email, name = parse_from_header(get_header(headers, "From"))
         if not email or email == self.user_email:
             return
 
-        name   = _extract_name(headers)
         domain = email.split("@")[-1] if "@" in email else ""
 
         if email not in senders:
@@ -566,26 +567,3 @@ def _behavioral_reclassify(stats: SenderStats) -> str:
 
 def _is_definitely_automated(email: str) -> bool:
     return email.split("@")[0].lower() in _DEFINITELY_AUTOMATED_LOCALS
-
-
-# ── Header helpers ────────────────────────────────────────────────────────────
-
-def _get_header(headers: list[dict], name: str) -> str:
-    for h in headers:
-        if h.get("name", "").lower() == name.lower():
-            return h.get("value", "")
-    return ""
-
-
-def _extract_email(headers: list[dict]) -> str:
-    raw = _get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
-
-
-def _extract_name(headers: list[dict]) -> str:
-    raw = _get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[0].strip().strip('"').strip("'")
-    return ""

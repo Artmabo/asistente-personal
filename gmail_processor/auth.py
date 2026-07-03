@@ -1,9 +1,12 @@
+import logging
 import os
 import stat
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+
+logger = logging.getLogger("gmail_processor.auth")
 
 SCOPES = ["https://mail.google.com/"]
 
@@ -22,8 +25,9 @@ def get_service(
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-            except Exception:
+            except Exception as exc:
                 # Refresh token revoked or network failure — force full re-auth
+                logger.warning(f"No se pudo refrescar el token ({exc}); se pedirá reautenticación")
                 creds = None
         if not creds or not creds.valid:
             if not os.path.exists(creds_path):
@@ -38,5 +42,8 @@ def get_service(
         fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w") as f:
             f.write(creds.to_json())
+        # os.open's mode only applies on creation — enforce it too on rewrite,
+        # in case token_path pre-existed with looser permissions.
+        os.chmod(token_path, stat.S_IRUSR | stat.S_IWUSR)
 
     return build("gmail", "v1", credentials=creds)
