@@ -37,3 +37,17 @@ def extract_email_address(raw: str) -> str:
         if end > start:
             return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
+
+
+def extract_display_name(raw: str) -> str:
+    """Extracts the display name from a raw From/To header value.
+
+    '"User <nickname>" <user@example.com>' → 'User <nickname>'
+    'user@example.com'                     → ''
+    """
+    if not raw:
+        return ""
+    start = raw.find("<")
+    if start == -1:
+        return ""
+    return raw[:start].strip().strip('"').strip("'")

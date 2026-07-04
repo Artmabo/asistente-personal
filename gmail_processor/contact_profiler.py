@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, extract_display_name
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -245,10 +245,8 @@ class ContactProfiler:
                     return h.get("value", "")
             return ""
 
-        from_raw   = hdr("From")
-        from_name  = ""
-        if "<" in from_raw:
-            from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
+        from_raw  = hdr("From")
+        from_name = extract_display_name(from_raw)
 
         date_str    = hdr("Date")
         date_parsed = None

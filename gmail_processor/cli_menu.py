@@ -59,6 +59,7 @@ def run_menu():
             elif choice == "9":  _menu_limpiar_spam(_get_service)
             elif choice == "10": _menu_limpiar_promo(_get_service)
             elif choice == "11": _menu_limpiar_todo(_get_service)
+            elif choice == "12": _menu_unsubscribe_candidates(_get_service)
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -86,6 +87,7 @@ def _main_menu() -> str:
         ("9",  "Limpiar spam          vaciar carpeta de spam"),
         ("10", "Limpiar promociones   vaciar categoría promociones"),
         ("11", "Limpiar todo          spam + promos + social + foros"),
+        ("12", "Darse de baja         remitentes candidatos a unsubscribe"),
         ("0",  "Salir"),
     ]
     for key, label in items:
@@ -918,6 +920,43 @@ def _menu_limpiar_todo(get_svc: Callable):
         return
     from limpiar_correos import limpiar_todo_basura
     limpiar_todo_basura(svc)
+    _pause()
+
+
+# ── 12. Darse de baja ─────────────────────────────────────────────────────────
+
+def _menu_unsubscribe_candidates(get_svc: Callable):
+    _section("CANDIDATOS PARA DARTE DE BAJA")
+    print("  Remitentes con enlace de baja (unsubscribe) y score bajo de")
+    print("  ContactAnalyzer — buena señal de correo comercial no deseado.")
+    print("  Requiere haber corrido antes 'Configuración inicial inteligente'")
+    print("  o el análisis de remitentes, para tener datos acumulados.")
+    print()
+
+    svc = get_svc()
+    if svc is None:
+        return
+
+    from .contact_analyzer import ContactAnalyzer
+    analyzer   = ContactAnalyzer(svc)
+    candidates = analyzer.get_unsubscribe_candidates()
+
+    if not candidates:
+        print("  No se encontraron candidatos todavía.")
+        _pause()
+        return
+
+    print(f"  {'REMITENTE':<40} {'SCORE':>6} {'CORREOS':>8}  ASUNTO DE EJEMPLO")
+    print(f"  {'─'*90}")
+    for i, c in enumerate(candidates, 1):
+        label  = (c["name"] or c["email"])[:37]
+        sample = (c["sample_subjects"][0] if c["sample_subjects"] else "")[:30]
+        print(f"  [{i:>2}] {label:<37} {c['score']:>6} {c['count']:>8}   {sample}")
+
+    print()
+    print("  Para dejar de recibir estos correos, usa el enlace 'unsubscribe'")
+    print("  que Gmail muestra junto al remitente, o márcalo como spam desde")
+    print("  la opción 5 (Feedback) si prefieres que el sistema lo aprenda.")
     _pause()
 
 

@@ -2,12 +2,16 @@
 Gmail Cleanup — Interfaz web para usuarios no técnicos.
 Ejecutar con:  streamlit run app.py
 """
+import html
+import logging
 import os
 import sys
 import json
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
+
+logger = logging.getLogger("gmail_processor.app")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -174,12 +178,14 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
         processor = GmailProcessor(service=st.session_state.service)
         return processor.run()
     except Exception as exc:
+        logger.exception("Error al ejecutar el procesador de inbox")
         return {"error": str(exc)}
 
 
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
         from collections import Counter
+        from gmail_processor.utils import extract_email_address, extract_display_name
         svc    = st.session_state.service
         result = svc.users().messages().list(
             userId="me", q="in:inbox", maxResults=500,
@@ -198,12 +204,8 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                      if h["name"].lower() == "from"),
                     "",
                 )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
+                email = extract_email_address(raw)
+                name  = extract_display_name(raw)
                 if email:
                     counts[email] += 1
                     if email not in names and name:
@@ -405,6 +407,7 @@ def _ejecutar_smart_setup(scan_days: int | None, status_ph) -> dict:
             "inbox_total": _counters["inbox"],
         }
     except Exception as exc:
+        logger.exception("Error durante smart setup")
         return {"error": str(exc)}
 
 
@@ -431,6 +434,7 @@ def _ejecutar_debug() -> tuple[dict, str]:
         stats     = processor.run()
         return stats, "\n".join(log_lines)
     except Exception as exc:
+        logger.exception("Error durante debug run")
         return {"error": str(exc)}, "\n".join(log_lines)
     finally:
         root.removeHandler(handler)
@@ -1131,8 +1135,11 @@ if _current_page == "inicio":
                     if _bnif:
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
+                            # Contact names come from Gmail "From" display names, which are
+                            # attacker-controlled — escape before rendering as raw HTML.
+                            _bm_name = html.escape(_bm.get("name", ""))
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{_bm_name}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1337,7 +1344,7 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(t)}</span>' for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")
@@ -2125,8 +2132,11 @@ elif _current_page == "avanzadas":
             _fb_submit = st.form_submit_button("Enviar feedback", type="primary", use_container_width=True)
 
         if _fb_submit:
+            import re as _re
             if not _fb_sender.strip():
                 st.error("Ingresa la dirección de correo del remitente.")
+            elif not _re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", _fb_sender.strip()):
+                st.error("Ingresa una dirección de correo válida (ej: ejemplo@dominio.com).")
             else:
                 with st.spinner("Registrando feedback…"):
                     _fb_r = _enviar_feedback(_fb_sender.strip(), _fb_outcome, _fb_rule.strip())
