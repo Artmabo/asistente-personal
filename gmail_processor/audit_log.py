@@ -68,9 +68,13 @@ class AuditLogger:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
+        # Write to a temp file and rename, so a crash mid-write can't leave a
+        # truncated/corrupted audit_log.jsonl behind.
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             for entry in combined:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp_path.replace(self.path)
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 
@@ -110,9 +114,10 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                lines = f.readlines()
+        except OSError:
             return []
+        return self._parse_lines(lines)
 
     def _load_tail(self, n: int) -> list[dict]:
         """Reads only the last n lines using a deque to avoid loading the whole file."""
@@ -120,10 +125,24 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                tail = deque(
-                    (ln for ln in f if ln.strip()),
-                    maxlen=n,
-                )
-            return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+                tail = deque((ln for ln in f if ln.strip()), maxlen=n)
+        except OSError:
             return []
+        return self._parse_lines(tail)
+
+    @staticmethod
+    def _parse_lines(lines) -> list[dict]:
+        """Parses JSONL lines, skipping only individual malformed lines instead
+        of discarding the whole file — a single truncated line (e.g. from a
+        write interrupted mid-flush, before the atomic-rename fix) shouldn't
+        wipe out the rest of the audit history."""
+        entries = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return entries

@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Optional
 from googleapiclient.errors import HttpError
 
+from .utils import extract_email_address, get_header
+
 _SUMMARY_PATH = Path("cleanup_summary.json")
 
 from .actions import GmailActions
@@ -69,10 +71,15 @@ class StorageCleaner:
         for target in targets:
             self._run_target(target, max_per)
 
-        if self.engine and self.learning_mode:
-            changes = self.engine.update_rule_thresholds()
-            if not changes:
-                logger.info("Sin ajustes de threshold necesarios.")
+        if self.engine:
+            # Threshold auto-adjustment is opt-in via learning_mode, but the run's
+            # metrics (touch_run/record_*, updated above in _evaluate) must always
+            # be persisted — otherwise every non-learning-mode run's stats are
+            # silently discarded and engine.summary()/get_threshold() go stale.
+            if self.learning_mode:
+                changes = self.engine.update_rule_thresholds()
+                if not changes:
+                    logger.info("Sin ajustes de threshold necesarios.")
             self.engine.persist()
 
         if self.audit:
@@ -320,26 +327,19 @@ def _build_protected_domains() -> frozenset[str]:
     return frozenset(protected)
 
 
-def _get_header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
-
-
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    headers = message.get("payload", {}).get("headers", [])
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _sender_display(message: dict) -> str:
-    return _get_header(message, "From") or "?"
+    headers = message.get("payload", {}).get("headers", [])
+    return get_header(headers, "From") or "?"
 
 
 def _subject(message: dict) -> str:
-    return _get_header(message, "Subject") or "(sin asunto)"
+    headers = message.get("payload", {}).get("headers", [])
+    return get_header(headers, "Subject") or "(sin asunto)"
 
 
 def _s(text: str, n: int) -> str:

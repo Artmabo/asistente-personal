@@ -121,7 +121,8 @@ class GmailActions:
         return result is not None
 
     def _call(self, method, **kwargs):
-        """Executes a Gmail API call with exponential-backoff retry on rate limits."""
+        """Executes a Gmail API call with exponential-backoff retry on rate limits
+        and on transient network errors (timeouts, connection resets, etc.)."""
         delay = _BASE_DELAY
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
@@ -140,6 +141,16 @@ class GmailActions:
                     delay *= 2
                     continue
                 logger.error(f"API error {status} on attempt {attempt}: {e}")
+                return None
+            except (OSError, TimeoutError) as e:
+                # Network blip (DNS failure, connection reset, socket timeout, ...) —
+                # retry instead of letting it propagate and abort the whole run.
+                if attempt < _MAX_RETRIES:
+                    logger.warning(f"Network error ({e}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                logger.error(f"Network error on attempt {attempt}: {e}")
                 return None
         return None
 

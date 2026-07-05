@@ -2,6 +2,7 @@
 Gmail Cleanup — Interfaz web para usuarios no técnicos.
 Ejecutar con:  streamlit run app.py
 """
+import html
 import os
 import sys
 import json
@@ -187,23 +188,16 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
         stubs  = result.get("messages", [])[:150]
         counts: Counter      = Counter()
         names:  dict[str, str] = {}
+        from gmail_processor.utils import extract_display_name, extract_email_address, get_header
         for stub in stubs:
             try:
                 msg = svc.users().messages().get(
                     userId="me", id=stub["id"],
                     format="metadata", metadataHeaders=["From"],
                 ).execute()
-                raw = next(
-                    (h["value"] for h in msg.get("payload", {}).get("headers", [])
-                     if h["name"].lower() == "from"),
-                    "",
-                )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
+                raw   = get_header(msg.get("payload", {}).get("headers", []), "From")
+                email = extract_email_address(raw)
+                name  = extract_display_name(raw)
                 if email:
                     counts[email] += 1
                     if email not in names and name:
@@ -239,9 +233,9 @@ _FREE_EMAIL_PROVIDERS = frozenset([
 
 
 def _derivar_label(email: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
+    words = name.strip().split() if name else []
+    if words:
+        clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
     domain = email.split("@")[-1] if "@" in email else ""
@@ -259,8 +253,8 @@ def _derivar_label(email: str, name: str) -> str:
 
 
 def _proteger_remitente(email: str, name: str) -> dict:
-    import re
-    if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
+    from gmail_processor.utils import is_valid_email
+    if not is_valid_email(email):
         return {"error": f"Dirección de correo no válida: {email}"}
 
     try:
@@ -1337,7 +1331,7 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(t)}</span>' for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")
@@ -2125,8 +2119,9 @@ elif _current_page == "avanzadas":
             _fb_submit = st.form_submit_button("Enviar feedback", type="primary", use_container_width=True)
 
         if _fb_submit:
-            if not _fb_sender.strip():
-                st.error("Ingresa la dirección de correo del remitente.")
+            from gmail_processor.utils import is_valid_email
+            if not is_valid_email(_fb_sender.strip()):
+                st.error("Ingresa una dirección de correo válida (ej: usuario@dominio.com).")
             else:
                 with st.spinner("Registrando feedback…"):
                     _fb_r = _enviar_feedback(_fb_sender.strip(), _fb_outcome, _fb_rule.strip())

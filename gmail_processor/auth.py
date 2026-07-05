@@ -1,3 +1,4 @@
+import logging
 import os
 import stat
 from google.auth.transport.requests import Request
@@ -5,7 +6,10 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://mail.google.com/"]
+# gmail.modify covers everything this app does (read, label, archive, trash) without
+# the permanent-delete/settings/send access that the full https://mail.google.com/
+# scope would grant — least privilege in case token.json is ever leaked or misused.
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 def get_service(
@@ -16,7 +20,15 @@ def get_service(
     creds = None
 
     if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        except (ValueError, OSError):
+            # token.json exists but is corrupted/truncated (e.g. process killed
+            # mid-write) — fall through to a full re-auth instead of crashing.
+            logging.getLogger("gmail_processor.auth").warning(
+                f"'{token_path}' is corrupted or unreadable — re-authenticating."
+            )
+            creds = None
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:

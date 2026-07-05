@@ -2,15 +2,21 @@
 Shared utilities for gmail_processor modules.
 """
 import os
+import re
+
+_dotenv_loaded = False
 
 
 def get_api_key() -> str | None:
     """Returns the Anthropic API key from environment (loads .env if present)."""
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
+    global _dotenv_loaded
+    if not _dotenv_loaded:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass
+        _dotenv_loaded = True
     return os.getenv("ANTHROPIC_API_KEY")
 
 
@@ -37,3 +43,35 @@ def extract_email_address(raw: str) -> str:
         if end > start:
             return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
+
+
+def extract_display_name(raw: str) -> str:
+    """Extracts the display name portion from a raw From/To header value.
+
+    '"User <nickname>" <user@example.com>' → 'User <nickname>'
+    'user@example.com' (no display name) → ''
+    """
+    if not raw or "<" not in raw:
+        return ""
+    start = raw.rfind("<")
+    return raw[:start].strip().strip('"').strip("'")
+
+
+_EMAIL_RE = re.compile(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$")
+_DOMAIN_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+)
+
+
+def is_valid_email(addr: str) -> bool:
+    """Strict check that `addr` is a plain email address with no quoting/
+    control characters — used to validate values before they are spliced
+    into rules.py source, which is later importlib.reload()ed as code."""
+    return bool(addr) and bool(_EMAIL_RE.match(addr))
+
+
+def is_valid_domain(domain: str) -> bool:
+    """Strict check that `domain` looks like a bare DNS domain name — same
+    purpose as is_valid_email(): gates values before they reach rules.py."""
+    return bool(domain) and bool(_DOMAIN_RE.match(domain))

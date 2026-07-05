@@ -2,14 +2,20 @@
 Classifier: inspects a Gmail message and decides its type + action.
 
 Priority order (first match wins):
-  1. Contact rules  — specific sender emails (protected contacts)
-  2. Keyword rules  — subject / sender contains keywords
-  3. Category rules — Gmail auto-categories (CATEGORY_PROMOTIONS, etc.)
-  4. Domain rules   — sender domain matches
-  5. Default        — unknown, no action
+  1. Contact rules        — specific sender emails (protected contacts)
+  2. Protected domain rules — DOMAIN_RULES entries with action="mark_important"
+  3. Keyword rules        — subject / sender contains keywords
+  4. Category rules       — Gmail auto-categories (CATEGORY_PROMOTIONS, etc.)
+  5. Remaining domain rules — other DOMAIN_RULES entries (e.g. action="archive")
+  6. Default              — unknown, no action
+
+Protected domain rules run before keyword/category rules so that, e.g., a
+promotional email from a bank domain in DOMAIN_RULES isn't trashed by a
+SPAM keyword match before its domain protection is ever consulted.
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
+from .utils import extract_email_address, get_header
 
 
 @dataclass
@@ -29,9 +35,9 @@ class EmailClassifier:
         headers  = message.get("payload", {}).get("headers", [])
         label_ids = message.get("labelIds", [])
 
-        sender  = _extract_email(headers)
+        sender  = extract_email_address(get_header(headers, "From"))
         domain  = sender.split("@")[-1] if "@" in sender else ""
-        subject = _extract_header(headers, "Subject")
+        subject = get_header(headers, "Subject")
         search_text = f"{sender} {subject}"
 
         # 1. Contact rules (highest priority — always protected)
@@ -49,7 +55,19 @@ class EmailClassifier:
                 protected=True,
             )
 
-        # 2. Keyword rules
+        # 2. Protected domain rules (mark_important) — checked before keyword/category
+        # rules so a protected domain (bank, government, ...) can't be trashed/archived
+        # by an unrelated keyword or Gmail auto-category match.
+        for rule in cfg.DOMAIN_RULES:
+            if rule["action"] == "mark_important" and domain in rule["domains"]:
+                return Classification(
+                    email_type="important",
+                    action=rule["action"],
+                    labels=[rule["label"]] if rule.get("label") else [],
+                    protected=True,
+                )
+
+        # 3. Keyword rules
         for rule in cfg.KEYWORD_RULES:
             if _matches_any(search_text, rule["keywords"], rule.get("case_sensitive", False)):
                 return Classification(
@@ -59,7 +77,7 @@ class EmailClassifier:
                     protected=False,
                 )
 
-        # 3. Gmail category labels
+        # 4. Gmail category labels
         for category, rule in cfg.CATEGORY_RULES.items():
             if category in label_ids:
                 return Classification(
@@ -69,35 +87,21 @@ class EmailClassifier:
                     protected=False,
                 )
 
-        # 4. Domain rules
+        # 5. Remaining domain rules (e.g. action="archive")
         for rule in cfg.DOMAIN_RULES:
             if domain in rule["domains"]:
                 return Classification(
                     email_type="important",
                     action=rule["action"],
                     labels=[rule["label"]] if rule.get("label") else [],
-                    protected=rule["action"] == "mark_important",
+                    protected=False,
                 )
 
-        # 5. Default
+        # 6. Default
         return Classification(email_type="unknown", action="label_only", protected=False)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _extract_header(headers: list[dict], name: str) -> str:
-    for h in headers:
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
-
-
-def _extract_email(headers: list[dict]) -> str:
-    raw = _extract_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
-
 
 def _matches_any(text: str, keywords: list[str], case_sensitive: bool) -> bool:
     haystack = text if case_sensitive else text.lower()

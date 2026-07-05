@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import extract_display_name, get_api_key, get_header
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -238,19 +238,8 @@ class ContactProfiler:
         payload  = msg.get("payload", {})
         headers  = payload.get("headers", [])
 
-        def hdr(name: str) -> str:
-            nl = name.lower()
-            for h in headers:
-                if h.get("name", "").lower() == nl:
-                    return h.get("value", "")
-            return ""
-
-        from_raw   = hdr("From")
-        from_name  = ""
-        if "<" in from_raw:
-            from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
-
-        date_str    = hdr("Date")
+        from_name   = extract_display_name(get_header(headers, "From"))
+        date_str    = get_header(headers, "Date")
         date_parsed = None
         try:
             date_parsed = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
@@ -259,7 +248,7 @@ class ContactProfiler:
 
         return {
             "from_name":    from_name,
-            "subject":      hdr("Subject"),
+            "subject":      get_header(headers, "Subject"),
             "date_str":     date_str,
             "date_parsed":  date_parsed,
             "body_snippet": self._extract_body(payload),
