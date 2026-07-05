@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
+from .utils import extract_email_address, get_header
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -594,24 +595,33 @@ class LearningEngine:
 
 def _drift_control(entry: dict, delta: float) -> tuple[float, bool]:
     """
-    Caps delta to MAX_DAILY_DELTA per calendar day.
+    Caps the running |daily_delta| to MAX_DAILY_DELTA per calendar day.
     Returns (allowed_delta, was_capped).
     Resets daily counter at midnight.
+
+    Deltas that move the running total back toward zero (e.g. a manual
+    "correct" feedback undoing earlier "incorrect" ones) are never capped —
+    only deltas that push the net drift further from zero are, and only
+    once that would exceed the cap. Capping on |daily_delta| alone (the old
+    behavior) zeroed out corrective deltas too once the cap was hit in
+    either direction, so a same-day correction could never take effect.
     """
     today = str(date.today())
     if entry.get("daily_delta_date") != today:
         entry["daily_delta"]      = 0.0
         entry["daily_delta_date"] = today
 
-    used      = abs(entry.get("daily_delta", 0.0))
-    remaining = max(0.0, MAX_DAILY_DELTA - used)
+    current   = entry.get("daily_delta", 0.0)
+    projected = current + delta
 
-    if remaining <= 0.0:
-        return 0.0, True
+    if abs(projected) <= abs(current) or abs(projected) <= MAX_DAILY_DELTA:
+        allowed    = delta
+        was_capped = False
+    else:
+        allowed    = math.copysign(MAX_DAILY_DELTA, projected) - current
+        was_capped = True
 
-    allowed  = math.copysign(min(abs(delta), remaining), delta)
-    was_capped = abs(allowed) < abs(delta)
-    entry["daily_delta"] = round(entry.get("daily_delta", 0.0) + allowed, 1)
+    entry["daily_delta"] = round(current + allowed, 1)
     return round(allowed, 1), was_capped
 
 
@@ -659,12 +669,7 @@ def _decay(last_accepted: str, lam: float) -> float:
 
 
 def _email_from_headers(headers: list[dict]) -> str:
-    for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
-    return ""
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _fmt(n: float) -> str:

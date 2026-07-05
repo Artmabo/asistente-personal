@@ -2,6 +2,11 @@
 """
 Ejemplos de uso avanzado del sistema de throttling adaptativo.
 Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
+
+Nota: REQUEST_DELAY, BATCH_SIZE y el "circuit breaker" descritos en los
+comentarios de este archivo son conceptos ilustrativos — no existen como
+tales en el código real de limpiar_correos.py, que solo hace retry simple
+en mover_lote_a_papelera(). No asumas que están implementados.
 """
 
 from limpiar_correos import limpiar_correos
@@ -21,10 +26,9 @@ def ejemplo_1_modo_conservador():
     resultado = limpiar_correos(
         meses=6,
         solo_no_leidos=True,
-        aggressive=False  # Conservative mode
     )
-    
-    print(f"\n✓ Resultado: {resultado['eliminados']} correos eliminados")
+
+    print(f"\n✓ Resultado: {resultado['exitos']} correos eliminados")
 
 
 def ejemplo_2_listar_sin_borrar():
@@ -63,10 +67,9 @@ def ejemplo_3_limpieza_personalizada():
     resultado = limpiar_correos(
         meses=12,           # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
     )
-    
-    print(f"\n✓ Se eliminaron {resultado['eliminados']} correos")
+
+    print(f"\n✓ Se eliminaron {resultado['exitos']} correos")
 
 
 def ejemplo_4_comparacion_modos():
@@ -102,9 +105,8 @@ def ejemplo_6_errores_comunes():
             "causa": "Cuota de usuario excedida o permisos insuficientes",
             "solucion": [
                 "1. Esperar 24h (se resetea la cuota diaria)",
-                "2. Aumentar PAGE_DELAY y REQUEST_DELAY",
-                "3. Reducir BATCH_SIZE",
-                "4. Usar aggressive=False"
+                "2. Reducir la frecuencia de ejecución",
+                "3. Ejecutar en horarios de menor uso",
             ]
         },
         "429 Too Many Requests": {

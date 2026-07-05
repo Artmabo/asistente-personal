@@ -12,6 +12,8 @@ import importlib
 from pathlib import Path
 from typing import Callable, Optional
 
+from .utils import is_valid_email, is_valid_domain
+
 _W    = 54
 _SEP  = "─" * _W
 _SEP2 = "═" * _W
@@ -59,6 +61,7 @@ def run_menu():
             elif choice == "9":  _menu_limpiar_spam(_get_service)
             elif choice == "10": _menu_limpiar_promo(_get_service)
             elif choice == "11": _menu_limpiar_todo(_get_service)
+            elif choice == "12": _menu_unsubscribe(_get_service)
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -86,6 +89,7 @@ def _main_menu() -> str:
         ("9",  "Limpiar spam          vaciar carpeta de spam"),
         ("10", "Limpiar promociones   vaciar categoría promociones"),
         ("11", "Limpiar todo          spam + promos + social + foros"),
+        ("12", "Darse de baja         remitentes candidatos a unsubscribe"),
         ("0",  "Salir"),
     ]
     for key, label in items:
@@ -269,6 +273,7 @@ def _menu_audit():
         n = int(n_str)
     except ValueError:
         n = 20
+    n = max(n, 0)
 
     print("  Filtrar por: 1=TRASH  2=KEEP  3=SKIP  0=Todos")
     decision_choice = _ask("Filtro", "0")
@@ -284,7 +289,7 @@ def _menu_audit():
     if decision_filter:
         entries = [e for e in entries if e.get("decision") == decision_filter]
 
-    entries = entries[-n:]
+    entries = entries[-n:] if n > 0 else []
 
     print()
     if not entries:
@@ -745,6 +750,9 @@ def _present_domains(domains) -> int:
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    if not is_valid_email(email):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -771,8 +779,11 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         if f'"{email}"' in line and not line.strip().startswith("#"):
             return False  # already exists
 
+    # repr() produces a properly-escaped Python string literal — email/label
+    # ultimately come from Gmail headers, so raw f-string interpolation here
+    # would let a crafted sender break out of the string literal.
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f"    {email!r}: {{'label': {label!r}, 'mark_important': {important_str}}},"
     lines.insert(end_idx, new_entry)
 
     try:
@@ -783,6 +794,9 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
+    if not is_valid_email(email):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -809,6 +823,9 @@ def _patch_rules_remove_contact(email: str) -> bool:
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    if not is_valid_domain(domain):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -845,11 +862,11 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
         return False
 
     new_entry = (
-        f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
-        f'    }},'
+        f"    {{\n"
+        f"        'domains': [{domain!r}],\n"
+        f"        'label': {label!r},\n"
+        f"        'action': {action!r},\n"
+        f"    }},"
     )
     lines.insert(end_idx, new_entry)
 
@@ -918,6 +935,89 @@ def _menu_limpiar_todo(get_svc: Callable):
         return
     from limpiar_correos import limpiar_todo_basura
     limpiar_todo_basura(svc)
+    _pause()
+
+
+# ── 12. Darse de baja ─────────────────────────────────────────────────────────
+
+def _menu_unsubscribe(get_svc: Callable):
+    """Surfaces senders with an unsubscribe link and a low score (leaning
+    commercial/spam) from ContactAnalyzer's state, and offers to trash all
+    their messages in bulk. The scoring/detection already existed in
+    ContactAnalyzer.get_unsubscribe_candidates() but was never wired into
+    any UI — the CLI menu had no contact-analyzer-backed option at all."""
+    _section("DARSE DE BAJA")
+
+    from .contact_analyzer import ContactAnalyzer, STATE_PATH
+    if not STATE_PATH.exists():
+        print("  No hay datos de análisis de contactos todavía.")
+        print("  Ejecuta primero la 'Configuración inicial' (opción 8) o el análisis")
+        print("  de contactos en la app web para generar candidatos.")
+        _pause()
+        return
+
+    analyzer   = ContactAnalyzer(service=None)
+    candidates = analyzer.get_unsubscribe_candidates()
+
+    if not candidates:
+        print("  No se encontraron remitentes candidatos a 'darse de baja'.")
+        _pause()
+        return
+
+    print(f"  {len(candidates)} remitente(s) con enlace de baja y score bajo:\n")
+    for i, c in enumerate(candidates, 1):
+        name_tag = f'  "{c["name"]}"' if c.get("name") else ""
+        print(f"  [{i:>2}]  {c['email']}{name_tag}")
+        print(f"        Score: {c['score']:.0f}  |  Correos: {c['count']}")
+        subjects = c.get("sample_subjects")
+        if subjects:
+            print(f'        Ej: "{subjects[0][:60]}"')
+        print()
+
+    print(_SEP)
+    print("  Opciones:")
+    print("    A        Enviar todos a papelera (bloquea al remitente)")
+    print("    N        Solo mostrar, no hacer nada")
+    print("    1,3,5    Enviar solo esos números a papelera (separados por coma)")
+    print(_SEP)
+
+    raw = _ask("Selección", "N").strip().upper()
+    if not raw or raw == "N":
+        return
+
+    if raw == "A":
+        selected = list(range(len(candidates)))
+    else:
+        selected = []
+        for part in raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                idx = int(part) - 1
+                if 0 <= idx < len(candidates):
+                    selected.append(idx)
+
+    if not selected:
+        print("  Sin selección válida.")
+        _pause()
+        return
+
+    if not _confirm(f"¿Enviar {len(selected)} remitente(s) a papelera?"):
+        return
+
+    svc = get_svc()
+    if svc is None:
+        return
+
+    decisions = {candidates[i]["email"]: "spam" for i in selected}
+    result    = ContactAnalyzer(service=svc).apply_decisions(decisions)
+
+    print()
+    print(f"  Remitentes bloqueados        : {result.get('trashed_senders', 0)}")
+    print(f"  Correos enviados a papelera  : {result.get('trashed_msgs', 0)}")
+    if result.get("errors"):
+        print(f"  Errores: {len(result['errors'])}")
+        for err in result["errors"][:5]:
+            print(f"    - {err}")
     _pause()
 
 
