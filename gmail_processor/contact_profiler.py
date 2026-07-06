@@ -213,7 +213,6 @@ class ContactProfiler:
     # ── Obtener correos ───────────────────────────────────────────────────────
 
     def _fetch_emails(self, service, addr: str) -> list[dict]:
-        result = []
         try:
             resp = service.users().messages().list(
                 userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
@@ -222,15 +221,26 @@ class ContactProfiler:
         except HttpError:
             return []
 
+        if not stubs:
+            return []
+
+        # Fetch all message bodies in one HTTP round-trip via the Gmail batch
+        # API instead of one get() call per message (was up to 50 sequential
+        # requests per contact, each with a throttling sleep).
+        result: list[dict] = []
+
+        def _on_response(request_id, response, exception):
+            if exception is None:
+                result.append(self._parse_message(response))
+
+        batch = service.new_batch_http_request(callback=_on_response)
         for stub in stubs:
-            try:
-                msg = service.users().messages().get(
-                    userId="me", id=stub["id"], format="full",
-                ).execute()
-                result.append(self._parse_message(msg))
-                time.sleep(0.05)
-            except HttpError:
-                continue
+            batch.add(service.users().messages().get(userId="me", id=stub["id"], format="full"))
+
+        try:
+            batch.execute()
+        except HttpError:
+            pass
 
         return result
 
@@ -271,7 +281,8 @@ class ContactProfiler:
             data = payload.get("body", {}).get("data", "")
             if data:
                 try:
-                    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")[:_MAX_BODY].strip()
+                    padded = data + "=" * (-len(data) % 4)
+                    return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")[:_MAX_BODY].strip()
                 except Exception:
                     pass
         for part in payload.get("parts", []):

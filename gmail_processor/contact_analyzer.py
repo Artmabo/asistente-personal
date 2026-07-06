@@ -712,7 +712,9 @@ class ContactAnalyzer:
             safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
             new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path = rules_path.with_suffix(".tmp")
+            tmp_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path.replace(rules_path)
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:

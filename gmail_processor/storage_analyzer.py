@@ -42,7 +42,10 @@ class StorageAnalyzer:
             result["threads_total"]  = 0
             result["error_profile"]  = str(e)
 
-        # Cuota de almacenamiento vía Drive API (scope opcional)
+        # Cuota de almacenamiento vía Drive API (scope opcional).
+        # NOTE: self.svc._http reaches into a private googleapiclient attribute;
+        # if a future googleapiclient release renames/removes it, this degrades
+        # to used_gb=None rather than raising (see except clause below).
         try:
             from googleapiclient.discovery import build as _build
             creds = getattr(self.svc._http, "credentials", None)
@@ -56,7 +59,7 @@ class StorageAnalyzer:
             result["used_gb"]      = round(used_bytes  / 1e9, 2)
             result["total_gb"]     = round(total_bytes / 1e9, 1)
             result["percent_used"] = int(100 * used_bytes / total_bytes) if total_bytes else 0
-        except Exception:
+        except (HttpError, RuntimeError, AttributeError):
             result["used_gb"]      = None
             result["total_gb"]     = None
             result["percent_used"] = None

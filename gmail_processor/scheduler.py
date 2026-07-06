@@ -201,9 +201,11 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
+        tmp_path = self.config_path.with_suffix(".tmp")
+        tmp_path.write_text(
             json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        tmp_path.replace(self.config_path)
 
 
 def format_next_run(iso: str | None) -> str:
