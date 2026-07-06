@@ -2,6 +2,7 @@
 GmailProcessor: orchestrates fetching, classifying, and acting on emails.
 """
 import logging
+import logging.handlers
 from googleapiclient.errors import HttpError
 
 from .auth import get_service
@@ -10,23 +11,32 @@ from .actions import GmailActions
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
+from .utils import extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
+
+# Decision label recorded to the audit log for each classifier action.
+_ACTION_TO_DECISION = {
+    "trash": "TRASH",
+    "label_only": "SKIP",
+}
 
 
 def setup_logging(
     level: int = logging.INFO,
     log_file: str = "gmail_processor.log",
 ):
-    """Configures logging to both console and a rotating log file."""
+    """Configures logging to both console and a rotating log file (max 5MB, 3 backups)."""
     fmt = "%(asctime)s [%(levelname)-8s] %(message)s"
     logging.basicConfig(
         level=level,
         format=fmt,
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.handlers.RotatingFileHandler(
+                log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+            ),
         ],
     )
 
@@ -82,12 +92,17 @@ class GmailProcessor:
 
             logger.info(f"Page {page}: {len(messages)} messages")
             for stub in messages:
-                self._process_one(stub["id"])
+                try:
+                    self._process_one(stub["id"])
+                except Exception:
+                    logger.exception(f"Unexpected error processing {stub['id']}, skipping")
+                    self.stats["errors"] += 1
 
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
 
+        self.audit.flush()
         self._print_summary()
 
         if cleanup:
@@ -158,6 +173,18 @@ class GmailProcessor:
             case _:  # "label_only" or "unknown"
                 self.stats["skipped"] += 1
 
+        email  = extract_email_address(sender)
+        domain = email.split("@")[-1] if "@" in email else ""
+        self.audit.log(
+            msg_id=msg_id, sender=email, domain=domain,
+            score=0.0,
+            decision=_ACTION_TO_DECISION.get(c.action, "KEEP"),
+            action=c.action,
+            rule=c.email_type,
+            reason=f"classifier:{c.email_type}",
+            protected=c.protected,
+        )
+
     def _print_summary(self):
         s = self.stats
         logger.info(
@@ -176,8 +203,8 @@ class GmailProcessor:
 
 def _header(message: dict, name: str) -> str:
     for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
+        if h.get("name", "").lower() == name.lower():
+            return h.get("value", "")
     return ""
 
 

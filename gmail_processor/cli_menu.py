@@ -6,6 +6,7 @@ Entry point: run_menu()
   All destructive operations default to DRY RUN with explicit LIVE confirmation.
 """
 import os
+import re
 import sys
 import logging
 import importlib
@@ -15,6 +16,15 @@ from typing import Callable, Optional
 _W    = 54
 _SEP  = "─" * _W
 _SEP2 = "═" * _W
+
+# Values below are spliced into rules.py (which is then imported as executable
+# Python), so they must be validated before ever reaching a write — untrusted
+# strings (e.g. a sender's email/domain lifted from a crafted From: header)
+# could otherwise break out of the string literal and inject code.
+_SAFE_EMAIL_RE = re.compile(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$")
+_SAFE_DOMAIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}\.)+[A-Za-z]{2,24}$")
+_SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9 _\-/]{1,50}$")
+_SAFE_ACTION_RE = re.compile(r"^[A-Za-z0-9_]{1,50}$")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -59,6 +69,7 @@ def run_menu():
             elif choice == "9":  _menu_limpiar_spam(_get_service)
             elif choice == "10": _menu_limpiar_promo(_get_service)
             elif choice == "11": _menu_limpiar_todo(_get_service)
+            elif choice == "12": _menu_undo_cleanup(_get_service)
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -86,6 +97,7 @@ def _main_menu() -> str:
         ("9",  "Limpiar spam          vaciar carpeta de spam"),
         ("10", "Limpiar promociones   vaciar categoría promociones"),
         ("11", "Limpiar todo          spam + promos + social + foros"),
+        ("12", "Deshacer limpieza     restaurar últimos mensajes enviados a papelera"),
         ("0",  "Salir"),
     ]
     for key, label in items:
@@ -192,6 +204,52 @@ def _menu_cleanup(get_svc: Callable):
     _pause()
 
 
+def _menu_undo_cleanup(get_svc: Callable):
+    """Restores recently-trashed messages using the audit log as the source of truth."""
+    _section("DESHACER ÚLTIMA LIMPIEZA")
+    from .audit_log import AuditLogger
+
+    n_str = _ask("¿Cuántos de los últimos envíos a papelera revisar?", "20")
+    try:
+        n = int(n_str)
+    except ValueError:
+        n = 20
+
+    audit   = AuditLogger()
+    entries = [e for e in audit.recent(max(n * 3, 200)) if e.get("decision") == "TRASH"][-n:]
+
+    if not entries:
+        print("\n  No hay envíos a papelera recientes en el audit log.")
+        _pause()
+        return
+
+    print(f"\n  Últimos {len(entries)} mensajes enviados a papelera:\n")
+    for e in entries:
+        ts   = e.get("ts", "")[:19]
+        sndr = (e.get("sender", "") or "")[:40]
+        rule = e.get("rule", "")
+        print(f"    {ts}  {sndr:<40}  regla={rule}")
+
+    if not _confirm(f"\n  ¿Restaurar estos {len(entries)} mensajes a la bandeja de entrada?"):
+        print("  Sin cambios.")
+        return
+
+    svc = get_svc()
+    if svc is None:
+        return
+
+    from .actions import GmailActions
+    actions  = GmailActions(svc, dry_run=False)
+    restored = 0
+    for e in entries:
+        msg_id = e.get("msg_id")
+        if msg_id and actions.untrash(msg_id):
+            restored += 1
+
+    print(f"\n  Restaurados {restored}/{len(entries)} mensajes.")
+    _pause()
+
+
 # ── 3. Estadísticas ───────────────────────────────────────────────────────────
 
 def _menu_stats():
@@ -239,7 +297,7 @@ def _menu_stats():
             for cat, s in cat_model.items():
                 total = s.get("trashed", 0) + s.get("kept", 0)
                 fp    = s.get("false_positives", 0)
-                acc   = f"{1 - fp/s['trashed']:.1%}" if s.get("trashed") else "n/a"
+                acc   = f"{max(0.0, 1 - fp / s['trashed']):.1%}" if s.get("trashed") else "n/a"
                 print(f"  {cat}")
                 print(f"    papelera={s.get('trashed',0)}  conservados={s.get('kept',0)}"
                       f"  total={total}  precisión={acc}")
@@ -443,7 +501,7 @@ def _show_keyword_rules(cfg):
 def _add_contact_interactive(cfg):
     print()
     email = _ask("Email del contacto (ej: papa@gmail.com)")
-    if not email or "@" not in email:
+    if not email or not _SAFE_EMAIL_RE.match(email):
         print("  Email no válido.")
         return
 
@@ -452,6 +510,9 @@ def _add_contact_interactive(cfg):
         return
 
     label     = _ask("Etiqueta Gmail", "FAMILIA")
+    if not _SAFE_LABEL_RE.match(label):
+        print("  Etiqueta no válida (usa letras, números, espacios, - o _).")
+        return
     important = _confirm("¿Marcar como importante?")
 
     ok = _patch_rules_add_contact(email, label, important)
@@ -744,7 +805,22 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _atomic_write_rules(rules_path: Path, content: str) -> bool:
+    """Writes rules.py via a temp file + atomic rename to avoid leaving a
+    truncated/corrupt file behind if the process is interrupted mid-write."""
+    tmp_path = rules_path.with_suffix(".tmp")
+    try:
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(rules_path)
+        return True
+    except OSError:
+        return False
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    if not _SAFE_EMAIL_RE.match(email) or not _SAFE_LABEL_RE.match(label):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -771,15 +847,10 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         if f'"{email}"' in line and not line.strip().startswith("#"):
             return False  # already exists
 
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f'    {email!r}: {{"label": {label!r}, "mark_important": {important!r}}},'
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _atomic_write_rules(rules_path, "\n".join(lines) + "\n")
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
@@ -800,15 +871,18 @@ def _patch_rules_remove_contact(email: str) -> bool:
     if not removed:
         return False
 
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _atomic_write_rules(rules_path, "\n".join(new_lines) + "\n")
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    if (
+        not _SAFE_DOMAIN_RE.match(domain)
+        or not _SAFE_LABEL_RE.match(label)
+        or not _SAFE_ACTION_RE.match(action)
+    ):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -846,18 +920,14 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{domain!r}],\n'
+        f'        "label": {label!r},\n'
+        f'        "action": {action!r},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _atomic_write_rules(rules_path, "\n".join(lines) + "\n")
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────
