@@ -85,8 +85,17 @@ class CleanupScheduler:
         })
         self._save()
 
-        if enabled and self._scheduler and self._scheduler.running:
-            self._reschedule()
+        if self._scheduler and self._scheduler.running:
+            if enabled:
+                self._reschedule()
+            elif self._job:
+                try:
+                    self._job.remove()
+                except Exception:
+                    pass
+                self._job = None
+                self.config["next_run"] = None
+                self._save()
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""
@@ -212,7 +221,7 @@ def format_next_run(iso: str | None) -> str:
         return "No programada"
     try:
         dt    = datetime.fromisoformat(iso)
-        now   = datetime.now()
+        now   = datetime.now(dt.tzinfo)
         delta = dt - now
         if delta.total_seconds() < 0:
             return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"

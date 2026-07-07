@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
+from .utils import extract_email_address
+
 logger = logging.getLogger("gmail_processor.smart_setup")
 
 # ── Scan limits ───────────────────────────────────────────────────────────────
@@ -254,6 +256,7 @@ class SmartSetup:
             if s.score  >= MIN_SCORE
             and s.count >= MIN_MESSAGES
             and s.email not in existing_emails
+            and f"@{s.domain}" not in cfg.CONTACT_RULES
             and not _is_definitely_automated(s.email)
             and s.domain_type not in ("promotional", "social", "newsletter", "marketing")
         ]
@@ -578,10 +581,7 @@ def _get_header(headers: list[dict], name: str) -> str:
 
 
 def _extract_email(headers: list[dict]) -> str:
-    raw = _get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(_get_header(headers, "From"))
 
 
 def _extract_name(headers: list[dict]) -> str:

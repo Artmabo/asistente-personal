@@ -7,6 +7,7 @@ Entry point: run_menu()
 """
 import os
 import sys
+import json
 import logging
 import importlib
 from pathlib import Path
@@ -594,8 +595,6 @@ def _menu_smart_setup(get_svc: Callable):
 
 
 def _present_contacts(contacts, domains, DOMAIN_LABELS):
-    from . import rules as cfg
-
     print(_SEP2)
     print(f"  CONTACTOS IMPORTANTES DETECTADOS")
     print(_SEP2)
@@ -683,7 +682,6 @@ def _present_contacts(contacts, domains, DOMAIN_LABELS):
 def _present_domains(domains) -> int:
     """Shows domain suggestions and applies approved ones. Returns count added."""
     from . import rules as cfg
-    from .smart_setup import DOMAIN_LABELS
 
     # Filter domains already in DOMAIN_RULES
     existing = {
@@ -744,6 +742,19 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _write_rules_atomic(rules_path: Path, text: str) -> bool:
+    """Writes rules.py via a temp file + atomic replace so a crash mid-write
+    can't leave rules.py (imported everywhere in the app) syntactically broken.
+    """
+    try:
+        tmp_path = rules_path.with_suffix(".tmp")
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.replace(rules_path)
+        return True
+    except OSError:
+        return False
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
@@ -772,14 +783,12 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = (
+        f'    {json.dumps(email)}: {{"label": {json.dumps(label)}, '
+        f'"mark_important": {important_str}}},'
+    )
     lines.insert(end_idx, new_entry)
-
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_atomic(rules_path, "\n".join(lines) + "\n")
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
@@ -800,11 +809,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     if not removed:
         return False
 
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_atomic(rules_path, "\n".join(new_lines) + "\n")
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
@@ -846,18 +851,13 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{json.dumps(domain)}],\n'
+        f'        "label": {json.dumps(label)},\n'
+        f'        "action": {json.dumps(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
-
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_atomic(rules_path, "\n".join(lines) + "\n")
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────
@@ -911,12 +911,22 @@ def _menu_limpiar_todo(get_svc: Callable):
     print()
     if not _confirm("¿Continuar?"):
         return
-    if not _confirm("  Confirmar: limpiar todas las categorías"):
-        return
     svc = get_svc()
     if svc is None:
         return
+
     from limpiar_correos import limpiar_todo_basura
+    print("\n  Vista previa (no se elimina nada todavía):")
+    preview = limpiar_todo_basura(svc, dry_run=True)
+    print()
+    if preview["procesados"] == 0:
+        print("  No hay correos que limpiar en ninguna categoría.")
+        _pause()
+        return
+    if not _confirm(
+        f"  Confirmar: enviar {preview['exitos']} correo(s) a la papelera"
+    ):
+        return
     limpiar_todo_basura(svc)
     _pause()
 
@@ -926,6 +936,8 @@ def _resumen_limpieza(r: dict):
     print(f"  {'─'*36}")
     print(f"  Correos encontrados : {r['procesados']}")
     print(f"  Movidos a papelera  : {r['exitos']}")
+    if r.get('protegidos'):
+        print(f"  Protegidos (omitidos): {r['protegidos']}")
     if r.get('errores'):
         print(f"  Con error           : {r['errores']}")
     print(f"  {'─'*36}")
