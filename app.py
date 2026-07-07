@@ -276,7 +276,7 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
+        content = Path(rules_path).read_text(encoding="utf-8")
         lines   = content.split("\n")
 
         in_cr     = False
@@ -300,8 +300,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
         new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
         lines.insert(insert_at, new_line)
 
-        with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        tmp_path = Path(rules_path).with_suffix(".tmp")
+        tmp_path.write_text("\n".join(lines), encoding="utf-8")
+        tmp_path.replace(rules_path)
 
         importlib.reload(rules_mod)
         return {"success": True, "email": email, "label": label}

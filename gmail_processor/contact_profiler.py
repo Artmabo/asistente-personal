@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -444,6 +444,7 @@ class ContactProfiler:
             tmp.write_text(
                 json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            os.chmod(tmp, 0o600)
             tmp.replace(PROFILES_PATH)
         except OSError:
             tmp.unlink(missing_ok=True)

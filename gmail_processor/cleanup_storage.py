@@ -22,6 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -163,7 +164,7 @@ class StorageCleaner:
         if block:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"  │  RULES   : HARD PROTECTION → {block}\n  └─ DECISION: SKIP")
-            logger.info(
+            logger.debug(
                 f"  [SKIP ] {_s(sender, 38)} | {_s(subject, 44)}\n"
                 f"           Protección : {block}"
             )
@@ -198,7 +199,7 @@ class StorageCleaner:
                 )
 
             if scored.decision == "KEEP":
-                logger.info(
+                logger.debug(
                     f"  [KEEP ] {_s(sender, 38)} | {_s(subject, 44)}\n"
                     f"           Score   : {scored.score:+.1f} → KEEP  "
                     f"(aprendizaje: {learned_tag})\n"
@@ -228,7 +229,7 @@ class StorageCleaner:
                 f"\n           Factores: {factors_str}"
             )
 
-        logger.info(
+        logger.debug(
             f"  [TRASH] {_s(sender, 38)} | {_s(subject, 44)}"
             f"{score_line}\n"
             f"           Razón  : {reason}\n"
@@ -257,28 +258,7 @@ class StorageCleaner:
     # ── Hard protection check ─────────────────────────────────────────────────
 
     def _protection_reason(self, message: dict) -> str | None:
-        label_ids = message.get("labelIds", [])
-
-        if "STARRED" in label_ids:
-            return "marcado con estrella (STARRED)"
-        if "IMPORTANT" in label_ids:
-            return "marcado como importante (IMPORTANT)"
-
-        email  = _sender_email(message)
-        domain = email.split("@")[-1] if "@" in email else ""
-
-        if email in cfg.CONTACT_RULES:
-            return f"contacto protegido ({email})"
-        if domain and f"@{domain}" in cfg.CONTACT_RULES:
-            return f"dominio protegido por contacto ({domain})"
-        if domain in self._protected_domains:
-            return f"dominio protegido ({domain})"
-
-        extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
-        if domain in extra:
-            return f"dominio seguro adicional ({domain})"
-
-        return None
+        return protection_reason(message, self._protected_domains)
 
     # ── Summary ───────────────────────────────────────────────────────────────
 
@@ -320,6 +300,36 @@ def _build_protected_domains() -> frozenset[str]:
     return frozenset(protected)
 
 
+def protection_reason(message: dict, protected_domains: frozenset[str] = None) -> str | None:
+    """Returns the reason a message must never be trashed, or None if unprotected.
+
+    Public so callers outside StorageCleaner (e.g. limpiar_correos.py) can run
+    the same hard-protection checks before deleting anything.
+    """
+    label_ids = message.get("labelIds", [])
+
+    if "STARRED" in label_ids:
+        return "marcado con estrella (STARRED)"
+    if "IMPORTANT" in label_ids:
+        return "marcado como importante (IMPORTANT)"
+
+    email  = _sender_email(message)
+    domain = email.split("@")[-1] if "@" in email else ""
+
+    if email in cfg.CONTACT_RULES:
+        return f"contacto protegido ({email})"
+    if domain and f"@{domain}" in cfg.CONTACT_RULES:
+        return f"dominio protegido por contacto ({domain})"
+    if domain in (protected_domains if protected_domains is not None else _build_protected_domains()):
+        return f"dominio protegido ({domain})"
+
+    extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
+    if domain in extra:
+        return f"dominio seguro adicional ({domain})"
+
+    return None
+
+
 def _get_header(message: dict, name: str) -> str:
     for h in message.get("payload", {}).get("headers", []):
         if h["name"].lower() == name.lower():
@@ -328,10 +338,7 @@ def _get_header(message: dict, name: str) -> str:
 
 
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(_get_header(message, "From"))
 
 
 def _sender_display(message: dict) -> str:
