@@ -20,6 +20,8 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+from .utils import atomic_write_text
+
 logger = logging.getLogger("gmail_processor.audit")
 
 MAX_ENTRIES = 10_000
@@ -68,9 +70,8 @@ class AuditLogger:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
-            for entry in combined:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        content = "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in combined)
+        atomic_write_text(self.path, content)
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 
@@ -96,7 +97,7 @@ class AuditLogger:
         entries = self.recent(n)
         if not entries:
             return ""
-        fieldnames = ["ts", "sender", "domain", "score", "decision", "rule", "reason", "learned", "protected", "dry_run", "msg_id"]
+        fieldnames = ["ts", "sender", "domain", "score", "decision", "action", "rule", "reason", "learned", "protected", "dry_run", "msg_id"]
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()

@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import atomic_write_text, safe_query_term
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -25,6 +27,7 @@ STATE_PATH    = Path("analysis_state.json")
 PATTERNS_PATH = Path("user_patterns.json")
 _BATCH_SLEEP      = 0.2
 _MAX_SENT_INDEXED = 2_000   # cap on sent messages fetched to build the "replied" index
+_EMAIL_RE         = re.compile(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$")
 
 SCORE_AUTO_PERSONAL = 70
 SCORE_AUTO_SPAM     = 20
@@ -185,7 +188,9 @@ class ContactAnalyzer:
         pending_set = set(self.state["pending"])
 
         _working: dict[str, dict] = {}
-        scanned    = 0
+        scanned           = 0
+        already_reviewed  = 0
+        unparsable        = 0
         page_token = None
         page       = 0
         date_q     = _date_filter(days_range)
@@ -226,9 +231,11 @@ class ContactAnalyzer:
                 headers        = msg.get("payload", {}).get("headers", [])
                 addr, name     = _parse_from(_get_header(headers, "From"))
                 if not addr:
+                    unparsable += 1
                     continue
 
                 if addr in reviewed or addr in pending_set:
+                    already_reviewed += 1
                     continue
 
                 subject   = _get_header(headers, "Subject")
@@ -310,8 +317,6 @@ class ContactAnalyzer:
                 }
                 new_pending += 1
 
-        already_reviewed  = scanned - sum(w["count"] for w in _working.values())
-
         self.state["pending"]             = list(pending_set)
         self.state["pending_meta"]        = pending_meta
         self.state["last_processed_date"] = now
@@ -323,6 +328,7 @@ class ContactAnalyzer:
             "auto_spam":        auto_spam,
             "pending":          new_pending,
             "already_reviewed": already_reviewed,
+            "unparsable":       unparsable,
             "scanned":          scanned,
         }
 
@@ -646,7 +652,7 @@ class ContactAnalyzer:
     # ── Borrar correos de un remitente ────────────────────────────────────────
 
     def _trash_sender(self, addr: str) -> int:
-        query      = f"from:{addr}"
+        query      = safe_query_term("from", addr)
         page_token = None
         total      = 0
 
@@ -681,6 +687,8 @@ class ContactAnalyzer:
     # ── Escribir en rules.py ──────────────────────────────────────────────────
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
+        if not _EMAIL_RE.match(email_addr):
+            return {"error": f"Dirección de correo no válida: {email_addr}"}
         try:
             import importlib
             import gmail_processor.rules as rules_mod
@@ -708,11 +716,12 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            # repr() safely escapes quotes/backslashes so a crafted address
+            # from a raw From header can't break out of the string literal
+            # and inject code into rules.py (a module that gets reloaded).
+            new_line = f"    {email_addr!r}: {{\"label\": {label!r}, \"mark_important\": True}},"
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+            atomic_write_text(rules_path, "\n".join(lines))
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:

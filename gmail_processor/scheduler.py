@@ -10,6 +10,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from .utils import atomic_write_json
+
 logger = logging.getLogger("gmail_processor.scheduler")
 
 _CONFIG_PATH = Path("cleanup_schedule.json")
@@ -201,9 +203,7 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
-            json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_write_json(self.config_path, self.config)
 
 
 def format_next_run(iso: str | None) -> str:
