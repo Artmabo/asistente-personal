@@ -20,12 +20,13 @@ class GmailActions:
         self.service  = service
         self.dry_run  = dry_run
         self._labels: dict[str, str] = {}   # label name → label id cache
+        self._labels_loaded = False
 
     # ── Label management ──────────────────────────────────────────────────────
 
     def ensure_label(self, name: str) -> str:
         """Returns the label ID for `name`, creating it in Gmail if needed."""
-        if not self._labels:
+        if not self._labels_loaded:
             self._load_labels()
 
         if name in self._labels:
@@ -53,6 +54,7 @@ class GmailActions:
         return ""
 
     def _load_labels(self):
+        self._labels_loaded = True   # attempt once per instance; avoid a retry storm on failure
         result = self._call(self.service.users().labels().list, userId="me")
         if result:
             for lbl in result.get("labels", []):
@@ -70,7 +72,7 @@ class GmailActions:
         return self._modify(msg_id, add=[label_id])
 
     def remove_label(self, msg_id: str, label_name: str) -> bool:
-        if not self._labels:
+        if not self._labels_loaded:
             self._load_labels()
         label_id = self._labels.get(label_name)
         if not label_id:
@@ -103,6 +105,20 @@ class GmailActions:
             id=msg_id,
         )
         return result is not None
+
+    def untrash(self, msg_id: str) -> bool:
+        """Restores a trashed message to the inbox (removes TRASH, adds INBOX)."""
+        if self.dry_run:
+            logger.info(f"[DRY RUN] untrash → {msg_id}")
+            return True
+        result = self._call(
+            self.service.users().messages().untrash,
+            userId="me",
+            id=msg_id,
+        )
+        if result is None:
+            return False
+        return self._modify(msg_id, add=["INBOX"])
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

@@ -3,6 +3,11 @@ import sys
 from datetime import datetime, timedelta
 from googleapiclient.errors import HttpError
 
+# OSError also covers socket/SSL/timeout errors raised by the underlying
+# httplib2 transport, which are not HttpError subclasses but are just as
+# likely during a long-running trash operation (network blip, DNS hiccup).
+_GMAIL_ERRORS = (HttpError, OSError)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 CATEGORIAS = {
@@ -45,7 +50,7 @@ def mover_lote_a_papelera(service, ids: list) -> int:
                 }
             ).execute()
             total += len(chunk)
-        except HttpError as e:
+        except _GMAIL_ERRORS as e:
             print(f"  Error en lote ({len(chunk)} mensajes): {e}")
     return total
 
@@ -93,7 +98,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
                     maxResults=500,
                     pageToken=page_token,
                 ).execute()
-            except HttpError as e:
+            except _GMAIL_ERRORS as e:
                 print(f"  Error al listar página {page_num}: {e}")
                 break
 

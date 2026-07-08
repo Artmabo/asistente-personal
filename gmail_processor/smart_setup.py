@@ -42,8 +42,10 @@ from googleapiclient.errors import HttpError
 logger = logging.getLogger("gmail_processor.smart_setup")
 
 # ── Scan limits ───────────────────────────────────────────────────────────────
-# MAX_MESSAGES / MAX_SENT no longer used — analyze() paginates until exhausted.
+# MAX_MESSAGES / MAX_SENT no longer used — analyze() paginates until exhausted,
+# bounded only by MAX_MESSAGES_SAFETY below (a hard backstop, not a normal cap).
 SCAN_DAYS_DEFAULT = 365   # default look-back passed to analyze(scan_days=…)
+MAX_MESSAGES_SAFETY = 20_000   # hard cap on messages fetched per phase (scan_days=None on a huge mailbox)
 TOP_N         = 20    # max contact suggestions to present
 TOP_DOMAINS   = 8     # max domain suggestions
 MIN_SCORE     = 35    # must clear this threshold to appear as suggestion
@@ -326,6 +328,10 @@ class SmartSetup:
             if progress_cb:
                 progress_cb(fetched, phase="sent", page=page)
 
+            if fetched >= MAX_MESSAGES_SAFETY:
+                logger.warning(f"Indexado de enviados: cap de {MAX_MESSAGES_SAFETY} alcanzado.")
+                break
+
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
@@ -393,6 +399,10 @@ class SmartSetup:
             page += 1
             if progress_cb:
                 progress_cb(fetched, phase=phase, page=page)
+
+            if fetched >= MAX_MESSAGES_SAFETY:
+                logger.warning(f"Fase '{phase}': cap de {MAX_MESSAGES_SAFETY} alcanzado.")
+                break
 
             page_token = result.get("nextPageToken")
             if not page_token:

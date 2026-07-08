@@ -6,11 +6,17 @@ Entry point: run_menu()
   All destructive operations default to DRY RUN with explicit LIVE confirmation.
 """
 import os
+import re
 import sys
 import logging
 import importlib
 from pathlib import Path
 from typing import Callable, Optional
+
+from .utils import atomic_write_text
+
+_EMAIL_RE = re.compile(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$")
+_DOMAIN_RE = re.compile(r"^[^@\s\"'\\]+\.[^@\s\"'\\]+$")
 
 _W    = 54
 _SEP  = "─" * _W
@@ -59,6 +65,7 @@ def run_menu():
             elif choice == "9":  _menu_limpiar_spam(_get_service)
             elif choice == "10": _menu_limpiar_promo(_get_service)
             elif choice == "11": _menu_limpiar_todo(_get_service)
+            elif choice == "12": _menu_undo_cleanup(_get_service)
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -86,6 +93,7 @@ def _main_menu() -> str:
         ("9",  "Limpiar spam          vaciar carpeta de spam"),
         ("10", "Limpiar promociones   vaciar categoría promociones"),
         ("11", "Limpiar todo          spam + promos + social + foros"),
+        ("12", "Deshacer limpieza     restaura lo movido a papelera en el último cleanup"),
         ("0",  "Salir"),
     ]
     for key, label in items:
@@ -189,6 +197,36 @@ def _menu_cleanup(get_svc: Callable):
     cfg.DRY_RUN = not live
     proc = GmailProcessor(service=svc)
     proc.run(cleanup=True, learning=learning)
+    _pause()
+
+
+# ── 2b. Deshacer última limpieza ────────────────────────────────────────────────
+
+def _menu_undo_cleanup(get_svc: Callable):
+    _section("DESHACER ÚLTIMA LIMPIEZA")
+    print("  Restaura a la bandeja de entrada los correos que el último")
+    print("  cleanup LIVE movió a la papelera (según cleanup_summary.json).")
+    print()
+
+    if not _confirm("¿Continuar?"):
+        return
+
+    svc = get_svc()
+    if svc is None:
+        return
+
+    from .actions import GmailActions
+    from .cleanup_storage import undo_last_cleanup
+    from . import rules as cfg
+
+    actions = GmailActions(svc, dry_run=cfg.DRY_RUN)
+    result  = undo_last_cleanup(actions)
+
+    if result["total"] == 0:
+        print("\n  Nada que deshacer (sin cleanup LIVE reciente, o ya fue deshecho).")
+    else:
+        print(f"\n  Restaurados: {result['restored']}/{result['total']}"
+              f"  |  Errores: {result['errors']}")
     _pause()
 
 
@@ -743,8 +781,34 @@ def _present_domains(domains) -> int:
 
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
+#
+# All values interpolated into rules.py MUST go through repr() — rules.py is a
+# live Python module that gets importlib.reload()-ed, so an unescaped quote or
+# backslash in a value (e.g. a crafted email/display-name from a message's raw
+# From header) could otherwise break out of the string literal and inject
+# arbitrary code that executes on the next reload.
+
+_LINE_KEY_RE = re.compile(r'^\s*(\'(?:[^\'\\]|\\.)*\'|"(?:[^"\\]|\\.)*")\s*:')
+
+
+def _line_key(line: str) -> Optional[str]:
+    """Parses the dict-key string literal a rules.py entry line starts with, if any."""
+    if line.strip().startswith("#"):
+        return None
+    m = _LINE_KEY_RE.match(line)
+    if not m:
+        return None
+    try:
+        import ast
+        return ast.literal_eval(m.group(1))
+    except (ValueError, SyntaxError):
+        return None
+
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    if not _EMAIL_RE.match(email):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -767,16 +831,17 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     if end_idx is None:
         return False
 
-    for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            return False  # already exists
+    if any(_line_key(line) == email for line in lines[start_idx:end_idx]):
+        return False  # already exists
 
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = (
+        f"    {repr(email)}: "
+        f"{{\"label\": {repr(label)}, \"mark_important\": {important!r}}},"
+    )
     lines.insert(end_idx, new_entry)
 
     try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        atomic_write_text(rules_path, "\n".join(lines) + "\n")
         return True
     except OSError:
         return False
@@ -792,7 +857,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if _line_key(line) == email:
             removed = True
             continue
         new_lines.append(line)
@@ -801,7 +866,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
         return False
 
     try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        atomic_write_text(rules_path, "\n".join(new_lines) + "\n")
         return True
     except OSError:
         return False
@@ -809,6 +874,9 @@ def _patch_rules_remove_contact(email: str) -> bool:
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    if not _DOMAIN_RE.match(domain):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -841,20 +909,20 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if repr(domain) in block_text or f'"{domain}"' in block_text:
         return False
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{repr(domain)}],\n'
+        f'        "label": {repr(label)},\n'
+        f'        "action": {repr(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
 
     try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        atomic_write_text(rules_path, "\n".join(lines) + "\n")
         return True
     except OSError:
         return False

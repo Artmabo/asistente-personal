@@ -22,6 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import atomic_write_json, extract_email_address, get_header
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -49,6 +50,7 @@ class StorageCleaner:
             "kept":     0,
             "errors":   0,
         }
+        self.trashed_ids: list[str] = []   # real (non-dry-run) trashes this run, for undo_last_cleanup()
 
     def run(self) -> dict:
         targets = cfg.CLEANUP_RULES.get("targets", [])
@@ -238,6 +240,8 @@ class StorageCleaner:
 
         if self.actions.trash(msg_id):
             self.stats["trashed"] += 1
+            if not cfg.DRY_RUN:
+                self.trashed_ids.append(msg_id)
             if self.engine:
                 self.engine.metrics.record_trash(rule_name)
                 self.engine.update_category_stats(label_ids, "trash")
@@ -283,16 +287,16 @@ class StorageCleaner:
     # ── Summary ───────────────────────────────────────────────────────────────
 
     def _write_summary(self):
-        """Persists a cleanup summary to cleanup_summary.json for the UI."""
+        """Persists a cleanup summary to cleanup_summary.json for the UI.
+        `trashed_ids` lets undo_last_cleanup() restore this run's trashes."""
         summary = {
-            "ts":      datetime.now().isoformat(timespec="seconds"),
-            "dry_run": cfg.DRY_RUN,
+            "ts":          datetime.now().isoformat(timespec="seconds"),
+            "dry_run":     cfg.DRY_RUN,
+            "trashed_ids": self.trashed_ids,
             **self.stats,
         }
         try:
-            _SUMMARY_PATH.write_text(
-                json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            atomic_write_json(_SUMMARY_PATH, summary)
         except OSError as e:
             logger.warning(f"Could not write cleanup summary: {e}")
 
@@ -321,17 +325,11 @@ def _build_protected_domains() -> frozenset[str]:
 
 
 def _get_header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
+    return get_header(message.get("payload", {}).get("headers", []), name)
 
 
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(_get_header(message, "From"))
 
 
 def _sender_display(message: dict) -> str:
@@ -344,3 +342,44 @@ def _subject(message: dict) -> str:
 
 def _s(text: str, n: int) -> str:
     return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def undo_last_cleanup(actions: GmailActions) -> dict:
+    """Restores every message trashed by the most recent cleanup run.
+
+    Reads the message IDs cleanup_storage._write_summary() persisted to
+    cleanup_summary.json, calls GmailActions.untrash on each, then clears
+    the stored list so the same run can't be undone twice.
+
+    Returns {"restored": int, "errors": int, "total": int}. If there is no
+    summary yet, or it was a dry run, or it was already undone, `total`
+    is 0.
+    """
+    if not _SUMMARY_PATH.exists():
+        return {"restored": 0, "errors": 0, "total": 0}
+
+    try:
+        summary = json.loads(_SUMMARY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"restored": 0, "errors": 0, "total": 0}
+
+    trashed_ids = summary.get("trashed_ids") or []
+    if not trashed_ids:
+        return {"restored": 0, "errors": 0, "total": 0}
+
+    restored = 0
+    errors   = 0
+    for msg_id in trashed_ids:
+        if actions.untrash(msg_id):
+            restored += 1
+        else:
+            errors += 1
+
+    # Prevent a second undo from re-processing the same IDs.
+    summary["trashed_ids"] = []
+    try:
+        atomic_write_json(_SUMMARY_PATH, summary)
+    except OSError as e:
+        logger.warning(f"Could not update cleanup summary after undo: {e}")
+
+    return {"restored": restored, "errors": errors, "total": len(trashed_ids)}

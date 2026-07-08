@@ -7,6 +7,8 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from .utils import atomic_write_json
+
 _CACHE_PATH = Path("morning_brief_cache.json")
 _TTL_HOURS  = 1
 
@@ -157,9 +159,7 @@ class MorningBrief:
         return None
 
     def _save_cache(self, brief: dict):
-        _CACHE_PATH.write_text(
-            json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_write_json(_CACHE_PATH, brief)
 
     def _read_json(self, path: str, default: dict) -> dict:
         p = Path(path)
