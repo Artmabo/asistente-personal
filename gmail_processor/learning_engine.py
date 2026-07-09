@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
+from .utils import extract_email_address, get_header
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -585,7 +586,7 @@ class LearningEngine:
                     logger.info(f"Estado migrado v{v} → v3")
                 logger.debug(f"Estado cargado desde {self.path}")
                 return data
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (json.JSONDecodeError, KeyError, TypeError, OSError):
                 logger.warning(f"Estado corrupto en {self.path}, reiniciando.")
         return copy.deepcopy(_EMPTY_STATE_V3)
 
@@ -659,12 +660,7 @@ def _decay(last_accepted: str, lam: float) -> float:
 
 
 def _email_from_headers(headers: list[dict]) -> str:
-    for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
-    return ""
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _fmt(n: float) -> str:

@@ -2,7 +2,9 @@
 Gmail Cleanup — Interfaz web para usuarios no técnicos.
 Ejecutar con:  streamlit run app.py
 """
+import html
 import os
+import re
 import sys
 import json
 from datetime import datetime
@@ -219,7 +221,13 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
         return []
 
 
+_EMAIL_RE = re.compile(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$")
+
+
 def _limpiar_remitente(email: str) -> dict | None:
+    if not _EMAIL_RE.match(email):
+        st.error(f"Dirección de correo no válida: {email}")
+        return None
     try:
         from limpiar_correos import limpiar_bandeja
         return limpiar_bandeja(
@@ -239,9 +247,9 @@ _FREE_EMAIL_PROVIDERS = frozenset([
 
 
 def _derivar_label(email: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
+    words = name.strip().split() if name else []
+    if words:
+        clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
     domain = email.split("@")[-1] if "@" in email else ""
@@ -259,8 +267,7 @@ def _derivar_label(email: str, name: str) -> str:
 
 
 def _proteger_remitente(email: str, name: str) -> dict:
-    import re
-    if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
+    if not _EMAIL_RE.match(email):
         return {"error": f"Dirección de correo no válida: {email}"}
 
     try:
@@ -276,8 +283,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -725,7 +733,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_rel_names.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1118,7 +1126,7 @@ if _current_page == "inicio":
             st.markdown(
                 f'<div class="brief-card">'
                 f'<p style="margin:0;font-size:1.05rem;color:#1e40af;font-weight:500">'
-                f'{_bsummary}</p></div>',
+                f'{html.escape(_bsummary)}</p></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1132,7 +1140,7 @@ if _current_page == "inicio":
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{html.escape(_bm.get('name', ''))}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1324,7 +1332,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_rel_names.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
@@ -1337,7 +1345,8 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(str(t))}</span>'
+                                        for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")
