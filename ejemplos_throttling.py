@@ -4,7 +4,7 @@ Ejemplos de uso avanzado del sistema de throttling adaptativo.
 Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
 """
 
-from limpiar_correos import limpiar_correos
+from limpiar_correos import limpiar_correos, limpiar_bandeja
 from asistente_personal import get_gmail_service
 
 
@@ -21,10 +21,9 @@ def ejemplo_1_modo_conservador():
     resultado = limpiar_correos(
         meses=6,
         solo_no_leidos=True,
-        aggressive=False  # Conservative mode
     )
-    
-    print(f"\n✓ Resultado: {resultado['eliminados']} correos eliminados")
+
+    print(f"\n✓ Resultado: {resultado['exitos']} correos eliminados")
 
 
 def ejemplo_2_listar_sin_borrar():
@@ -34,21 +33,12 @@ def ejemplo_2_listar_sin_borrar():
     print("="*60)
     
     service = get_gmail_service()
-    
-    # Buscar sin eliminar (seguro para previsualizacion)
-    from datetime import datetime, timedelta
-    fecha_limite = (datetime.now() - timedelta(days=6 * 30)).strftime("%Y/%m/%d")
-    query = f"before:{fecha_limite} is:unread"
-    
-    resultados = service.users().messages().list(
-        userId="me",
-        q=query,
-        maxResults=100  # Pequeño límite para ver
-    ).execute()
-    
-    mensajes = resultados.get("messages", [])
-    print(f"\n📊 Se encontraron {len(mensajes)} correos que cumplen criterio")
-    print(f"📅 Criterio: {query}")
+
+    # dry_run=True reutiliza la misma lógica de query que el borrado real,
+    # así este ejemplo nunca se desincroniza de limpiar_bandeja().
+    resultado = limpiar_bandeja(service, dry_run=True)
+
+    print(f"\n📊 Se encontraron {resultado['procesados']} correos que cumplen criterio")
     print(f"\nℹ️  Para eliminarlos, ejecuta:")
     print("    python limpiar_correos.py")
 
@@ -61,12 +51,11 @@ def ejemplo_3_limpieza_personalizada():
     
     # Eliminar TODOS los correos (leídos y no leídos) de más de 1 año
     resultado = limpiar_correos(
-        meses=12,           # Más de 1 año
+        meses=12,              # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
     )
-    
-    print(f"\n✓ Se eliminaron {resultado['eliminados']} correos")
+
+    print(f"\n✓ Se eliminaron {resultado['exitos']} correos")
 
 
 def ejemplo_4_comparacion_modos():
@@ -120,7 +109,7 @@ def ejemplo_6_errores_comunes():
             "causa": "Token expirado o inválido",
             "solucion": [
                 "1. Elimina token.json",
-                "2. Ejecuta: python asistente-personal.py",
+                "2. Ejecuta: python asistente_personal.py",
                 "3. Autoriza de nuevo en navegador"
             ]
         }
@@ -145,7 +134,6 @@ if __name__ == "__main__":
     ejemplo_2_listar_sin_borrar()
     # ejemplo_3_limpieza_personalizada()
     # ejemplo_4_comparacion_modos()
-    # ejemplo_5_monitorear_throttle()
     # ejemplo_6_errores_comunes()
     
     print("\n✅ Fin de ejemplos")

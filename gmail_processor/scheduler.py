@@ -24,6 +24,18 @@ _DAYS_ES = {
     "sunday":    "domingo",
 }
 
+# APScheduler's CronTrigger expects 3-letter day_of_week names (cron convention),
+# not the full English names stored in config / used by the app.py selectbox.
+_DOW_ABBR = {
+    "monday":    "mon",
+    "tuesday":   "tue",
+    "wednesday": "wed",
+    "thursday":  "thu",
+    "friday":    "fri",
+    "saturday":  "sat",
+    "sunday":    "sun",
+}
+
 
 def _empty_config() -> dict:
     return {
@@ -75,7 +87,7 @@ class CleanupScheduler:
         day_of_week: str = "sunday",
         enabled:     bool = True,
     ) -> None:
-        """Guarda configuración y reprograma si el scheduler está corriendo."""
+        """Guarda configuración y reprograma (o cancela) el job según `enabled`."""
         self.config.update({
             "frequency":   frequency,
             "categories":  categories,
@@ -83,10 +95,13 @@ class CleanupScheduler:
             "day_of_week": day_of_week,
             "enabled":     enabled,
         })
-        self._save()
 
         if enabled and self._scheduler and self._scheduler.running:
-            self._reschedule()
+            self._reschedule()   # _reschedule() persists the config itself
+        else:
+            if not enabled:
+                self._cancel_job()
+            self._save()
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""
@@ -106,16 +121,20 @@ class CleanupScheduler:
 
     def stop(self) -> None:
         """Pausa la limpieza programada sin borrar la configuración."""
+        self._cancel_job()
+        self.config["enabled"] = False
+        self._save()
+        logger.info("Scheduler detenido")
+
+    def _cancel_job(self) -> None:
+        """Cancela el job activo de APScheduler, si existe."""
         if self._job:
             try:
                 self._job.remove()
             except Exception:
                 pass
             self._job = None
-        self.config["enabled"]  = False
         self.config["next_run"] = None
-        self._save()
-        logger.info("Scheduler detenido")
 
     def get_status(self) -> dict:
         """Devuelve config actualizada + next_run del job activo."""
@@ -140,7 +159,7 @@ class CleanupScheduler:
             from .learning_engine import LearningEngine
             from .audit_log import AuditLogger
 
-            service = get_service()
+            service = get_service(interactive=False)
             actions = GmailActions(service, dry_run=False)
             engine  = LearningEngine()
             audit   = AuditLogger()
@@ -174,7 +193,7 @@ class CleanupScheduler:
         if freq == "daily":
             trigger = CronTrigger(hour=hour)
         elif freq == "weekly":
-            trigger = CronTrigger(day_of_week=dow, hour=hour)
+            trigger = CronTrigger(day_of_week=_DOW_ABBR.get(dow, dow), hour=hour)
         else:   # monthly
             trigger = CronTrigger(day=1, hour=hour)
 

@@ -12,6 +12,7 @@ Decision pipeline per message:
 """
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import extract_email_address, get_header
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -42,6 +44,7 @@ class StorageCleaner:
         self.audit         = audit
         self.learning_mode = learning_mode
         self._protected_domains = _build_protected_domains()
+        self._safe_domains = frozenset(cfg.CLEANUP_RULES.get("safe_domains", []))
         self.stats = {
             "examined": 0,
             "trashed":  0,
@@ -85,7 +88,7 @@ class StorageCleaner:
     # ── Target loop ───────────────────────────────────────────────────────────
 
     def _run_target(self, target: dict, cap: int):
-        query     = target["query"]
+        query     = self._effective_query(target)
         reason    = target["reason"]
         rule_name = target["rule"]
 
@@ -121,6 +124,23 @@ class StorageCleaner:
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
+
+    def _effective_query(self, target: dict) -> str:
+        """Substitutes the static `older_than:Nd` clause with the threshold the
+        LearningEngine has adaptively raised for this rule (see
+        LearningEngine.update_rule_thresholds), if any adjustment exists.
+        """
+        query = target["query"]
+        if not self.engine:
+            return query
+        match = re.search(r"older_than:(\d+)d", query)
+        if not match:
+            return query
+        base_days    = int(match.group(1))
+        learned_days = self.engine.get_threshold(target["rule"], base_days)
+        if learned_days == base_days:
+            return query
+        return query.replace(f"older_than:{base_days}d", f"older_than:{learned_days}d")
 
     # ── Per-message evaluation ────────────────────────────────────────────────
 
@@ -274,8 +294,7 @@ class StorageCleaner:
         if domain in self._protected_domains:
             return f"dominio protegido ({domain})"
 
-        extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
-        if domain in extra:
+        if domain in self._safe_domains:
             return f"dominio seguro adicional ({domain})"
 
         return None
@@ -283,18 +302,19 @@ class StorageCleaner:
     # ── Summary ───────────────────────────────────────────────────────────────
 
     def _write_summary(self):
-        """Persists a cleanup summary to cleanup_summary.json for the UI."""
+        """Persists a cleanup summary to cleanup_summary.json for the UI (atomic write)."""
         summary = {
             "ts":      datetime.now().isoformat(timespec="seconds"),
             "dry_run": cfg.DRY_RUN,
             **self.stats,
         }
+        tmp = _SUMMARY_PATH.with_suffix(".tmp")
         try:
-            _SUMMARY_PATH.write_text(
-                json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(_SUMMARY_PATH)
         except OSError as e:
             logger.warning(f"Could not write cleanup summary: {e}")
+            tmp.unlink(missing_ok=True)
 
     def _print_summary(self):
         s = self.stats
@@ -320,26 +340,16 @@ def _build_protected_domains() -> frozenset[str]:
     return frozenset(protected)
 
 
-def _get_header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
-
-
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(get_header(message.get("payload", {}).get("headers", []), "From"))
 
 
 def _sender_display(message: dict) -> str:
-    return _get_header(message, "From") or "?"
+    return get_header(message.get("payload", {}).get("headers", []), "From") or "?"
 
 
 def _subject(message: dict) -> str:
-    return _get_header(message, "Subject") or "(sin asunto)"
+    return get_header(message.get("payload", {}).get("headers", []), "Subject") or "(sin asunto)"
 
 
 def _s(text: str, n: int) -> str:
