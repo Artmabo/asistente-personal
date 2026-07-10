@@ -93,6 +93,9 @@ class MorningBrief:
             except Exception:
                 continue
 
+        storage_snapshot = self._read_json("storage_snapshot.json", {})
+        storage_percent  = storage_snapshot.get("percent_used")
+
         # Last cleanup run info
         last_cleanup = self._read_json("cleanup_summary.json", {})
         last_cleanup_info = None
@@ -134,7 +137,7 @@ class MorningBrief:
             "new_from_important":   new_from_important[:5],
             "pending_decisions":    pending_count,
             "alerts":               alerts[:5],
-            "storage_percent":      None,
+            "storage_percent":      storage_percent,
             "personal_count":       personal,
             "spam_count":           spam,
             "last_cleanup":         last_cleanup_info,

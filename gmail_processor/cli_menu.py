@@ -59,6 +59,7 @@ def run_menu():
             elif choice == "9":  _menu_limpiar_spam(_get_service)
             elif choice == "10": _menu_limpiar_promo(_get_service)
             elif choice == "11": _menu_limpiar_todo(_get_service)
+            elif choice == "12": _menu_undo_cleanup(_get_service)
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -86,6 +87,7 @@ def _main_menu() -> str:
         ("9",  "Limpiar spam          vaciar carpeta de spam"),
         ("10", "Limpiar promociones   vaciar categoría promociones"),
         ("11", "Limpiar todo          spam + promos + social + foros"),
+        ("12", "Deshacer limpieza     restaurar correos recientes de la papelera"),
         ("0",  "Salir"),
     ]
     for key, label in items:
@@ -189,6 +191,51 @@ def _menu_cleanup(get_svc: Callable):
     cfg.DRY_RUN = not live
     proc = GmailProcessor(service=svc)
     proc.run(cleanup=True, learning=learning)
+    _pause()
+
+
+# ── 2b. Deshacer limpieza reciente ────────────────────────────────────────────
+
+def _menu_undo_cleanup(get_svc: Callable):
+    """Restores messages that a recent LIVE cleanup run sent to Trash.
+
+    Reads the audit log for real (non-dry-run) TRASH decisions within a
+    user-chosen time window and calls messages().untrash() on each one — a
+    safety net for when a rule/threshold trashed something it shouldn't have.
+    """
+    _section("DESHACER LIMPIEZA RECIENTE")
+
+    from .audit_log import AuditLogger
+
+    horas_str = _ask("Restaurar correos enviados a papelera en las últimas cuántas horas", "24")
+    try:
+        horas = int(horas_str)
+    except ValueError:
+        horas = 24
+
+    entries = AuditLogger().trashed_since(hours=horas)
+    if not entries:
+        print(f"\n  No hay correos movidos a papelera (modo LIVE) en las últimas {horas} horas.")
+        _pause()
+        return
+
+    print(f"\n  Se encontraron {len(entries)} correo(s) para restaurar:")
+    for e in entries[:20]:
+        print(f"    {e.get('ts', '')[:19]}  {(e.get('sender') or '')[:40]:<40}  regla={e.get('rule', '')}")
+    if len(entries) > 20:
+        print(f"    … y {len(entries) - 20} más")
+
+    if not _confirm(f"\n  ¿Restaurar estos {len(entries)} correo(s) desde la papelera?"):
+        return
+
+    svc = get_svc()
+    if svc is None:
+        return
+
+    from .actions import GmailActions
+    actions   = GmailActions(svc, dry_run=False)
+    restored  = sum(1 for e in entries if actions.untrash(e["msg_id"]))
+    print(f"\n  Restaurados: {restored}/{len(entries)}")
     _pause()
 
 
@@ -744,6 +791,12 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _escape_py_str(s: str) -> str:
+    """Escapes backslashes/quotes so `s` is safe to embed in a Python string
+    literal written into rules.py (which is later imported/reloaded as code)."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
@@ -772,7 +825,9 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    safe_email = _escape_py_str(email)
+    safe_label = _escape_py_str(label)
+    new_entry = f'    "{safe_email}": {{"label": "{safe_label}", "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -844,11 +899,14 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
     if f'"{domain}"' in block_text:
         return False
 
+    safe_domain = _escape_py_str(domain)
+    safe_label  = _escape_py_str(label)
+    safe_action = _escape_py_str(action)
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": ["{safe_domain}"],\n'
+        f'        "label": "{safe_label}",\n'
+        f'        "action": "{safe_action}",\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)

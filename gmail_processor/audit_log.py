@@ -17,7 +17,7 @@ import io
 import json
 import logging
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger("gmail_processor.audit")
@@ -91,6 +91,26 @@ class AuditLogger:
                 counts[decision] += 1
         return counts
 
+    def trashed_since(self, hours: int = 24) -> list[dict]:
+        """Returns live (non-dry-run) TRASH entries from the last `hours` hours.
+
+        Ordered most-recent-first. Used to power "undo last cleanup" — restoring
+        messages that a recent LIVE run sent to Trash.
+        """
+        cutoff  = datetime.now() - timedelta(hours=hours)
+        matches = []
+        for entry in self._load():
+            if entry.get("decision") != "TRASH" or entry.get("dry_run"):
+                continue
+            try:
+                ts = datetime.fromisoformat(entry["ts"])
+            except (KeyError, ValueError):
+                continue
+            if ts >= cutoff:
+                matches.append(entry)
+        matches.reverse()
+        return matches
+
     def export_csv(self, n: int = MAX_ENTRIES) -> str:
         """Returns the most recent `n` log entries as a UTF-8 CSV string."""
         entries = self.recent(n)
@@ -106,13 +126,27 @@ class AuditLogger:
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _load(self) -> list[dict]:
+        """Parses the JSONL log line-by-line, skipping corrupt lines individually.
+
+        A single truncated/malformed line must not discard the rest of the audit
+        trail — this log is the record of every automated email deletion.
+        """
         if not self.path.exists():
             return []
+        entries: list[dict] = []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                for lineno, line in enumerate(f, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        logger.warning(f"Línea corrupta ignorada en {self.path}:{lineno}")
+        except OSError:
             return []
+        return entries
 
     def _load_tail(self, n: int) -> list[dict]:
         """Reads only the last n lines using a deque to avoid loading the whole file."""

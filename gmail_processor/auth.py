@@ -11,8 +11,15 @@ SCOPES = ["https://mail.google.com/"]
 def get_service(
     creds_path: str = "config/credentials.json",
     token_path: str = "token.json",
+    interactive: bool = True,
 ):
-    """Builds and returns an authenticated Gmail API service."""
+    """Builds and returns an authenticated Gmail API service.
+
+    interactive=False raises instead of launching the browser-based OAuth flow.
+    Use this from background contexts (e.g. the APScheduler thread) where there
+    is no browser/console to complete the flow — run_local_server() would
+    otherwise block that thread forever waiting on a login that never happens.
+    """
     creds = None
 
     if os.path.exists(token_path):
@@ -26,6 +33,11 @@ def get_service(
                 # Refresh token revoked or network failure — force full re-auth
                 creds = None
         if not creds or not creds.valid:
+            if not interactive:
+                raise RuntimeError(
+                    "Se requiere reautenticación interactiva con Gmail (el token "
+                    "expiró o fue revocado) y no hay una sesión interactiva disponible."
+                )
             if not os.path.exists(creds_path):
                 raise FileNotFoundError(
                     f"No se encontró el archivo de credenciales en '{creds_path}'. "
