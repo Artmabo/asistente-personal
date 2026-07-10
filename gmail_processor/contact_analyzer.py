@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import get_header
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -74,6 +76,8 @@ _NOREPLY_RE = re.compile(
     re.IGNORECASE,
 )
 
+_VALID_EMAIL_RE = re.compile(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$")
+
 _MARKETING_WORDS = frozenset([
     "oferta", "descuento", "promo", "promocion", "sale", "% off",
     "unsubscribe", "newsletter", "deal", "gratis", "free", "winner",
@@ -113,14 +117,6 @@ def _date_filter(days: int | None) -> str:
         return ""
     since = (datetime.now() - timedelta(days=days)).strftime("%Y/%m/%d")
     return f" after:{since}"
-
-
-def _get_header(headers: list[dict], name: str) -> str:
-    name_l = name.lower()
-    for h in headers:
-        if h.get("name", "").lower() == name_l:
-            return h.get("value", "")
-    return ""
 
 
 def _parse_date(date_str: str) -> datetime | None:
@@ -224,16 +220,16 @@ class ContactAnalyzer:
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
-                addr, name     = _parse_from(_get_header(headers, "From"))
+                addr, name     = _parse_from(get_header(headers, "From"))
                 if not addr:
                     continue
 
                 if addr in reviewed or addr in pending_set:
                     continue
 
-                subject   = _get_header(headers, "Subject")
-                date_hdr  = _get_header(headers, "Date")
-                has_unsub = bool(_get_header(headers, "List-Unsubscribe"))
+                subject   = get_header(headers, "Subject")
+                date_hdr  = get_header(headers, "Date")
+                has_unsub = bool(get_header(headers, "List-Unsubscribe"))
 
                 if addr not in _working:
                     _working[addr] = {
@@ -619,7 +615,7 @@ class ContactAnalyzer:
                     ).execute()
                     headers = msg.get("payload", {}).get("headers", [])
                     for hname in ("To", "Cc"):
-                        raw = _get_header(headers, hname)
+                        raw = get_header(headers, hname)
                         if raw:
                             for _, a in email.utils.getaddresses([raw]):
                                 if a:
@@ -681,6 +677,11 @@ class ContactAnalyzer:
     # ── Escribir en rules.py ──────────────────────────────────────────────────
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
+        # email_addr traces back to a message's From header — an attacker-controlled
+        # field. Reject anything containing whitespace/quotes/backslashes (which would
+        # include a raw newline) before it's ever written into rules.py as source code.
+        if not _VALID_EMAIL_RE.match(email_addr):
+            return {"error": f"Dirección de correo no válida: {email_addr}"}
         try:
             import importlib
             import gmail_processor.rules as rules_mod

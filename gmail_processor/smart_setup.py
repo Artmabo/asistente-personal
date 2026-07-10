@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
+from .utils import extract_email_address, get_header
+
 logger = logging.getLogger("gmail_processor.smart_setup")
 
 # ── Scan limits ───────────────────────────────────────────────────────────────
@@ -570,22 +572,12 @@ def _is_definitely_automated(email: str) -> bool:
 
 # ── Header helpers ────────────────────────────────────────────────────────────
 
-def _get_header(headers: list[dict], name: str) -> str:
-    for h in headers:
-        if h.get("name", "").lower() == name.lower():
-            return h.get("value", "")
-    return ""
-
-
 def _extract_email(headers: list[dict]) -> str:
-    raw = _get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _extract_name(headers: list[dict]) -> str:
-    raw = _get_header(headers, "From")
+    raw = get_header(headers, "From")
     if "<" in raw:
         return raw.split("<")[0].strip().strip('"').strip("'")
     return ""

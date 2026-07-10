@@ -7,8 +7,13 @@ si las credenciales tienen acceso a Drive, también devuelve cuota en GB.
 estimate_cleanup_size() lista todos los mensajes de cada categoría,
 muestrea sizeEstimate de hasta 50 mensajes y extrapola para el total.
 """
+import json
 import time
+from pathlib import Path
+
 from googleapiclient.errors import HttpError
+
+_SNAPSHOT_PATH = Path("storage_snapshot.json")
 
 _CATEGORY_QUERIES: dict[str, str] = {
     "spam":            "in:spam",
@@ -61,7 +66,17 @@ class StorageAnalyzer:
             result["total_gb"]     = None
             result["percent_used"] = None
 
+        self._save_snapshot(result)
         return result
+
+    @staticmethod
+    def _save_snapshot(summary: dict) -> None:
+        """Caches the last computed summary so MorningBrief.generate() (which is
+        Gmail-call-free by design) can show storage_percent without hitting the API."""
+        try:
+            _SNAPSHOT_PATH.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
 
     def estimate_cleanup_size(self, categories: list[str] | None = None) -> dict:
         """
@@ -75,17 +90,21 @@ class StorageAnalyzer:
         result: dict = {}
         total_mb = 0
 
+        true_counts = self.get_category_counts(categories)
+
         for cat in categories:
             query = _CATEGORY_QUERIES.get(cat)
             if not query:
                 continue
 
-            all_ids, count = self._list_all_ids(query)
-            if count == 0:
+            true_count = true_counts.get(cat, 0)
+            if true_count == 0:
                 result[cat] = {"count": 0, "size_mb": 0}
                 continue
 
-            # Muestrear sizeEstimate
+            # Muestrear sizeEstimate (el sample_ids solo necesita cubrir la muestra,
+            # no la lista completa — el conteo real ya viene de resultSizeEstimate)
+            all_ids, _  = self._list_all_ids(query, max_ids=_SAMPLE_PER_CAT)
             sample_ids  = all_ids[:_SAMPLE_PER_CAT]
             total_bytes = 0
             sampled     = 0
@@ -101,9 +120,9 @@ class StorageAnalyzer:
                     continue
 
             avg_bytes = total_bytes / sampled if sampled else _AVG_BYTES_FALLBACK
-            size_mb   = int(count * avg_bytes / 1e6)
+            size_mb   = int(true_count * avg_bytes / 1e6)
 
-            result[cat] = {"count": count, "size_mb": size_mb}
+            result[cat] = {"count": true_count, "size_mb": size_mb}
             total_mb   += size_mb
 
         result["total_mb"] = total_mb
