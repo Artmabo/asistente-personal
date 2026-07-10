@@ -104,6 +104,18 @@ class GmailActions:
         )
         return result is not None
 
+    def untrash(self, msg_id: str) -> bool:
+        """Restores a message out of Trash. Used to undo a recent cleanup run."""
+        if self.dry_run:
+            logger.info(f"[DRY RUN] untrash → {msg_id}")
+            return True
+        result = self._call(
+            self.service.users().messages().untrash,
+            userId="me",
+            id=msg_id,
+        )
+        return result is not None
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _modify(self, msg_id: str, add: list = None, remove: list = None) -> bool:
