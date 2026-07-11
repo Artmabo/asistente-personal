@@ -80,6 +80,8 @@ MAX_DAILY_DELTA = 10.0          # max absolute score change per entity per calen
 MIN_SAMPLES_FOR_ADJUSTMENT = 10
 ERROR_RATE_TRIGGER         = 0.05
 THRESHOLD_INCREASE_DAYS    = 15
+THRESHOLD_COOLDOWN_DAYS    = 7    # min days between adjustments to the same rule
+MAX_THRESHOLD_DAYS         = 180  # ceiling so a persistently noisy rule can't be neutered
 
 _GMAIL_CATEGORIES = [
     "CATEGORY_PROMOTIONS",
@@ -454,23 +456,59 @@ class LearningEngine:
     # ── Threshold adjustment ──────────────────────────────────────────────────
 
     def update_rule_thresholds(self) -> list[str]:
+        """
+        Escalates threshold_days for rules whose error rate stays above
+        ERROR_RATE_TRIGGER. Each rule can only be adjusted once every
+        THRESHOLD_COOLDOWN_DAYS (trashed/incorrect are cumulative counters
+        that never reset, so without a cooldown a persistently-noisy rule
+        would re-trigger on every single learning run) and is capped at
+        MAX_THRESHOLD_DAYS so it can never be escalated into irrelevance.
+        """
+        today   = date.today()
         changes = []
+        history = self.state.setdefault("threshold_history", [])
+
         for rule_name, stats in self.state["rule_stats"].items():
             trashed   = stats.get("trashed", 0)
             incorrect = stats.get("incorrect", 0)
             if trashed < MIN_SAMPLES_FOR_ADJUSTMENT:
                 continue
             error_rate = incorrect / trashed
-            if error_rate > ERROR_RATE_TRIGGER:
-                base    = self._base_threshold(rule_name) or 30
-                current = stats.get("threshold_days") or base
-                new_val = current + THRESHOLD_INCREASE_DAYS
-                stats["threshold_days"] = new_val
-                self._dirty = True
-                changes.append(
-                    f"  {rule_name}: {current}d → {new_val}d  "
-                    f"(tasa_error={error_rate:.1%}, {incorrect}/{trashed})"
-                )
+            if error_rate <= ERROR_RATE_TRIGGER:
+                continue
+
+            base    = self._base_threshold(rule_name) or 30
+            current = stats.get("threshold_days") or base
+            if current >= MAX_THRESHOLD_DAYS:
+                continue
+
+            last_adjusted = stats.get("last_adjusted")
+            if last_adjusted:
+                try:
+                    days_since = (today - date.fromisoformat(last_adjusted)).days
+                    if days_since < THRESHOLD_COOLDOWN_DAYS:
+                        continue
+                except ValueError:
+                    pass
+
+            new_val = min(current + THRESHOLD_INCREASE_DAYS, MAX_THRESHOLD_DAYS)
+            stats["threshold_days"] = new_val
+            stats["last_adjusted"]  = today.isoformat()
+            self._dirty = True
+
+            entry = (
+                f"  {rule_name}: {current}d → {new_val}d  "
+                f"(tasa_error={error_rate:.1%}, {incorrect}/{trashed})"
+            )
+            changes.append(entry)
+            history.append({
+                "date": today.isoformat(), "rule": rule_name,
+                "old_days": current, "new_days": new_val,
+                "error_rate": round(error_rate, 4),
+            })
+
+        del history[:-50]  # keep only the most recent 50 adjustments
+
         if changes:
             logger.info("Ajustes automáticos de threshold:\n" + "\n".join(changes))
         return changes
@@ -539,6 +577,15 @@ class LearningEngine:
                 lines.append(
                     f"  {cat}: trashed={s.get('trashed',0)}  "
                     f"kept={s.get('kept',0)}"
+                )
+
+        history = self.state.get("threshold_history", [])
+        if history:
+            lines.append("─── Últimos ajustes de threshold ────────────────────")
+            for h in history[-5:]:
+                lines.append(
+                    f"  {h['date']}  {h['rule']}: {h['old_days']}d → {h['new_days']}d"
+                    f"  (tasa_error={h['error_rate']:.1%})"
                 )
 
         return "\n".join(lines)

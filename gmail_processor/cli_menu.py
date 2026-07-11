@@ -12,6 +12,8 @@ import importlib
 from pathlib import Path
 from typing import Callable, Optional
 
+from .utils import is_valid_email, is_valid_domain
+
 _W    = 54
 _SEP  = "─" * _W
 _SEP2 = "═" * _W
@@ -536,10 +538,9 @@ def _menu_smart_setup(get_svc: Callable):
     print("  Analiza tus últimos 12 meses de correo para detectar")
     print("  contactos importantes que deben estar protegidos.")
     print()
-    print(f"  Límites del análisis:")
-    print(f"    • Hasta 500 correos de bandeja de entrada")
-    print(f"    • Hasta 400 mensajes enviados (para detectar respuestas)")
-    print(f"    • Tiempo estimado: 3-6 minutos")
+    print(f"  El análisis recorre todo el correo de los últimos 12 meses")
+    print(f"  (bandeja de entrada + enviados, sin límite de cantidad).")
+    print(f"  Duración: varios minutos, más en buzones grandes.")
     print()
     print("  Los resultados se muestran antes de modificar nada.")
     print("  Confirmarás cada cambio antes de que sea aplicado.")
@@ -745,6 +746,9 @@ def _present_domains(domains) -> int:
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    if not is_valid_email(email):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -768,11 +772,13 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         return False
 
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            return False  # already exists
+        if email in line and not line.strip().startswith("#"):
+            return False  # already exists (covers both "..." and repr() formats)
 
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # repr() safely escapes quotes/backslashes so `email`/`label` can never
+    # break out of the string literal or inject code into rules.py, which is
+    # importlib.reload()ed right after this write.
+    new_entry = f"    {email!r}: {{'label': {label!r}, 'mark_important': {important!r}}},"
     lines.insert(end_idx, new_entry)
 
     try:
@@ -792,7 +798,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email in line and not line.strip().startswith("#"):
             removed = True
             continue
         new_lines.append(line)
@@ -809,6 +815,9 @@ def _patch_rules_remove_contact(email: str) -> bool:
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    if not is_valid_domain(domain):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -841,15 +850,18 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if domain in block_text:
         return False
 
+    # repr() safely escapes quotes/backslashes so no field can break out of
+    # its string literal or inject code into rules.py, which is
+    # importlib.reload()ed right after this write.
     new_entry = (
-        f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
-        f'    }},'
+        f"    {{\n"
+        f"        'domains': [{domain!r}],\n"
+        f"        'label': {label!r},\n"
+        f"        'action': {action!r},\n"
+        f"    }},"
     )
     lines.insert(end_idx, new_entry)
 
