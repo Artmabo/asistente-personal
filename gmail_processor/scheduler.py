@@ -145,7 +145,7 @@ class CleanupScheduler:
             engine  = LearningEngine()
             audit   = AuditLogger()
             cleaner = StorageCleaner(service, actions, engine=engine, audit=audit)
-            result  = cleaner.run()
+            result  = cleaner.run(categories=self.config.get("categories"))
         except Exception as exc:
             result = {"error": str(exc)}
             logger.error(f"Error en limpieza automática: {exc}")

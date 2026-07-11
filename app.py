@@ -40,6 +40,7 @@ st.session_state.setdefault("debug_result",       None)
 st.session_state.setdefault("ca_batch_result",    None)
 st.session_state.setdefault("ca_apply_result",    None)
 st.session_state.setdefault("ca_decisions",       {})
+st.session_state.setdefault("ca_unsub_ignored",   set())
 st.session_state.setdefault("ca_running",         False)
 st.session_state.setdefault("storage_data",       None)
 st.session_state.setdefault("cleanup_size_data",  None)
@@ -231,36 +232,9 @@ def _limpiar_remitente(email: str) -> dict | None:
         return None
 
 
-_FREE_EMAIL_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
-
-
-def _derivar_label(email: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email.split("@")[-1] if "@" in email else ""
-    local  = email.split("@")[0]  if "@" in email else email
-    if domain in _FREE_EMAIL_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
-
-
 def _proteger_remitente(email: str, name: str) -> dict:
-    import re
-    if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
+    from gmail_processor.utils import is_valid_email, derive_contact_label
+    if not is_valid_email(email):
         return {"error": f"Dirección de correo no válida: {email}"}
 
     try:
@@ -270,7 +244,7 @@ def _proteger_remitente(email: str, name: str) -> dict:
         if email in rules_mod.CONTACT_RULES:
             return {"already_protected": True}
 
-        label      = _derivar_label(email, name)
+        label      = derive_contact_label(email, name)
         rules_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "gmail_processor", "rules.py",
@@ -481,6 +455,13 @@ def _ca_apply(decisions: dict) -> dict:
         return result
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def _ca_unsubscribe_candidates() -> list[dict]:
+    try:
+        return _ca_get_analyzer().get_unsubscribe_candidates()
+    except Exception:
+        return []
 
 
 def _ca_state_summary() -> dict | None:
@@ -1538,6 +1519,37 @@ elif _current_page == "analizar":
                     with st.expander(f"⚠️ {len(_apr_e)} errores"):
                         for _e in _apr_e:
                             st.caption(_e)
+
+        # ── Candidatos para darte de baja ───────────────────────────────────────
+        _unsub_ignored = st.session_state["ca_unsub_ignored"]
+        _unsub_all     = _ca_unsubscribe_candidates() if _ca_prev else []
+        _unsub_list    = [c for c in _unsub_all if c["email"] not in _unsub_ignored]
+
+        if _unsub_list:
+            st.markdown("")
+            with st.expander(f"📭 {len(_unsub_list)} candidatos para darte de baja (unsubscribe)"):
+                st.caption(
+                    "Remitentes comerciales con enlace de baja y poco compromiso. "
+                    "Marcarlos como spam los envía a la papelera y refuerza el aprendizaje."
+                )
+                for _ui, _uc in enumerate(_unsub_list):
+                    _ue   = _uc["email"]
+                    _ulbl = f"{_uc['name']} <{_ue}>" if _uc.get("name") else _ue
+                    with st.container(border=True):
+                        _uc1, _uc2, _uc3 = st.columns([5, 1, 1])
+                        with _uc1:
+                            st.markdown(f"**{_ulbl}**")
+                            st.caption(f"{_uc.get('count', 0)} correos · score {_uc.get('score', 0)}/100")
+                        with _uc2:
+                            if st.button("🗑️ Spam", key=f"unsub_spam_{_ui}", use_container_width=True):
+                                with st.spinner("Aplicando…"):
+                                    _ca_apply({_ue: "spam"})
+                                st.rerun()
+                        with _uc3:
+                            if st.button("🙈 Ignorar", key=f"unsub_ignore_{_ui}", use_container_width=True):
+                                _unsub_ignored.add(_ue)
+                                st.session_state["ca_unsub_ignored"] = _unsub_ignored
+                                st.rerun()
 
         # ── Configuración del análisis ────────────────────────────────────────
         st.markdown("")

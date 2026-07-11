@@ -50,8 +50,20 @@ class StorageCleaner:
             "errors":   0,
         }
 
-    def run(self) -> dict:
+    def run(self, categories: Optional[list[str]] = None) -> dict:
+        """
+        Ejecuta la limpieza. Si `categories` se especifica (claves de
+        rules.CATEGORY_TO_RULES, p. ej. ["spam", "promociones"]), sólo se
+        procesan los targets de esas categorías; si es None se procesan todos.
+        """
         targets = cfg.CLEANUP_RULES.get("targets", [])
+        if categories is not None:
+            allowed_rules = {
+                rule
+                for cat in categories
+                for rule in cfg.CATEGORY_TO_RULES.get(cat, [])
+            }
+            targets = [t for t in targets if t["rule"] in allowed_rules]
         max_per = cfg.CLEANUP_RULES.get("max_per_query", 200)
         mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
         scoring = "activo" if self.engine else "inactivo"

@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import is_valid_email, derive_contact_label
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -681,6 +683,9 @@ class ContactAnalyzer:
     # ── Escribir en rules.py ──────────────────────────────────────────────────
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
+        if not is_valid_email(email_addr):
+            return {"error": f"Dirección de correo no válida: {email_addr}"}
+
         try:
             import importlib
             import gmail_processor.rules as rules_mod
@@ -688,7 +693,7 @@ class ContactAnalyzer:
             if email_addr in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
-            label      = _derive_label(email_addr, name)
+            label      = derive_contact_label(email_addr, name)
             rules_path = Path(__file__).parent / "rules.py"
             content    = rules_path.read_text(encoding="utf-8")
             lines      = content.split("\n")
@@ -708,9 +713,7 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            new_line = f"    {email_addr!r}: {{'label': {label!r}, 'mark_important': True}},"
             lines.insert(insert_at, new_line)
             rules_path.write_text("\n".join(lines), encoding="utf-8")
             importlib.reload(rules_mod)
@@ -761,23 +764,3 @@ def _atomic_write(path: Path, data: dict) -> None:
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
-
-
-def _derive_label(email_addr: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email_addr.split("@")[-1] if "@" in email_addr else ""
-    local  = email_addr.split("@")[0]  if "@" in email_addr else email_addr
-    if domain in _FREE_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"

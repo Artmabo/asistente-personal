@@ -98,6 +98,11 @@ CATEGORY_RULES: dict[str, dict] = {
 CLEANUP_RULES: dict = {
     "targets": [
         {
+            "query": "in:spam",
+            "reason": "Correo marcado como spam por Gmail",
+            "rule": "spam_all",
+        },
+        {
             "query": "category:promotions older_than:60d",
             "reason": "Promoción con más de 60 días",
             "rule": "promotions_60d",
@@ -127,6 +132,17 @@ CLEANUP_RULES: dict = {
     "safe_domains": [],
     # Tope de seguridad: nunca procesar más de N correos por query
     "max_per_query": 200,
+}
+
+# Mapea las claves de categoría usadas en la UI (app.py _CAT_OPTIONS, scheduler
+# categories) a los nombres de "rule" de CLEANUP_RULES["targets"] que debe
+# ejecutar StorageCleaner.run(categories=...) para esa categoría.
+CATEGORY_TO_RULES: dict[str, list[str]] = {
+    "spam":            ["spam_all"],
+    "promociones":     ["promotions_60d"],
+    "social":          ["social_90d"],
+    "actualizaciones": ["updates_90d"],
+    "foros":           ["forums_90d"],
 }
 
 # ── Configuración general ─────────────────────────────────────────────────────
