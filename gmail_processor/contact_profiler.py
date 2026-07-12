@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import call_with_retry, get_api_key
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -152,10 +152,12 @@ class ContactProfiler:
         attachments: list[dict] = []
 
         try:
-            sent = service.users().messages().list(
+            sent = call_with_retry(
+                service.users().messages().list,
                 userId="me", q=f"in:sent to:{addr}", maxResults=1,
-            ).execute()
-            bidirectional = bool(sent.get("messages"))
+                logger=logger,
+            )
+            bidirectional = bool(sent and sent.get("messages"))
         except Exception:
             pass
 
@@ -215,19 +217,24 @@ class ContactProfiler:
     def _fetch_emails(self, service, addr: str) -> list[dict]:
         result = []
         try:
-            resp = service.users().messages().list(
+            resp = call_with_retry(
+                service.users().messages().list,
                 userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
-            ).execute()
-            stubs = resp.get("messages", [])
+                logger=logger,
+            )
+            stubs = resp.get("messages", []) if resp else []
         except HttpError:
             return []
 
         for stub in stubs:
             try:
-                msg = service.users().messages().get(
+                msg = call_with_retry(
+                    service.users().messages().get,
                     userId="me", id=stub["id"], format="full",
-                ).execute()
-                result.append(self._parse_message(msg))
+                    logger=logger,
+                )
+                if msg:
+                    result.append(self._parse_message(msg))
                 time.sleep(0.05)
             except HttpError:
                 continue

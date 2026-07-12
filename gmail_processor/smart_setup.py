@@ -39,17 +39,24 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
+from .utils import call_with_retry, extract_email_address, get_header
+
 logger = logging.getLogger("gmail_processor.smart_setup")
 
 # ── Scan limits ───────────────────────────────────────────────────────────────
-# MAX_MESSAGES / MAX_SENT no longer used — analyze() paginates until exhausted.
 SCAN_DAYS_DEFAULT = 365   # default look-back passed to analyze(scan_days=…)
 TOP_N         = 20    # max contact suggestions to present
 TOP_DOMAINS   = 8     # max domain suggestions
 MIN_SCORE     = 35    # must clear this threshold to appear as suggestion
 MIN_MESSAGES  = 2     # min emails received from sender
 
-_BATCH_SLEEP  = 0.2   # seconds between list-pagination calls (rate-limit headroom)
+# Per-message .get() calls (metadata fetch) are what actually hammer the API —
+# list-pagination alone stays cheap. Cap total messages fetched per phase so a
+# large mailbox can't turn Smart Setup into an unbounded, unthrottled scan.
+MAX_SCAN_MESSAGES = 5_000
+
+_BATCH_SLEEP  = 0.2    # seconds between list-pagination calls (rate-limit headroom)
+_MSG_SLEEP    = 0.02   # seconds between individual per-message .get() calls
 
 # ── Scoring weights ───────────────────────────────────────────────────────────
 W_REPLY           = 25    # per thread where user replied
@@ -358,10 +365,14 @@ class SmartSetup:
         self, query, sent_threads, senders, progress_cb, phase
     ):
         """Paginate a Gmail query, fetch metadata per message, and ingest signals.
-        Sleeps _BATCH_SLEEP seconds between list pages to stay within rate limits."""
+        Sleeps _BATCH_SLEEP seconds between list pages and _MSG_SLEEP seconds
+        between per-message fetches to stay within rate limits. Stops after
+        MAX_SCAN_MESSAGES messages so a very large mailbox can't turn this into
+        an effectively unbounded, hours-long synchronous scan."""
         page_token = None
         fetched    = 0
         page       = 0
+        truncated  = False
 
         while True:
             try:
@@ -379,20 +390,30 @@ class SmartSetup:
                 break
 
             for stub in stubs:
-                try:
-                    msg = self.service.users().messages().get(
-                        userId="me", id=stub["id"],
-                        format="metadata", metadataHeaders=["From"],
-                    ).execute()
-                except HttpError:
-                    fetched += 1
-                    continue
-                self._ingest(msg, sent_threads, senders)
+                if fetched >= MAX_SCAN_MESSAGES:
+                    truncated = True
+                    break
+                msg = call_with_retry(
+                    self.service.users().messages().get,
+                    userId="me", id=stub["id"],
+                    format="metadata", metadataHeaders=["From"],
+                    logger=logger,
+                )
                 fetched += 1
+                if msg:
+                    self._ingest(msg, sent_threads, senders)
+                time.sleep(_MSG_SLEEP)
 
             page += 1
             if progress_cb:
                 progress_cb(fetched, phase=phase, page=page)
+
+            if truncated:
+                logger.warning(
+                    f"Fase '{phase}': escaneo truncado en {MAX_SCAN_MESSAGES} mensajes "
+                    "(el buzón tiene más mensajes de los que se escanearon)."
+                )
+                break
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -570,22 +591,12 @@ def _is_definitely_automated(email: str) -> bool:
 
 # ── Header helpers ────────────────────────────────────────────────────────────
 
-def _get_header(headers: list[dict], name: str) -> str:
-    for h in headers:
-        if h.get("name", "").lower() == name.lower():
-            return h.get("value", "")
-    return ""
-
-
 def _extract_email(headers: list[dict]) -> str:
-    raw = _get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _extract_name(headers: list[dict]) -> str:
-    raw = _get_header(headers, "From")
+    raw = get_header(headers, "From")
     if "<" in raw:
         return raw.split("<")[0].strip().strip('"').strip("'")
     return ""
