@@ -45,6 +45,12 @@ class StorageAnalyzer:
         # Cuota de almacenamiento vía Drive API (scope opcional)
         try:
             from googleapiclient.discovery import build as _build
+            # `_http` is an undocumented internal of googleapiclient's discovery
+            # Resource — if a future google-api-python-client/google-auth-httplib2
+            # upgrade renames/removes it, this silently disables the storage-quota
+            # feature (falls through to the `except Exception` below) rather than
+            # raising, since there's no public API to fetch the credentials back
+            # out of an already-built service.
             creds = getattr(self.svc._http, "credentials", None)
             if creds is None:
                 raise RuntimeError("no credentials")
@@ -131,6 +137,38 @@ class StorageAnalyzer:
             except HttpError:
                 result[cat] = 0
         return result
+
+    def get_largest_messages(self, n: int = 20, min_size_mb: float = 5.0) -> list[dict]:
+        """Returns up to `n` of the largest messages matching `larger:{min_size_mb}M`,
+        sorted descending by size. Gmail search doesn't sort by size, so this
+        over-fetches candidate IDs and reads each one's metadata to rank them —
+        useful for spotting a handful of huge one-off emails (old video/PDF
+        attachments) without waiting for full-category cleanup rules to catch them.
+        """
+        query = f"larger:{int(min_size_mb)}M"
+        candidate_ids, _ = self._list_all_ids(query, max_ids=max(n * 5, 100))
+
+        messages = []
+        for msg_id in candidate_ids:
+            try:
+                msg = self.svc.users().messages().get(
+                    userId="me", id=msg_id, format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"],
+                ).execute()
+            except HttpError:
+                continue
+            headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+            messages.append({
+                "id":      msg_id,
+                "subject": headers.get("Subject", "(sin asunto)"),
+                "sender":  headers.get("From", "?"),
+                "date":    headers.get("Date", ""),
+                "size_mb": round(msg.get("sizeEstimate", 0) / 1e6, 1),
+            })
+            time.sleep(0.02)
+
+        messages.sort(key=lambda m: m["size_mb"], reverse=True)
+        return messages[:n]
 
     def _list_all_ids(self, query: str, max_ids: int = 5_000) -> tuple[list[str], int]:
         """Lista los IDs de mensajes que coinciden con la query, hasta max_ids."""

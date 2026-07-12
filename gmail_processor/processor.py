@@ -120,9 +120,13 @@ class GmailProcessor:
             self.stats["errors"] += 1
             return
 
-        c = self.classifier.classify(message)
-        self._apply(msg_id, message, c)
-        self.stats["processed"] += 1
+        try:
+            c = self.classifier.classify(message)
+            self._apply(msg_id, message, c)
+            self.stats["processed"] += 1
+        except Exception as e:
+            logger.error(f"Failed to classify/apply {msg_id}: {e}")
+            self.stats["errors"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):
         sender  = _header(message, "From")  or "?"

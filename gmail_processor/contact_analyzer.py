@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import get_header
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -113,14 +115,6 @@ def _date_filter(days: int | None) -> str:
         return ""
     since = (datetime.now() - timedelta(days=days)).strftime("%Y/%m/%d")
     return f" after:{since}"
-
-
-def _get_header(headers: list[dict], name: str) -> str:
-    name_l = name.lower()
-    for h in headers:
-        if h.get("name", "").lower() == name_l:
-            return h.get("value", "")
-    return ""
 
 
 def _parse_date(date_str: str) -> datetime | None:
@@ -224,16 +218,16 @@ class ContactAnalyzer:
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
-                addr, name     = _parse_from(_get_header(headers, "From"))
+                addr, name     = _parse_from(get_header(headers, "From"))
                 if not addr:
                     continue
 
                 if addr in reviewed or addr in pending_set:
                     continue
 
-                subject   = _get_header(headers, "Subject")
-                date_hdr  = _get_header(headers, "Date")
-                has_unsub = bool(_get_header(headers, "List-Unsubscribe"))
+                subject   = get_header(headers, "Subject")
+                date_hdr  = get_header(headers, "Date")
+                has_unsub = bool(get_header(headers, "List-Unsubscribe"))
 
                 if addr not in _working:
                     _working[addr] = {
@@ -619,7 +613,7 @@ class ContactAnalyzer:
                     ).execute()
                     headers = msg.get("payload", {}).get("headers", [])
                     for hname in ("To", "Cc"):
-                        raw = _get_header(headers, hname)
+                        raw = get_header(headers, hname)
                         if raw:
                             for _, a in email.utils.getaddresses([raw]):
                                 if a:

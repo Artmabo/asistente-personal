@@ -43,6 +43,7 @@ st.session_state.setdefault("ca_decisions",       {})
 st.session_state.setdefault("ca_running",         False)
 st.session_state.setdefault("storage_data",       None)
 st.session_state.setdefault("cleanup_size_data",  None)
+st.session_state.setdefault("correos_grandes_data", None)
 st.session_state.setdefault("schedule_saved",     False)
 st.session_state.setdefault("profiler_result",    None)
 st.session_state.setdefault("chat_messages",      [])
@@ -524,6 +525,15 @@ def _cargar_cleanup_estimate(categories: list[str] | None = None) -> dict:
     try:
         from gmail_processor.storage_analyzer import StorageAnalyzer
         return StorageAnalyzer(st.session_state.service).estimate_cleanup_size(categories)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _cargar_correos_grandes(n: int = 15) -> dict:
+    try:
+        from gmail_processor.storage_analyzer import StorageAnalyzer
+        mensajes = StorageAnalyzer(st.session_state.service).get_largest_messages(n=n)
+        return {"mensajes": mensajes}
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -1679,6 +1689,39 @@ elif _current_page == "limpiar":
                     st.rerun()
             if _ce and not _ce.get("error") and "total_mb" in _ce:
                 st.info(f"Podrías liberar hasta **{_ce.get('total_gb', 0):.2f} GB** limpiando las categorías.")
+
+        # ── Correos individuales más grandes ────────────────────────────────────
+        with st.expander("📎 Ver los correos individuales más grandes"):
+            _cg = st.session_state.get("correos_grandes_data")
+            if st.button("🔍 Buscar correos grandes (>5 MB)", key="btn_correos_grandes"):
+                with st.spinner("Buscando…"):
+                    st.session_state["correos_grandes_data"] = _cargar_correos_grandes()
+                st.rerun()
+
+            if _cg:
+                if _cg.get("error"):
+                    st.error(f"No se pudo buscar: {_cg['error']}")
+                elif not _cg.get("mensajes"):
+                    st.caption("No se encontraron correos grandes (>5 MB).")
+                else:
+                    for _m in _cg["mensajes"]:
+                        _mc1, _mc2 = st.columns([6, 1])
+                        with _mc1:
+                            st.caption(
+                                f"**{_m['size_mb']} MB** · {_m['sender']} — {_m['subject']}"
+                            )
+                        with _mc2:
+                            if st.button("🗑️", key=f"trash_big_{_m['id']}", help="Enviar a la papelera"):
+                                try:
+                                    st.session_state.service.users().messages().trash(
+                                        userId="me", id=_m["id"]
+                                    ).execute()
+                                    st.session_state["correos_grandes_data"]["mensajes"] = [
+                                        x for x in _cg["mensajes"] if x["id"] != _m["id"]
+                                    ]
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(f"No se pudo eliminar: {exc}")
 
         st.markdown("")
         st.markdown("### Limpiar por categoría")
