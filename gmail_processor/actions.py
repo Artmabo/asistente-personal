@@ -5,9 +5,16 @@ All public methods return True on success, False on failure.
 In dry_run mode they log the intended action and return True without touching the API.
 """
 import json
+import socket
+import ssl
 import time
 import logging
 from googleapiclient.errors import HttpError
+
+# Transient network failures that are worth retrying just like a 429/500 —
+# a plain `except HttpError` misses these entirely and would let a momentary
+# connectivity blip crash the whole processing run.
+_TRANSIENT_NETWORK_ERRORS = (ConnectionError, TimeoutError, socket.error, ssl.SSLError)
 
 logger = logging.getLogger("gmail_processor.actions")
 
@@ -121,7 +128,8 @@ class GmailActions:
         return result is not None
 
     def _call(self, method, **kwargs):
-        """Executes a Gmail API call with exponential-backoff retry on rate limits."""
+        """Executes a Gmail API call with exponential-backoff retry on rate limits
+        and on transient network errors (connection drops, timeouts, TLS resets)."""
         delay = _BASE_DELAY
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
@@ -140,6 +148,14 @@ class GmailActions:
                     delay *= 2
                     continue
                 logger.error(f"API error {status} on attempt {attempt}: {e}")
+                return None
+            except _TRANSIENT_NETWORK_ERRORS as e:
+                if attempt < _MAX_RETRIES:
+                    logger.warning(f"Network error ({e}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                logger.error(f"Network error on final attempt {attempt}: {e}")
                 return None
         return None
 

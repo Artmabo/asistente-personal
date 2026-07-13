@@ -64,6 +64,9 @@ def run_menu():
                 _pause()
         except (KeyboardInterrupt, EOFError):
             pass   # Ctrl+C at any submenu returns to main menu
+        except Exception as exc:
+            print(f"\n  ERROR inesperado: {exc}")
+            _pause()   # keep the CLI alive instead of crashing on an unhandled error
 
 
 # ── Menu rendering ────────────────────────────────────────────────────────────
@@ -789,13 +792,31 @@ def _patch_rules_remove_contact(email: str) -> bool:
     except OSError:
         return False
 
-    new_lines = []
+    # Only remove matches inside the CONTACT_RULES block — a naive whole-file
+    # scan for `"{email}"` could also delete unrelated lines that happen to
+    # contain the same string (e.g. a comment or a DOMAIN_RULES entry).
+    start_idx = None
+    for i, line in enumerate(lines):
+        if "CONTACT_RULES: dict[str, dict] = {" in line:
+            start_idx = i
+            break
+    if start_idx is None:
+        return False
+
+    end_idx = None
+    for i in range(start_idx + 1, len(lines)):
+        if lines[i].strip() == "}":
+            end_idx = i
+            break
+    if end_idx is None:
+        return False
+
+    new_lines = list(lines)
     removed   = False
-    for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+    for i in range(end_idx - 1, start_idx, -1):
+        if f'"{email}"' in new_lines[i] and not new_lines[i].strip().startswith("#"):
+            del new_lines[i]
             removed = True
-            continue
-        new_lines.append(line)
 
     if not removed:
         return False

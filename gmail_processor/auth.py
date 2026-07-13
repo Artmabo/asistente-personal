@@ -5,7 +5,10 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://mail.google.com/"]
+# Least-privilege scope: the app only ever labels, archives, trashes and
+# modifies messages (see gmail_processor/actions.py) — it never needs the
+# full "https://mail.google.com/" scope (permanent delete, send, settings).
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 def get_service(

@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from .utils import get_api_key
+from .utils import get_api_key, secure_chmod
 
 logger = logging.getLogger("gmail_processor.chat")
 
@@ -173,6 +173,7 @@ class AssistantChat:
                 json.dumps(self.history, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             tmp.replace(CHAT_HISTORY_PATH)
+            secure_chmod(CHAT_HISTORY_PATH)
         except OSError as e:
             tmp.unlink(missing_ok=True)
             logger.warning(f"No se pudo guardar el historial de chat: {e}")
