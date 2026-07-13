@@ -4,9 +4,10 @@ StorageAnalyzer: estimación de uso de almacenamiento de Gmail y tamaño de limp
 get_storage_summary() usa el perfil de Gmail para mensajes totales y,
 si las credenciales tienen acceso a Drive, también devuelve cuota en GB.
 
-estimate_cleanup_size() lista todos los mensajes de cada categoría,
-muestrea sizeEstimate de hasta 50 mensajes y extrapola para el total.
+estimate_cleanup_size() usa resultSizeEstimate como conteo aproximado y
+muestrea sizeEstimate de hasta 50 mensajes (al azar) para extrapolar el total.
 """
+import random
 import time
 from googleapiclient.errors import HttpError
 
@@ -66,7 +67,10 @@ class StorageAnalyzer:
     def estimate_cleanup_size(self, categories: list[str] | None = None) -> dict:
         """
         Estima el espacio que se liberaría limpiando las categorías dadas.
-        Lista todos los mensajes, toma muestra para sizeEstimate, extrapola.
+        Usa resultSizeEstimate para el conteo (una sola llamada) y una muestra
+        aleatoria de sizeEstimate sobre esa misma página para extrapolar,
+        evitando paginar miles de IDs solo para contar y sin sesgar la muestra
+        hacia los mensajes más recientes.
         Devuelve {cat: {count, size_mb}, ..., total_mb, total_gb}.
         """
         if categories is None:
@@ -80,13 +84,13 @@ class StorageAnalyzer:
             if not query:
                 continue
 
-            all_ids, count = self._list_all_ids(query)
+            count, pool_ids = self._count_and_sample_pool(query)
             if count == 0:
                 result[cat] = {"count": 0, "size_mb": 0}
                 continue
 
-            # Muestrear sizeEstimate
-            sample_ids  = all_ids[:_SAMPLE_PER_CAT]
+            # Muestrear sizeEstimate al azar dentro del pool disponible
+            sample_ids  = random.sample(pool_ids, min(_SAMPLE_PER_CAT, len(pool_ids)))
             total_bytes = 0
             sampled     = 0
             for msg_id in sample_ids:
@@ -132,27 +136,21 @@ class StorageAnalyzer:
                 result[cat] = 0
         return result
 
-    def _list_all_ids(self, query: str, max_ids: int = 5_000) -> tuple[list[str], int]:
-        """Lista los IDs de mensajes que coinciden con la query, hasta max_ids."""
-        ids: list[str] = []
-        page_token     = None
+    def _count_and_sample_pool(self, query: str, pool_size: int = 500) -> tuple[int, list[str]]:
+        """Returns (resultSizeEstimate, ids) from a single list() page.
 
-        while len(ids) < max_ids:
-            try:
-                resp = self.svc.users().messages().list(
-                    userId="me", q=query, maxResults=500, pageToken=page_token,
-                ).execute()
-            except HttpError:
-                break
+        A single call gives an approximate total count for free via
+        resultSizeEstimate, plus up to `pool_size` ids to sample from for the
+        sizeEstimate extrapolation — no need to paginate through thousands of
+        ids just to count and sample a category.
+        """
+        try:
+            resp = self.svc.users().messages().list(
+                userId="me", q=query, maxResults=pool_size,
+            ).execute()
+        except HttpError:
+            return 0, []
 
-            msgs = resp.get("messages", [])
-            if not msgs:
-                break
-
-            ids.extend(m["id"] for m in msgs)
-            page_token = resp.get("nextPageToken")
-            if not page_token:
-                break
-            time.sleep(0.1)
-
-        return ids[:max_ids], len(ids[:max_ids])
+        msgs  = resp.get("messages", [])
+        count = resp.get("resultSizeEstimate", len(msgs))
+        return count, [m["id"] for m in msgs]

@@ -10,6 +10,18 @@ Priority order (first match wins):
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
+from .utils import get_header, extract_email_address
+
+# KEYWORD_RULES keyword lists are static; lower-casing them once at import time
+# avoids re-lowering the same keywords for every message classified.
+_LOWERED_KEYWORD_RULES = [
+    {
+        **rule,
+        "_keywords_lower": [kw if rule.get("case_sensitive", False) else kw.lower()
+                             for kw in rule["keywords"]],
+    }
+    for rule in cfg.KEYWORD_RULES
+]
 
 
 @dataclass
@@ -29,16 +41,15 @@ class EmailClassifier:
         headers  = message.get("payload", {}).get("headers", [])
         label_ids = message.get("labelIds", [])
 
-        sender  = _extract_email(headers)
+        sender  = extract_email_address(get_header(headers, "From"))
         domain  = sender.split("@")[-1] if "@" in sender else ""
-        subject = _extract_header(headers, "Subject")
+        subject = get_header(headers, "Subject")
         search_text = f"{sender} {subject}"
 
         # 1. Contact rules (highest priority — always protected)
-        # Supports exact email matches AND domain-prefix entries like "@anahuac.mx"
-        contact_key = sender if sender in cfg.CONTACT_RULES else (
-            f"@{domain}" if domain and f"@{domain}" in cfg.CONTACT_RULES else None
-        )
+        # Supports exact email matches AND domain entries like "@anahuac.mx",
+        # which also match subdomains (e.g. sub.anahuac.mx).
+        contact_key = sender if sender in cfg.CONTACT_RULES else _match_domain_rule(domain)
         if contact_key:
             rule = cfg.CONTACT_RULES[contact_key]
             action = "mark_important" if rule.get("mark_important") else "label_only"
@@ -50,8 +61,10 @@ class EmailClassifier:
             )
 
         # 2. Keyword rules
-        for rule in cfg.KEYWORD_RULES:
-            if _matches_any(search_text, rule["keywords"], rule.get("case_sensitive", False)):
+        search_text_lower = search_text.lower()
+        for rule in _LOWERED_KEYWORD_RULES:
+            haystack = search_text if rule.get("case_sensitive", False) else search_text_lower
+            if any(kw in haystack for kw in rule["_keywords_lower"]):
                 return Classification(
                     email_type="spam" if rule["action"] == "trash" else "important",
                     action=rule["action"],
@@ -85,20 +98,14 @@ class EmailClassifier:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _extract_header(headers: list[dict], name: str) -> str:
-    for h in headers:
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
-
-
-def _extract_email(headers: list[dict]) -> str:
-    raw = _extract_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
-
-
-def _matches_any(text: str, keywords: list[str], case_sensitive: bool) -> bool:
-    haystack = text if case_sensitive else text.lower()
-    return any((kw if case_sensitive else kw.lower()) in haystack for kw in keywords)
+def _match_domain_rule(domain: str) -> str | None:
+    """Finds a CONTACT_RULES "@domain" key matching `domain` or one of its subdomains."""
+    if not domain:
+        return None
+    for key in cfg.CONTACT_RULES:
+        if not key.startswith("@"):
+            continue
+        rule_domain = key[1:]
+        if domain == rule_domain or domain.endswith("." + rule_domain):
+            return key
+    return None

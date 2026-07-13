@@ -10,6 +10,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from .utils import secure_chmod
+
 logger = logging.getLogger("gmail_processor.scheduler")
 
 _CONFIG_PATH = Path("cleanup_schedule.json")
@@ -204,6 +206,7 @@ class CleanupScheduler:
         self.config_path.write_text(
             json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        secure_chmod(self.config_path)
 
 
 def format_next_run(iso: str | None) -> str:

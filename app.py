@@ -5,6 +5,7 @@ Ejecutar con:  streamlit run app.py
 import os
 import sys
 import json
+import html
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
@@ -1118,7 +1119,7 @@ if _current_page == "inicio":
             st.markdown(
                 f'<div class="brief-card">'
                 f'<p style="margin:0;font-size:1.05rem;color:#1e40af;font-weight:500">'
-                f'{_bsummary}</p></div>',
+                f'{html.escape(_bsummary)}</p></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1132,7 +1133,7 @@ if _current_page == "inicio":
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{html.escape(_bm.get('name', ''))}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1337,7 +1338,7 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(t)}</span>' for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")

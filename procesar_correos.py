@@ -16,15 +16,17 @@ Entry point for the Gmail rule-based processor.
   feedback <sender> correct|incorrect [--rule RULE] [--source SOURCE]
                                       [--time-to-action SEC]
   stats [--section learning|metrics|categories|all]
-  audit [--last N] [--decision TRASH|KEEP|SKIP]
+  audit [--last N] [--decision TRASH|KEEP|SKIP] [--export-csv PATH]
 
 ── Ejemplos ─────────────────────────────────────────────────────────────────
   python procesar_correos.py feedback newsletter@spam.com correct
   python procesar_correos.py feedback papa@gmail.com incorrect --rule promotions_60d
   python procesar_correos.py stats --section metrics
   python procesar_correos.py audit --last 50 --decision TRASH
+  python procesar_correos.py audit --last 200 --export-csv audit_export.csv
 """
 import sys
+import csv
 import argparse
 import logging
 import gmail_processor.rules as cfg
@@ -187,6 +189,19 @@ def _cmd_stats(argv: list[str]):
 
 # ── audit ─────────────────────────────────────────────────────────────────────
 
+_AUDIT_CSV_FIELDS = ["ts", "sender", "domain", "score", "decision", "rule",
+                     "reason", "learned", "protected", "dry_run", "msg_id"]
+
+
+def _export_audit_csv(entries: list[dict], path: str) -> None:
+    """Writes audit `entries` (already filtered/limited) to `path` as CSV."""
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=_AUDIT_CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(entries)
+    print(f"Exportado a {path} ({len(entries)} entradas)")
+
+
 def _cmd_audit(argv: list[str]):
     parser = argparse.ArgumentParser(
         prog="procesar_correos.py audit",
@@ -197,6 +212,9 @@ def _cmd_audit(argv: list[str]):
     parser.add_argument("--decision", default=None,
                         choices=["TRASH", "KEEP", "SKIP"],
                         help="Filter by decision type")
+    parser.add_argument("--export-csv", default=None, metavar="PATH",
+                        dest="export_csv",
+                        help="Also write the shown entries to PATH as CSV")
     args = parser.parse_args(argv)
 
     setup_logging(level=logging.WARNING)
@@ -208,11 +226,14 @@ def _cmd_audit(argv: list[str]):
     if args.decision:
         entries = [e for e in entries if e.get("decision") == args.decision]
 
-    entries = entries[-args.last:]
+    entries = entries[-args.last:] if args.last > 0 else []
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")
         return
+
+    if args.export_csv:
+        _export_audit_csv(entries, args.export_csv)
 
     print(f"\nÚltimas {len(entries)} entradas del audit log:\n")
     print(f"{'TIMESTAMP':<22} {'DEC':<6} {'SENDER':<35} {'SCORE':>7}  {'RULE':<20}  MODE")

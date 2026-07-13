@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, secure_chmod
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -445,6 +445,7 @@ class ContactProfiler:
                 json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             tmp.replace(PROFILES_PATH)
+            secure_chmod(PROFILES_PATH)
         except OSError:
             tmp.unlink(missing_ok=True)
             raise

@@ -23,6 +23,31 @@ def get_header(headers: list[dict], name: str) -> str:
     return ""
 
 
+def secure_chmod(path) -> None:
+    """Restricts a persisted state file (chat history, contact profiles, audit
+    log, etc.) to owner-only read/write, since these files hold plaintext PII
+    — email addresses, subjects, AI-generated summaries of correspondence.
+    Best-effort: silently no-ops on platforms/filesystems that don't support it.
+    """
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def mask_email(address: str) -> str:
+    """Masks the local part of an email for safe logging, e.g. 'jd***@example.com'.
+
+    Keeps the domain (useful for scanning logs by sender domain) while avoiding
+    persisting a full correspondent address in plaintext log files.
+    """
+    if not address or "@" not in address:
+        return address
+    local, _, domain = address.partition("@")
+    visible = local[:2]
+    return f"{visible}***@{domain}"
+
+
 def extract_email_address(raw: str) -> str:
     """Extracts a bare email address from a raw From/To header value.
 

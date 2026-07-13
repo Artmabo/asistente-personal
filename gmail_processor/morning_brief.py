@@ -7,6 +7,8 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from .utils import secure_chmod
+
 _CACHE_PATH = Path("morning_brief_cache.json")
 _TTL_HOURS  = 1
 
@@ -160,6 +162,7 @@ class MorningBrief:
         _CACHE_PATH.write_text(
             json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        secure_chmod(_CACHE_PATH)
 
     def _read_json(self, path: str, default: dict) -> dict:
         p = Path(path)

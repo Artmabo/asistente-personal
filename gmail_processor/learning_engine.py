@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
+from .utils import secure_chmod
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -489,6 +490,7 @@ class LearningEngine:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, indent=2, ensure_ascii=False)
             tmp.replace(self.path)
+            secure_chmod(self.path)
         except OSError:
             tmp.unlink(missing_ok=True)
             raise

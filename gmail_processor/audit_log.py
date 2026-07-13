@@ -20,6 +20,8 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+from .utils import secure_chmod
+
 logger = logging.getLogger("gmail_processor.audit")
 
 MAX_ENTRIES = 10_000
@@ -71,6 +73,7 @@ class AuditLogger:
         with open(self.path, "w", encoding="utf-8") as f:
             for entry in combined:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        secure_chmod(self.path)
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 

@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import secure_chmod
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -758,6 +760,7 @@ def _atomic_write(path: Path, data: dict) -> None:
     try:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
+        secure_chmod(path)
     except OSError:
         tmp.unlink(missing_ok=True)
         raise

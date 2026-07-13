@@ -21,6 +21,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
+from .utils import mask_email, secure_chmod
 from .audit_log import AuditLogger
 from . import rules as cfg
 
@@ -144,6 +145,9 @@ class StorageCleaner:
         email     = _sender_email(message)
         domain    = email.split("@")[-1] if "@" in email else ""
         label_ids = message.get("labelIds", [])
+        # Masked variant for INFO-level logs (written to a plaintext, non-rotated
+        # log file); full `sender` is only ever logged at DEBUG, an opt-in mode.
+        sender_masked = sender.replace(email, mask_email(email)) if email else sender
 
         if self.engine:
             self.engine.metrics.record_processed()
@@ -164,7 +168,7 @@ class StorageCleaner:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"  │  RULES   : HARD PROTECTION → {block}\n  └─ DECISION: SKIP")
             logger.info(
-                f"  [SKIP ] {_s(sender, 38)} | {_s(subject, 44)}\n"
+                f"  [SKIP ] {_s(sender_masked, 38)} | {_s(subject, 44)}\n"
                 f"           Protección : {block}"
             )
             self.stats["skipped"] += 1
@@ -199,7 +203,7 @@ class StorageCleaner:
 
             if scored.decision == "KEEP":
                 logger.info(
-                    f"  [KEEP ] {_s(sender, 38)} | {_s(subject, 44)}\n"
+                    f"  [KEEP ] {_s(sender_masked, 38)} | {_s(subject, 44)}\n"
                     f"           Score   : {scored.score:+.1f} → KEEP  "
                     f"(aprendizaje: {learned_tag})\n"
                     f"           Factores: {factors_str}"
@@ -229,7 +233,7 @@ class StorageCleaner:
             )
 
         logger.info(
-            f"  [TRASH] {_s(sender, 38)} | {_s(subject, 44)}"
+            f"  [TRASH] {_s(sender_masked, 38)} | {_s(subject, 44)}"
             f"{score_line}\n"
             f"           Razón  : {reason}\n"
             f"           Regla  : {rule_name}\n"
@@ -293,6 +297,7 @@ class StorageCleaner:
             _SUMMARY_PATH.write_text(
                 json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            secure_chmod(_SUMMARY_PATH)
         except OSError as e:
             logger.warning(f"Could not write cleanup summary: {e}")
 
