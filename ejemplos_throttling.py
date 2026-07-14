@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """
-Ejemplos de uso avanzado del sistema de throttling adaptativo.
-Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
+Ejemplos de uso de limpiar_correos con distintos parámetros.
+Muestra cómo acotar el alcance de la limpieza para evitar mover
+demasiados correos de golpe.
 """
 
 from limpiar_correos import limpiar_correos
@@ -9,22 +10,20 @@ from asistente_personal import get_gmail_service
 
 
 def ejemplo_1_modo_conservador():
-    """Modo por defecto - el más seguro, respeita límites de Gmail API."""
+    """Solo correos no leídos de más de 6 meses — el alcance más acotado."""
     print("\n" + "="*60)
     print("EJEMPLO 1: Modo Conservador (RECOMENDADO)")
     print("="*60)
-    print("✅ Usa delays adaptativos")
-    print("✅ Circuit breaker automático")
-    print("✅ Respeita límites de Gmail API")
-    print("❌ Más lento pero confiable")
-    
+    print("✅ Solo correos no leídos")
+    print("✅ Más de 6 meses de antigüedad")
+    print("❌ No incluye correos ya leídos")
+
     resultado = limpiar_correos(
         meses=6,
         solo_no_leidos=True,
-        aggressive=False  # Conservative mode
     )
-    
-    print(f"\n✓ Resultado: {resultado['eliminados']} correos eliminados")
+
+    print(f"\n✓ Resultado: {resultado['exitos']} de {resultado['procesados']} correos enviados a papelera")
 
 
 def ejemplo_2_listar_sin_borrar():
@@ -61,33 +60,29 @@ def ejemplo_3_limpieza_personalizada():
     
     # Eliminar TODOS los correos (leídos y no leídos) de más de 1 año
     resultado = limpiar_correos(
-        meses=12,           # Más de 1 año
+        meses=12,              # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
     )
-    
-    print(f"\n✓ Se eliminaron {resultado['eliminados']} correos")
+
+    print(f"\n✓ Se enviaron a papelera {resultado['exitos']} de {resultado['procesados']} correos")
 
 
 def ejemplo_4_comparacion_modos():
-    """Comparar comportamiento en modo agresivo vs conservador."""
+    """Comparar el alcance de una limpieza acotada vs. una amplia."""
     print("\n" + "="*60)
-    print("EJEMPLO 4: Comparación de Modes")
+    print("EJEMPLO 4: Comparación de alcances")
     print("="*60)
-    
-    print("\n📊 Modo AGRESIVO:")
-    print("   - REQUEST_DELAY: 0.1s (muy rápido)")
-    print("   - BATCH_SIZE: 30")
-    print("   - RIESGO: Alto para 403/429")
-    print("   - VELOCIDAD: Rápida")
-    
-    print("\n📊 Modo CONSERVADOR:")
-    print("   - REQUEST_DELAY: 0.5s (seguro)")
-    print("   - BATCH_SIZE: 15")
-    print("   - RIESGO: Bajo o nulo")
-    print("   - VELOCIDAD: Moderada")
-    
-    print("\n✅ RECOMENDACIÓN: Usar modo CONSERVADOR siempre")
+
+    print("\n📊 Alcance AMPLIO (meses bajo, solo_no_leidos=False):")
+    print("   - Incluye correos leídos y no leídos")
+    print("   - Mueve muchos más mensajes por ejecución")
+    print("   - RECOMENDADO: revisar antes con --dry-run")
+
+    print("\n📊 Alcance ACOTADO (solo_no_leidos=True):")
+    print("   - Solo correos que nunca abriste")
+    print("   - Menor riesgo de borrar algo que sí te interesaba")
+
+    print("\n✅ RECOMENDACIÓN: empezar siempre con --dry-run o solo_no_leidos=True")
 
 
 
@@ -102,25 +97,23 @@ def ejemplo_6_errores_comunes():
             "causa": "Cuota de usuario excedida o permisos insuficientes",
             "solucion": [
                 "1. Esperar 24h (se resetea la cuota diaria)",
-                "2. Aumentar PAGE_DELAY y REQUEST_DELAY",
-                "3. Reducir BATCH_SIZE",
-                "4. Usar aggressive=False"
+                "2. Verificar que el scope de OAuth incluya acceso de escritura",
+                "3. Ejecutar con --dry-run para confirmar antes de reintentar",
             ]
         },
         "429 Too Many Requests": {
             "causa": "Rate limit de Gmail API",
             "solucion": [
-                "1. Circuit breaker se activa automáticamente",
-                "2. Espera exponencial con backoff",
-                "3. Aumenta PAGE_DELAY a 5.0+",
-                "4. Ejecuta en horarios menos concurridos"
+                "1. El procesador (gmail_processor.actions) reintenta automáticamente "
+                "con backoff exponencial",
+                "2. Si persiste, ejecuta en horarios menos concurridos",
             ]
         },
         "401 Unauthorized": {
             "causa": "Token expirado o inválido",
             "solucion": [
                 "1. Elimina token.json",
-                "2. Ejecuta: python asistente-personal.py",
+                "2. Ejecuta: python asistente_personal.py",
                 "3. Autoriza de nuevo en navegador"
             ]
         }
