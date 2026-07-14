@@ -41,6 +41,7 @@ st.session_state.setdefault("ca_batch_result",    None)
 st.session_state.setdefault("ca_apply_result",    None)
 st.session_state.setdefault("ca_decisions",       {})
 st.session_state.setdefault("ca_running",         False)
+st.session_state.setdefault("ca_unsub_result",    None)
 st.session_state.setdefault("storage_data",       None)
 st.session_state.setdefault("cleanup_size_data",  None)
 st.session_state.setdefault("schedule_saved",     False)
@@ -510,6 +511,14 @@ def _ca_learning_summary() -> dict:
     return a.get_learning_stats()
 
 
+def _ca_unsubscribe_candidates() -> list[dict]:
+    try:
+        analyzer = _ca_get_analyzer()
+        return analyzer.get_unsubscribe_candidates()
+    except Exception:
+        return []
+
+
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
 
 def _cargar_storage_summary() -> dict:
@@ -571,12 +580,8 @@ def _time_ago(date_str: str) -> str:
 # ── Helpers: perfiles y chat ───────────────────────────────────────────────────
 
 def _check_api_key() -> bool:
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-    return bool(os.getenv("ANTHROPIC_API_KEY"))
+    from gmail_processor.utils import get_api_key
+    return bool(get_api_key())
 
 
 def _get_morning_brief() -> dict:
@@ -1538,6 +1543,57 @@ elif _current_page == "analizar":
                     with st.expander(f"⚠️ {len(_apr_e)} errores"):
                         for _e in _apr_e:
                             st.caption(_e)
+
+        # ── Candidatos para darte de baja ──────────────────────────────────────
+        if _ca_prev or _ca_batch:
+            _unsub_candidates = _ca_unsubscribe_candidates()
+            if _unsub_candidates:
+                st.markdown("")
+                with st.expander(
+                    f"📭 {len(_unsub_candidates)} remitente"
+                    f"{'s' if len(_unsub_candidates) > 1 else ''} con enlace para darte de baja"
+                ):
+                    st.caption(
+                        "Correos comerciales con puntaje bajo que además incluyen "
+                        "un enlace de baja. Puedes eliminar todos sus mensajes directamente."
+                    )
+                    for _ui, _uc in enumerate(_unsub_candidates):
+                        _ua    = _uc["email"]
+                        _un    = _uc.get("name", "")
+                        _ulbl  = f"{_un} <{_ua}>" if _un else _ua
+                        with st.container(border=True):
+                            _uc1, _uc2 = st.columns([4, 1])
+                            with _uc1:
+                                st.markdown(f"**{_ulbl}**")
+                                _uctx = [f"puntaje {_uc.get('score', 0)}/100"]
+                                if _uc.get("count"):
+                                    _uctx.append(f"{_uc['count']} correos")
+                                if _uc.get("last_seen"):
+                                    _uctx.append(f"último: {_time_ago(_uc['last_seen'])}")
+                                st.caption("  ·  ".join(_uctx))
+                                _usubj = _uc.get("sample_subjects", [])
+                                if _usubj:
+                                    st.caption("Asuntos: " + "  ·  ".join(f'"{s[:50]}"' for s in _usubj[:2]))
+                            with _uc2:
+                                if st.button(
+                                    "🗑️ Dar de baja",
+                                    key=f"ca_unsub_{_ui}",
+                                    use_container_width=True,
+                                ):
+                                    with st.spinner("Eliminando correos…"):
+                                        _unsub_r = _ca_apply({_ua: "spam"})
+                                    st.session_state["ca_unsub_result"] = {**_unsub_r, "email": _ua}
+                                    st.rerun()
+
+                    _unsub_r = st.session_state["ca_unsub_result"]
+                    if _unsub_r:
+                        if "error" in _unsub_r:
+                            st.error(f"Error al dar de baja: {_unsub_r['error']}")
+                        else:
+                            st.success(
+                                f"✓ {_unsub_r.get('email', '')} — "
+                                f"{_unsub_r.get('trashed_msgs', 0)} correos enviados a la papelera"
+                            )
 
         # ── Configuración del análisis ────────────────────────────────────────
         st.markdown("")
