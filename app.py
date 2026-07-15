@@ -587,10 +587,17 @@ def _get_morning_brief() -> dict:
         return {}
 
 
-@st.cache_resource
 def _get_chat():
+    """Returns this browser session's AssistantChat instance.
+
+    Uses st.session_state rather than st.cache_resource: cache_resource is
+    process-wide, so two concurrent sessions would share (and race on) the
+    same AssistantChat.history and chat_history.json.
+    """
     from gmail_processor.assistant_chat import AssistantChat
-    return AssistantChat()
+    if "_chat_instance" not in st.session_state:
+        st.session_state["_chat_instance"] = AssistantChat()
+    return st.session_state["_chat_instance"]
 
 
 def _get_important_contacts() -> list[str]:

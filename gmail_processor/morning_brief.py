@@ -4,6 +4,7 @@ Sin llamadas a Gmail ni a Anthropic — solo lectura de estado local.
 Resultado cacheado por 1 hora para no recalcular en cada recarga.
 """
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -93,6 +94,20 @@ class MorningBrief:
             except Exception:
                 continue
 
+        # Remitentes marcados como spam en las últimas 24h (nuevo — refuerza
+        # la sensación de que la limpieza automática está funcionando)
+        new_spam_count = 0
+        reviewed_all = state.get("reviewed", {})
+        for entry in reviewed_all.values():
+            if entry.get("decision") != "spam":
+                continue
+            try:
+                decided_at = datetime.fromisoformat(entry.get("decided_at", ""))
+                if (today - decided_at) <= timedelta(hours=24):
+                    new_spam_count += 1
+            except Exception:
+                continue
+
         # Last cleanup run info
         last_cleanup = self._read_json("cleanup_summary.json", {})
         last_cleanup_info = None
@@ -125,6 +140,8 @@ class MorningBrief:
             parts.append(f"{pending_count} contacto{'s' if pending_count > 1 else ''} pendiente{'s' if pending_count > 1 else ''} de revisión")
         if alerts:
             parts.append(f"{len(alerts)} aviso{'s' if len(alerts) > 1 else ''} de tus contactos")
+        if new_spam_count > 0:
+            parts.append(f"{new_spam_count} remitente{'s' if new_spam_count > 1 else ''} nuevo{'s' if new_spam_count > 1 else ''} marcado{'s' if new_spam_count > 1 else ''} como spam hoy")
 
         summary_text = ("Hoy " + ", ".join(parts) + ".") if parts else "Todo está en orden. Tu correo está al día."
 
@@ -137,6 +154,7 @@ class MorningBrief:
             "storage_percent":      None,
             "personal_count":       personal,
             "spam_count":           spam,
+            "new_spam_count":       new_spam_count,
             "last_cleanup":         last_cleanup_info,
             "cleanup_recommended":  cleanup_recommended,
             "generated_at":         datetime.now().isoformat(timespec="seconds"),
@@ -157,9 +175,10 @@ class MorningBrief:
         return None
 
     def _save_cache(self, brief: dict):
-        _CACHE_PATH.write_text(
-            json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        """Atomic write (tmp → replace) so a crash mid-write can't leave a truncated cache file."""
+        tmp = _CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, _CACHE_PATH)
 
     def _read_json(self, path: str, default: dict) -> dict:
         p = Path(path)
