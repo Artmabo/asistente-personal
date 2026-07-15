@@ -284,7 +284,7 @@ def _menu_audit():
     if decision_filter:
         entries = [e for e in entries if e.get("decision") == decision_filter]
 
-    entries = entries[-n:]
+    entries = entries[-n:] if n > 0 else []
 
     print()
     if not entries:

@@ -61,7 +61,8 @@ class ContactProfiler:
         built  = 0
         errors: list[str] = []
 
-        for i, addr in enumerate(important_contacts):
+        for i, raw_addr in enumerate(important_contacts):
+            addr = raw_addr.strip().lower()
             if progress_cb:
                 progress_cb(i + 1, total, addr)
             try:
@@ -80,7 +81,7 @@ class ContactProfiler:
         return self.data.get("profiles", {})
 
     def get_profile(self, email: str) -> dict | None:
-        return self.data["profiles"].get(email)
+        return self.data["profiles"].get(email.strip().lower())
 
     def needs_rebuild(self, email: str) -> bool:
         profile = self.get_profile(email)

@@ -212,7 +212,10 @@ def format_next_run(iso: str | None) -> str:
         return "No programada"
     try:
         dt    = datetime.fromisoformat(iso)
-        now   = datetime.now()
+        # APScheduler's next_run_time is timezone-aware; datetime.now() is
+        # naive, so subtracting them directly raises TypeError and this
+        # whole function silently falls back to the raw ISO string below.
+        now   = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
         delta = dt - now
         if delta.total_seconds() < 0:
             return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"
