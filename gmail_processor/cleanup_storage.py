@@ -22,6 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -328,10 +329,7 @@ def _get_header(message: dict, name: str) -> str:
 
 
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(_get_header(message, "From"))
 
 
 def _sender_display(message: dict) -> str:

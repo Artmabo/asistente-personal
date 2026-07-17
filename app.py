@@ -180,6 +180,7 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
         from collections import Counter
+        from gmail_processor.utils import extract_email_address
         svc    = st.session_state.service
         result = svc.users().messages().list(
             userId="me", q="in:inbox", maxResults=500,
@@ -198,12 +199,11 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                      if h["name"].lower() == "from"),
                     "",
                 )
+                email = extract_email_address(raw)
                 if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
+                    name = raw.split("<")[0].strip().strip('"').strip("'")
                 else:
-                    email = raw.strip().lower()
-                    name  = ""
+                    name = ""
                 if email:
                     counts[email] += 1
                     if email not in names and name:

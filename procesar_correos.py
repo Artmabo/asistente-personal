@@ -17,12 +17,15 @@ Entry point for the Gmail rule-based processor.
                                       [--time-to-action SEC]
   stats [--section learning|metrics|categories|all]
   audit [--last N] [--decision TRASH|KEEP|SKIP]
+  duplicates [--query QUERY] [--live] [--max N]
 
 ── Ejemplos ─────────────────────────────────────────────────────────────────
   python procesar_correos.py feedback newsletter@spam.com correct
   python procesar_correos.py feedback papa@gmail.com incorrect --rule promotions_60d
   python procesar_correos.py stats --section metrics
   python procesar_correos.py audit --last 50 --decision TRASH
+  python procesar_correos.py duplicates                    # solo reporta (dry run)
+  python procesar_correos.py duplicates --live              # además envía a papelera
 """
 import sys
 import argparse
@@ -30,7 +33,7 @@ import logging
 import gmail_processor.rules as cfg
 from gmail_processor import GmailProcessor, setup_logging
 
-_SUBCOMMANDS = {"feedback", "stats", "audit"}
+_SUBCOMMANDS = {"feedback", "stats", "audit", "duplicates"}
 
 
 def main():
@@ -49,6 +52,8 @@ def main():
             _cmd_stats(sys.argv[2:])
         elif cmd == "audit":
             _cmd_audit(sys.argv[2:])
+        elif cmd == "duplicates":
+            _cmd_duplicates(sys.argv[2:])
         return
 
     parser = argparse.ArgumentParser(
@@ -227,6 +232,55 @@ def _cmd_audit(argv: list[str]):
             f"{e.get('rule',''):<20}  "
             f"{mode}"
         )
+
+
+# ── duplicates ────────────────────────────────────────────────────────────────
+
+def _cmd_duplicates(argv: list[str]):
+    parser = argparse.ArgumentParser(
+        prog="procesar_correos.py duplicates",
+        description="Detect (and optionally trash) exact-duplicate emails (same Message-ID)",
+    )
+    parser.add_argument("--query", default="in:inbox",
+                        help="Gmail search query to scan (default: in:inbox)")
+    parser.add_argument("--live", action="store_true",
+                        help="Actually move duplicates to trash (default: dry run report only)")
+    parser.add_argument("--max", default=2000, type=int, dest="max_messages",
+                        help="Maximum messages to scan (default: 2000)")
+    args = parser.parse_args(argv)
+
+    setup_logging(level=logging.INFO)
+
+    from gmail_processor.auth import get_service
+    from gmail_processor.actions import GmailActions
+    from gmail_processor.duplicate_finder import find_duplicates, trash_duplicates
+
+    service = get_service()
+    print(f"\nEscaneando '{args.query}' (máx {args.max_messages} correos)...")
+    duplicates = find_duplicates(service, query=args.query, max_messages=args.max_messages)
+
+    if not duplicates:
+        print("No se encontraron correos duplicados.")
+        return
+
+    total_extra = sum(len(v) - 1 for v in duplicates.values())
+    print(f"\nSe encontraron {len(duplicates)} grupos duplicados ({total_extra} copias de más):\n")
+    for mid, entries in list(duplicates.items())[:20]:
+        newest = entries[0]
+        print(f"  {_short(newest['from'], 35):<35} | {_short(newest['subject'], 40):<40} × {len(entries)}")
+
+    if not args.live:
+        print("\n[DRY RUN] Nada fue movido a papelera. Usa --live para aplicar.")
+        return
+
+    actions = GmailActions(service, dry_run=False)
+    result  = trash_duplicates(service, actions, duplicates)
+    print(f"\n{result['trashed']}/{total_extra} copias enviadas a papelera "
+          f"(se conservó la más reciente de cada {result['groups']} grupos).")
+
+
+def _short(text: str, n: int) -> str:
+    return text if len(text) <= n else text[:n - 1] + "…"
 
 
 if __name__ == "__main__":
