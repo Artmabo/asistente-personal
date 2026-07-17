@@ -5,7 +5,13 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://mail.google.com/"]
+# gmail.modify covers everything this app does (read, label, archive, trash)
+# without granting the full "https://mail.google.com/" scope, which also
+# allows permanent deletion and other account-level actions we never use.
+# NOTE: existing token.json files were authorized under the old, broader
+# scope; delete token.json once after this change so the next run re-prompts
+# consent and mints a token restricted to gmail.modify.
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 def get_service(

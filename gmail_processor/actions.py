@@ -128,10 +128,14 @@ class GmailActions:
                 return method(**kwargs).execute()
             except HttpError as e:
                 status = int(e.resp.status)
-                # Hard permission failure — raise immediately (do not retry)
+                # Hard permission failure — fail immediately without retrying
+                # (retrying won't fix a missing OAuth scope). Return None rather
+                # than raise so callers keep getting the documented True/False
+                # contract instead of an uncaught exception that would abort
+                # the whole processing run over a single message.
                 if status == 403 and _is_permission_error(e):
                     logger.error(f"Insufficient permissions: {e}")
-                    raise
+                    return None
                 # Rate limit or transient server error — retry with backoff
                 if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
                     kind = "Rate limit" if status in (403, 429) else "Server error"
