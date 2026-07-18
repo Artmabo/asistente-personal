@@ -25,9 +25,6 @@ class GmailActions:
 
     def ensure_label(self, name: str) -> str:
         """Returns the label ID for `name`, creating it in Gmail if needed."""
-        if not self._labels:
-            self._load_labels()
-
         if name in self._labels:
             return self._labels[name]
 
@@ -36,6 +33,12 @@ class GmailActions:
             self._labels[name] = fake_id
             logger.debug(f"[DRY RUN] Would create label '{name}'")
             return fake_id
+
+        if not self._labels:
+            self._load_labels()
+
+        if name in self._labels:
+            return self._labels[name]
 
         result = self._call(
             self.service.users().labels().create,
@@ -70,14 +73,14 @@ class GmailActions:
         return self._modify(msg_id, add=[label_id])
 
     def remove_label(self, msg_id: str, label_name: str) -> bool:
+        if self.dry_run:
+            logger.info(f"[DRY RUN] remove_label '{label_name}' → {msg_id}")
+            return True
         if not self._labels:
             self._load_labels()
         label_id = self._labels.get(label_name)
         if not label_id:
             return True  # Label doesn't exist — nothing to remove
-        if self.dry_run:
-            logger.info(f"[DRY RUN] remove_label '{label_name}' → {msg_id}")
-            return True
         return self._modify(msg_id, remove=[label_id])
 
     def mark_important(self, msg_id: str) -> bool:
@@ -128,10 +131,10 @@ class GmailActions:
                 return method(**kwargs).execute()
             except HttpError as e:
                 status = int(e.resp.status)
-                # Hard permission failure — raise immediately (do not retry)
+                # Hard permission failure — fail immediately (do not retry)
                 if status == 403 and _is_permission_error(e):
                     logger.error(f"Insufficient permissions: {e}")
-                    raise
+                    return None
                 # Rate limit or transient server error — retry with backoff
                 if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
                     kind = "Rate limit" if status in (403, 429) else "Server error"

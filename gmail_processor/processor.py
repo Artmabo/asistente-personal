@@ -10,6 +10,7 @@ from .actions import GmailActions
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
+from .utils import extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
@@ -121,12 +122,19 @@ class GmailProcessor:
             return
 
         c = self.classifier.classify(message)
-        self._apply(msg_id, message, c)
+        try:
+            self._apply(msg_id, message, c)
+        except Exception as exc:
+            logger.error(f"Unexpected error applying decision for {msg_id}: {exc}")
+            self.stats["errors"] += 1
+            return
         self.stats["processed"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):
         sender  = _header(message, "From")  or "?"
         subject = _header(message, "Subject") or "(sin asunto)"
+        email   = extract_email_address(sender)
+        domain  = email.split("@")[-1] if "@" in email else ""
 
         logger.info(
             f"[{c.email_type.upper():<12}] {_short(sender, 40)} | {_short(subject, 50)}"
@@ -139,24 +147,41 @@ class GmailProcessor:
                 self.stats["labeled"] += 1
 
         # Execute primary action
+        decision = "SKIP"
         match c.action:
             case "trash":
                 if c.protected:
                     logger.warning(f"  Blocked trash on protected message {msg_id}")
                     self.stats["skipped"] += 1
+                    decision = "SKIP"
                 elif self.actions.trash(msg_id):
                     self.stats["trashed"] += 1
+                    decision = "TRASH"
 
             case "archive":
                 if self.actions.archive(msg_id):
                     self.stats["archived"] += 1
+                decision = "KEEP"
 
             case "mark_important":
                 if self.actions.mark_important(msg_id):
                     self.stats["important"] += 1
+                decision = "KEEP"
 
             case _:  # "label_only" or "unknown"
                 self.stats["skipped"] += 1
+
+        self.audit.log(
+            msg_id=msg_id,
+            sender=email,
+            domain=domain,
+            score=0.0,
+            decision=decision,
+            action=c.action,
+            rule=c.email_type,
+            reason=f"classifier:{c.email_type}",
+            protected=c.protected,
+        )
 
     def _print_summary(self):
         s = self.stats
@@ -172,6 +197,7 @@ class GmailProcessor:
             f"  Errores    : {s['errors']}\n"
             f"{'='*55}"
         )
+        self.audit.flush()
 
 
 def _header(message: dict, name: str) -> str:

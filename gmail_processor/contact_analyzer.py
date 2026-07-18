@@ -377,8 +377,9 @@ class ContactAnalyzer:
             pending_meta.pop(addr, None)
 
             # Aprender de esta decisión
-            self.learn_from_decision(addr, domain, decision, score, signals)
+            self.learn_from_decision(addr, domain, decision, score, signals, persist=False)
 
+        self._save_patterns()
         self.state["pending"]      = list(pending_set)
         self.state["pending_meta"] = pending_meta
         self._update_stats()
@@ -400,6 +401,7 @@ class ContactAnalyzer:
         decision: str,
         score: int,
         signals: list[str],
+        persist: bool = True,
     ) -> None:
         """
         Actualiza user_patterns.json:
@@ -432,7 +434,8 @@ class ContactAnalyzer:
                     weights[sig] = max(0.1, current - 0.05)
 
         self.patterns["decisions_count"] = self.patterns.get("decisions_count", 0) + 1
-        self._save_patterns()
+        if persist:
+            self._save_patterns()
 
     def get_unsubscribe_candidates(self, max_results: int = 20) -> list[dict]:
         """
@@ -685,7 +688,8 @@ class ContactAnalyzer:
             import importlib
             import gmail_processor.rules as rules_mod
 
-            if email_addr in rules_mod.CONTACT_RULES:
+            domain_key = f"@{_domain(email_addr)}"
+            if email_addr in rules_mod.CONTACT_RULES or domain_key in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
             label      = _derive_label(email_addr, name)
@@ -708,11 +712,14 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            # repr() safely escapes quotes/backslashes/newlines/control chars —
+            # email_addr and label ultimately originate from an untrusted
+            # From: header, so manual .replace() escaping is not sufficient.
+            new_line = f"    {email_addr!r}: {{'label': {label!r}, 'mark_important': True}},"
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp = rules_path.with_suffix(".tmp")
+            tmp.write_text("\n".join(lines), encoding="utf-8")
+            tmp.replace(rules_path)
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:

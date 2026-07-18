@@ -180,6 +180,7 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
         from collections import Counter
+        from gmail_processor.utils import extract_email_address
         svc    = st.session_state.service
         result = svc.users().messages().list(
             userId="me", q="in:inbox", maxResults=500,
@@ -198,12 +199,8 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                      if h["name"].lower() == "from"),
                     "",
                 )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
+                email = extract_email_address(raw)
+                name  = raw.rsplit("<", 1)[0].strip().strip('"').strip("'") if "<" in raw else ""
                 if email:
                     counts[email] += 1
                     if email not in names and name:
@@ -220,11 +217,15 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
 
 
 def _limpiar_remitente(email: str) -> dict | None:
+    import re
+    if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
+        st.error(f"Dirección de correo no válida: {email}")
+        return None
     try:
         from limpiar_correos import limpiar_bandeja
         return limpiar_bandeja(
             st.session_state.service,
-            query_custom=f"from:{email}",
+            query_custom=f'from:"{email}"',
         )
     except Exception as exc:
         st.error(f"Error: {exc}")
@@ -300,8 +301,10 @@ def _proteger_remitente(email: str, name: str) -> dict:
         new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
         lines.insert(insert_at, new_line)
 
-        with open(rules_path, "w", encoding="utf-8") as f:
+        tmp_path = rules_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
+        os.replace(tmp_path, rules_path)
 
         importlib.reload(rules_mod)
         return {"success": True, "email": email, "label": label}
@@ -753,7 +756,9 @@ def _send_chat_message(msg_text: str, chat_msgs: list):
         try:
             _chat_obj = _get_chat()
             _chat_obj.refresh_context()
-            _api_hist = [{"role": m["role"], "content": m["content"]} for m in chat_msgs[:-1]]
+            # Window to the last 10 turns (mirrors the display window below) so
+            # tokens sent per turn don't grow unbounded over a long session.
+            _api_hist = [{"role": m["role"], "content": m["content"]} for m in chat_msgs[:-1][-10:]]
             _resp = _chat_obj.send_message(msg_text, _api_hist)
         except Exception as _ce:
             _resp = f"Hubo un problema: {_ce}"

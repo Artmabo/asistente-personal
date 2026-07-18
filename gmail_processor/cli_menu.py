@@ -284,7 +284,7 @@ def _menu_audit():
     if decision_filter:
         entries = [e for e in entries if e.get("decision") == decision_filter]
 
-    entries = entries[-n:]
+    entries = entries[-n:] if n > 0 else []
 
     print()
     if not entries:
@@ -744,6 +744,18 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _write_rules_lines(rules_path: Path, lines: list[str]) -> bool:
+    """Writes rules.py via a temp file + atomic replace so an interrupted
+    write can never leave the module in a corrupted, unimportable state."""
+    tmp = rules_path.with_suffix(".tmp")
+    try:
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tmp.replace(rules_path)
+        return True
+    except OSError:
+        return False
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
@@ -775,11 +787,7 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_lines(rules_path, lines)
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
@@ -800,11 +808,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     if not removed:
         return False
 
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_lines(rules_path, new_lines)
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
@@ -853,11 +857,7 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
     )
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_lines(rules_path, lines)
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────
@@ -911,13 +911,18 @@ def _menu_limpiar_todo(get_svc: Callable):
     print()
     if not _confirm("¿Continuar?"):
         return
-    if not _confirm("  Confirmar: limpiar todas las categorías"):
-        return
     svc = get_svc()
     if svc is None:
         return
     from limpiar_correos import limpiar_todo_basura
-    limpiar_todo_basura(svc)
+
+    print("\n  Vista previa (dry-run) — nada se moverá todavía:")
+    preview = limpiar_todo_basura(svc, dry_run=True)
+    print(f"\n  Total de correos que se moverían a la papelera: {preview['exitos']}")
+    print()
+    if not _confirm(f"  Confirmar: mover {preview['exitos']} correos a la papelera"):
+        return
+    limpiar_todo_basura(svc, dry_run=False)
     _pause()
 
 

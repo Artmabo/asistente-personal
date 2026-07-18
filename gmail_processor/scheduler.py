@@ -139,11 +139,12 @@ class CleanupScheduler:
             from .cleanup_storage import StorageCleaner
             from .learning_engine import LearningEngine
             from .audit_log import AuditLogger
+            from . import rules as cfg
 
             service = get_service()
-            actions = GmailActions(service, dry_run=False)
+            actions = GmailActions(service, dry_run=cfg.DRY_RUN)
             engine  = LearningEngine()
-            audit   = AuditLogger()
+            audit   = AuditLogger(dry_run=cfg.DRY_RUN)
             cleaner = StorageCleaner(service, actions, engine=engine, audit=audit)
             result  = cleaner.run()
         except Exception as exc:
