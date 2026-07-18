@@ -66,12 +66,15 @@ class StorageAnalyzer:
     def estimate_cleanup_size(self, categories: list[str] | None = None) -> dict:
         """
         Estima el espacio que se liberaría limpiando las categorías dadas.
-        Lista todos los mensajes, toma muestra para sizeEstimate, extrapola.
+        Usa resultSizeEstimate (una sola llamada por categoría) para el conteo
+        total y solo pagina hasta _SAMPLE_PER_CAT ids para muestrear sizeEstimate
+        y extrapolar — evita listar hasta 5000 ids por categoría solo para contar.
         Devuelve {cat: {count, size_mb}, ..., total_mb, total_gb}.
         """
         if categories is None:
             categories = list(_CATEGORY_QUERIES.keys())
 
+        counts   = self.get_category_counts(categories)
         result: dict = {}
         total_mb = 0
 
@@ -80,13 +83,13 @@ class StorageAnalyzer:
             if not query:
                 continue
 
-            all_ids, count = self._list_all_ids(query)
+            count = counts.get(cat, 0)
             if count == 0:
                 result[cat] = {"count": 0, "size_mb": 0}
                 continue
 
-            # Muestrear sizeEstimate
-            sample_ids  = all_ids[:_SAMPLE_PER_CAT]
+            # Muestrear sizeEstimate sobre hasta _SAMPLE_PER_CAT mensajes
+            sample_ids, _ = self._list_all_ids(query, max_ids=_SAMPLE_PER_CAT)
             total_bytes = 0
             sampled     = 0
             for msg_id in sample_ids:

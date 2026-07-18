@@ -67,10 +67,14 @@ class MorningBrief:
                 stale_profiles.append(p.get("name") or addr)
         if stale_profiles:
             n = len(stale_profiles)
-            alerts.append(
+            # Inserted first (not appended) so it can't be pushed out by the
+            # later alerts[:5] truncation below.
+            alerts.insert(
+                0,
                 f"{n} perfil{'es' if n > 1 else ''} de contacto desactualizado{'s' if n > 1 else ''} "
                 f"(más de 7 días sin actualizar). Ve a Mis Contactos → Actualizar perfiles."
             )
+        alerts = alerts[:5]
 
         # Correos nuevos de contactos importantes: leemos reviewed con fecha reciente
         new_from_important: list[dict] = []
@@ -133,7 +137,7 @@ class MorningBrief:
             "summary_text":         summary_text,
             "new_from_important":   new_from_important[:5],
             "pending_decisions":    pending_count,
-            "alerts":               alerts[:5],
+            "alerts":               alerts,
             "storage_percent":      None,
             "personal_count":       personal,
             "spam_count":           spam,

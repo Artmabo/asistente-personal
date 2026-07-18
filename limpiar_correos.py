@@ -1,9 +1,36 @@
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+_MAX_RETRIES = 3
+_BASE_DELAY  = 1.0  # seconds before first retry (doubles each attempt)
+
+
+def _with_retry(fn, *, on_error_return):
+    """Runs `fn()` with exponential-backoff retry on rate-limit/transient errors.
+
+    Mirrors gmail_processor.actions.GmailActions._call so this standalone
+    script doesn't hammer the Gmail API without backoff on 429/5xx responses.
+    """
+    delay = _BASE_DELAY
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return fn()
+        except HttpError as e:
+            status = getattr(e.resp, "status", None)
+            if status in (429, 500, 503) and attempt < _MAX_RETRIES:
+                print(f"  Límite de tasa/error del servidor ({status}), "
+                      f"reintento {attempt}/{_MAX_RETRIES} en {delay:.1f}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            print(f"  Error de API ({status}): {e}")
+            return on_error_return
+    return on_error_return
 
 CATEGORIAS = {
     "spam":            "in:spam",
@@ -35,18 +62,19 @@ def mover_lote_a_papelera(service, ids: list) -> int:
     total = 0
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
-        try:
-            service.users().messages().batchModify(
+        ok = _with_retry(
+            lambda: service.users().messages().batchModify(
                 userId='me',
                 body={
                     'ids': chunk,
                     'addLabelIds': ['TRASH'],
                     'removeLabelIds': ['INBOX'],
                 }
-            ).execute()
+            ).execute() or True,
+            on_error_return=False,
+        )
+        if ok:
             total += len(chunk)
-        except HttpError as e:
-            print(f"  Error en lote ({len(chunk)} mensajes): {e}")
     return total
 
 
@@ -86,15 +114,17 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
 
         while True:
             page_num += 1
-            try:
-                result = service.users().messages().list(
+            result = _with_retry(
+                lambda: service.users().messages().list(
                     userId='me',
                     q=query,
                     maxResults=500,
                     pageToken=page_token,
-                ).execute()
-            except HttpError as e:
-                print(f"  Error al listar página {page_num}: {e}")
+                ).execute(),
+                on_error_return=None,
+            )
+            if result is None:
+                print(f"  No se pudo listar la página {page_num}, deteniendo esta categoría.")
                 break
 
             messages = result.get('messages', [])
@@ -133,8 +163,13 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     }
 
 
-def limpiar_todo_basura(service) -> dict:
-    """Limpia spam + promociones + social + actualizaciones + foros en secuencia."""
+def limpiar_todo_basura(service, dry_run=False) -> dict:
+    """Limpia spam + promociones + social + actualizaciones + foros en secuencia.
+
+    Estas queries de categoría no tienen filtro de fecha/lectura — cubren
+    TODO lo que Gmail haya clasificado en esa categoría. Usa dry_run=True
+    primero para ver cuántos mensajes se verían afectados.
+    """
     resultados = {}
     total_p = 0
     total_e = 0
@@ -142,7 +177,7 @@ def limpiar_todo_basura(service) -> dict:
     for cat in CATEGORIAS:
         print(f"\n  {'─'*44}")
         print(f"  {_NOMBRES_ES[cat].upper()}")
-        r = limpiar_bandeja(service, categorias=[cat])
+        r = limpiar_bandeja(service, categorias=[cat], dry_run=dry_run)
         resultados[cat] = r
         total_p += r['procesados']
         total_e += r['exitos']
@@ -162,28 +197,29 @@ def limpiar_todo_basura(service) -> dict:
 
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
 
-def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False):
+def limpiar_correos(service=None, meses=6, solo_no_leidos=True, dry_run=True):
     if service is None:
         service = obtener_servicio()
     fecha = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")
     q = f"before:{fecha}"
     if solo_no_leidos:
         q += " is:unread"
-    return limpiar_bandeja(service, query_custom=q)
+    return limpiar_bandeja(service, query_custom=q, dry_run=dry_run)
 
 
-def borrar_correos_antiguos(service=None):
+def borrar_correos_antiguos(service=None, dry_run=True):
     if service is None:
         service = obtener_servicio()
-    return limpiar_correos(service=service)
+    return limpiar_correos(service=service, dry_run=dry_run)
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description="Limpiar bandeja de Gmail")
     parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Solo cuenta los mensajes que se eliminarían, sin moverlos",
+        "--live", action="store_true",
+        help="Ejecuta el borrado real. Sin esta bandera se corre en modo "
+             "dry-run (solo cuenta, no mueve nada a la papelera).",
     )
     parser.add_argument(
         "--categoria", choices=list(CATEGORIAS.keys()), default=None,
@@ -191,9 +227,19 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
 
+    dry_run = not args.live
+    if not dry_run:
+        confirm = input(
+            "Esto moverá correos reales a la papelera (no es una simulación). "
+            "Escribe 'si' para continuar: "
+        )
+        if confirm.strip().lower() not in ("si", "sí", "yes", "y"):
+            print("Cancelado.")
+            sys.exit(0)
+
     svc = obtener_servicio()
     categorias = [args.categoria] if args.categoria else None
-    resultado = limpiar_bandeja(svc, categorias=categorias, dry_run=args.dry_run)
+    resultado = limpiar_bandeja(svc, categorias=categorias, dry_run=dry_run)
     if resultado:
-        accion = "encontrados" if args.dry_run else "enviados a papelera"
+        accion = "encontrados" if dry_run else "enviados a papelera"
         print(f"\nTotal {accion}: {resultado['exitos']} / {resultado['procesados']}")

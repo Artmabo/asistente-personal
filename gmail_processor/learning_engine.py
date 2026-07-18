@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
+from .utils import get_header, extract_email_address
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -80,6 +81,7 @@ MAX_DAILY_DELTA = 10.0          # max absolute score change per entity per calen
 MIN_SAMPLES_FOR_ADJUSTMENT = 10
 ERROR_RATE_TRIGGER         = 0.05
 THRESHOLD_INCREASE_DAYS    = 15
+MAX_THRESHOLD_MULTIPLIER   = 4   # cap: threshold_days can grow at most 4x the base
 
 _GMAIL_CATEGORIES = [
     "CATEGORY_PROMOTIONS",
@@ -126,33 +128,40 @@ def _empty_cat() -> dict:
 class Metrics:
     """Persistent quality metrics backed by the state dict."""
 
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, mark_dirty=None):
         self._d = data
+        self._mark_dirty = mark_dirty or (lambda: None)
 
     def record_processed(self):
         self._d["total_processed"] += 1
+        self._mark_dirty()
 
     def record_keep(self, category: str = ""):
         self._d["total_keep"] += 1
         if category:
             self._d["by_category"].setdefault(category, _empty_cat())["kept"] += 1
+        self._mark_dirty()
 
     def record_trash(self, rule_name: str = ""):
         self._d["total_trash"] += 1
         if rule_name:
             self._d["by_category"].setdefault(rule_name, _empty_cat())["trashed"] += 1
+        self._mark_dirty()
 
     def record_false_positive(self, rule_name: str = ""):
         self._d["false_positives"] += 1
         if rule_name:
             self._d["by_category"].setdefault(rule_name, _empty_cat())["false_positives"] += 1
+        self._mark_dirty()
 
     def record_manual_override(self):
         self._d["manual_overrides"] += 1
+        self._mark_dirty()
 
     def touch_run(self):
         self._d["last_run"]    = datetime.now().isoformat(timespec="seconds")
         self._d["runs_total"] += 1
+        self._mark_dirty()
 
     def accuracy_estimate(self) -> dict[str, float]:
         result: dict[str, float] = {}
@@ -228,8 +237,14 @@ class LearningEngine:
     def __init__(self, state_path: str = "learning_state.json"):
         self.path    = Path(state_path)
         self.state   = self._load()
-        self.metrics = Metrics(self.state.setdefault("metrics", _new_metrics()))
+        self.metrics = Metrics(
+            self.state.setdefault("metrics", _new_metrics()),
+            mark_dirty=self._mark_dirty,
+        )
         self._dirty  = False
+
+    def _mark_dirty(self):
+        self._dirty = True
 
     # ── Score calculation ─────────────────────────────────────────────────────
 
@@ -464,8 +479,16 @@ class LearningEngine:
             if error_rate > ERROR_RATE_TRIGGER:
                 base    = self._base_threshold(rule_name) or 30
                 current = stats.get("threshold_days") or base
-                new_val = current + THRESHOLD_INCREASE_DAYS
+                cap     = base * MAX_THRESHOLD_MULTIPLIER
+                new_val = min(current + THRESHOLD_INCREASE_DAYS, cap)
+                if new_val == current:
+                    continue
                 stats["threshold_days"] = new_val
+                # Reset the error tally so future runs measure fresh error
+                # rate against the newly-adjusted threshold instead of
+                # re-triggering forever off the same cumulative counts.
+                stats["trashed"]   = 0
+                stats["incorrect"] = 0
                 self._dirty = True
                 changes.append(
                     f"  {rule_name}: {current}d → {new_val}d  "
@@ -659,12 +682,7 @@ def _decay(last_accepted: str, lam: float) -> float:
 
 
 def _email_from_headers(headers: list[dict]) -> str:
-    for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
-    return ""
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _fmt(n: float) -> str:

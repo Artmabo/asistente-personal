@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
-Ejemplos de uso avanzado del sistema de throttling adaptativo.
-Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
+Ejemplos de uso del sistema de reintentos con backoff exponencial.
+Muestra cómo limpiar_correos() reintenta automáticamente ante 429/5xx.
 """
 
 from limpiar_correos import limpiar_correos
@@ -9,22 +9,20 @@ from asistente_personal import get_gmail_service
 
 
 def ejemplo_1_modo_conservador():
-    """Modo por defecto - el más seguro, respeita límites de Gmail API."""
+    """Modo por defecto - dry_run=True, no borra nada de verdad."""
     print("\n" + "="*60)
-    print("EJEMPLO 1: Modo Conservador (RECOMENDADO)")
+    print("EJEMPLO 1: Vista previa (dry-run)")
     print("="*60)
-    print("✅ Usa delays adaptativos")
-    print("✅ Circuit breaker automático")
-    print("✅ Respeita límites de Gmail API")
-    print("❌ Más lento pero confiable")
-    
+    print("✅ Reintenta automáticamente con backoff exponencial en 429/500/503")
+    print("✅ dry_run=True: solo cuenta, no mueve nada a la papelera")
+
     resultado = limpiar_correos(
         meses=6,
         solo_no_leidos=True,
-        aggressive=False  # Conservative mode
+        dry_run=True,
     )
-    
-    print(f"\n✓ Resultado: {resultado['eliminados']} correos eliminados")
+
+    print(f"\n✓ Resultado: {resultado['exitos']} correos encontrados (dry-run)")
 
 
 def ejemplo_2_listar_sin_borrar():
@@ -59,35 +57,30 @@ def ejemplo_3_limpieza_personalizada():
     print("EJEMPLO 3: Limpieza Personalizada")
     print("="*60)
     
-    # Eliminar TODOS los correos (leídos y no leídos) de más de 1 año
+    # Vista previa de TODOS los correos (leídos y no leídos) de más de 1 año.
+    # Pasa dry_run=False explícitamente para borrar de verdad.
     resultado = limpiar_correos(
-        meses=12,           # Más de 1 año
+        meses=12,              # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
+        dry_run=True,
     )
-    
-    print(f"\n✓ Se eliminaron {resultado['eliminados']} correos")
+
+    print(f"\n✓ Se encontraron {resultado['exitos']} correos (dry-run)")
 
 
-def ejemplo_4_comparacion_modos():
-    """Comparar comportamiento en modo agresivo vs conservador."""
+def ejemplo_4_reintentos():
+    """Cómo funciona el backoff exponencial ante errores de la API."""
     print("\n" + "="*60)
-    print("EJEMPLO 4: Comparación de Modes")
+    print("EJEMPLO 4: Reintentos con backoff exponencial")
     print("="*60)
-    
-    print("\n📊 Modo AGRESIVO:")
-    print("   - REQUEST_DELAY: 0.1s (muy rápido)")
-    print("   - BATCH_SIZE: 30")
-    print("   - RIESGO: Alto para 403/429")
-    print("   - VELOCIDAD: Rápida")
-    
-    print("\n📊 Modo CONSERVADOR:")
-    print("   - REQUEST_DELAY: 0.5s (seguro)")
-    print("   - BATCH_SIZE: 15")
-    print("   - RIESGO: Bajo o nulo")
-    print("   - VELOCIDAD: Moderada")
-    
-    print("\n✅ RECOMENDACIÓN: Usar modo CONSERVADOR siempre")
+
+    print("\n📊 Ante un 429 (rate limit) o 500/503 (error del servidor):")
+    print("   - Reintenta hasta 3 veces")
+    print("   - Espera 1s, luego 2s, luego 4s entre intentos")
+    print("   - Si se agotan los reintentos, se registra el error y continúa")
+
+    print("\n✅ Esto se aplica automáticamente en limpiar_bandeja() —")
+    print("   no requiere ninguna configuración adicional.")
 
 
 
@@ -102,18 +95,16 @@ def ejemplo_6_errores_comunes():
             "causa": "Cuota de usuario excedida o permisos insuficientes",
             "solucion": [
                 "1. Esperar 24h (se resetea la cuota diaria)",
-                "2. Aumentar PAGE_DELAY y REQUEST_DELAY",
-                "3. Reducir BATCH_SIZE",
-                "4. Usar aggressive=False"
+                "2. Revisar que el token tenga los scopes necesarios",
+                "3. Ejecutar en horarios menos concurridos"
             ]
         },
         "429 Too Many Requests": {
             "causa": "Rate limit de Gmail API",
             "solucion": [
-                "1. Circuit breaker se activa automáticamente",
-                "2. Espera exponencial con backoff",
-                "3. Aumenta PAGE_DELAY a 5.0+",
-                "4. Ejecuta en horarios menos concurridos"
+                "1. limpiar_correos.py reintenta automáticamente con backoff exponencial",
+                "2. Si persiste tras 3 intentos, espera unos minutos y reintenta",
+                "3. Ejecuta en horarios menos concurridos"
             ]
         },
         "401 Unauthorized": {
@@ -144,8 +135,7 @@ if __name__ == "__main__":
     # ejemplo_1_modo_conservador()
     ejemplo_2_listar_sin_borrar()
     # ejemplo_3_limpieza_personalizada()
-    # ejemplo_4_comparacion_modos()
-    # ejemplo_5_monitorear_throttle()
+    # ejemplo_4_reintentos()
     # ejemplo_6_errores_comunes()
     
     print("\n✅ Fin de ejemplos")

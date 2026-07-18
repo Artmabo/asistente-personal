@@ -107,7 +107,7 @@ class ContactProfiler:
         if ".gob.mx" in domain or ".gob." in domain:
             return "gobierno"
         for kw in ("sat.", "imss.", "infonavit.", "issste.", "sep.", "consar."):
-            if kw in addr_lower:
+            if kw in domain:
                 return "gobierno"
 
         # Servicio
@@ -120,7 +120,7 @@ class ContactProfiler:
             "instagram", "linkedin", "youtube",
         }
         for svc in _SVC:
-            if svc in domain:
+            if domain == svc or domain.startswith(f"{svc}.") or f".{svc}." in domain:
                 return "servicio"
 
         # Familiar: dominio personal + local que no parece bot o empresa

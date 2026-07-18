@@ -29,6 +29,7 @@ import argparse
 import logging
 import gmail_processor.rules as cfg
 from gmail_processor import GmailProcessor, setup_logging
+from gmail_processor.learning_engine import REPEAT_THRESHOLD, CONFIDENCE_THRESHOLD
 
 _SUBCOMMANDS = {"feedback", "stats", "audit"}
 
@@ -127,8 +128,8 @@ def _cmd_feedback(argv: list[str]):
         print("  Drift      : delta reducido por limite diario")
     if result.pending_count > 0:
         print(
-            f"  Pendiente  : {result.pending_count}/{2} repeticiones"
-            f" (o confianza >= 0.60)"
+            f"  Pendiente  : {result.pending_count}/{REPEAT_THRESHOLD} repeticiones"
+            f" (o confianza >= {CONFIDENCE_THRESHOLD:.2f})"
         )
 
 
