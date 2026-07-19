@@ -1,7 +1,11 @@
 #!/usr/bin/env python
 """
-Ejemplos de uso avanzado del sistema de throttling adaptativo.
-Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
+Ejemplos de manejo de rate-limiting de la API de Gmail (403/429).
+
+Nota: REQUEST_DELAY, BATCH_SIZE y el circuit breaker descritos abajo son
+recomendaciones de configuración, no funciones activas en limpiar_correos.py
+— este módulo no implementa throttling adaptativo ni modos agresivo/
+conservador; `limpiar_correos()` siempre usa la misma estrategia.
 """
 
 from limpiar_correos import limpiar_correos
@@ -21,10 +25,9 @@ def ejemplo_1_modo_conservador():
     resultado = limpiar_correos(
         meses=6,
         solo_no_leidos=True,
-        aggressive=False  # Conservative mode
     )
-    
-    print(f"\n✓ Resultado: {resultado['eliminados']} correos eliminados")
+
+    print(f"\n✓ Resultado: {resultado['exitos']} correos eliminados")
 
 
 def ejemplo_2_listar_sin_borrar():
@@ -61,12 +64,11 @@ def ejemplo_3_limpieza_personalizada():
     
     # Eliminar TODOS los correos (leídos y no leídos) de más de 1 año
     resultado = limpiar_correos(
-        meses=12,           # Más de 1 año
+        meses=12,              # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
     )
-    
-    print(f"\n✓ Se eliminaron {resultado['eliminados']} correos")
+
+    print(f"\n✓ Se eliminaron {resultado['exitos']} correos")
 
 
 def ejemplo_4_comparacion_modos():
@@ -102,9 +104,8 @@ def ejemplo_6_errores_comunes():
             "causa": "Cuota de usuario excedida o permisos insuficientes",
             "solucion": [
                 "1. Esperar 24h (se resetea la cuota diaria)",
-                "2. Aumentar PAGE_DELAY y REQUEST_DELAY",
-                "3. Reducir BATCH_SIZE",
-                "4. Usar aggressive=False"
+                "2. Agregar un delay entre llamadas a la API (no implementado aún)",
+                "3. Reducir maxResults por página",
             ]
         },
         "429 Too Many Requests": {

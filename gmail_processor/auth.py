@@ -38,5 +38,10 @@ def get_service(
         fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w") as f:
             f.write(creds.to_json())
+        # os.O_CREAT only applies the mode to a *new* file — if token_path
+        # already existed (e.g. written by an older version of this code
+        # with a permissive umask), its old permissions would otherwise
+        # survive the rewrite.
+        os.chmod(token_path, stat.S_IRUSR | stat.S_IWUSR)
 
     return build("gmail", "v1", credentials=creds)

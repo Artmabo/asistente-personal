@@ -56,7 +56,20 @@ DOMAIN_RULES: list[dict] = [
 # ── Reglas por palabras clave (en asunto + remitente) ─────────────────────────
 # Las keywords se buscan en: asunto + dirección del remitente (case-insensitive por default).
 # Acciones válidas: "mark_important", "archive", "trash", "label_only"
+#
+# SPAM va primero: un correo de phishing puede combinar una palabra de
+# "factura" con una de spam en el mismo asunto (p.ej. "Factura pendiente —
+# click aquí para reclamar tu premio"); si FACTURAS se evaluara antes,
+# ganaría y el mensaje nunca llegaría a la regla de trash.
 KEYWORD_RULES: list[dict] = [
+    {
+        "keywords": ["unsubscribe", "opt-out", "darse de baja", "oferta exclusiva",
+                     "ganaste", "has ganado", "premio", "free gift", "click aquí",
+                     "click here", "limited time offer", "50% off", "100% gratis"],
+        "label": "SPAM",
+        "action": "trash",
+        "case_sensitive": False,
+    },
     {
         "keywords": ["factura", "invoice", "comprobante fiscal", "cfdi",
                      "recibo", "estado de cuenta", "receipt", "billing statement"],
@@ -69,14 +82,6 @@ KEYWORD_RULES: list[dict] = [
                      "proyecto", "junta", "asignación", "calificación", "horario"],
         "label": "TRABAJO_ESCUELA",
         "action": "mark_important",
-        "case_sensitive": False,
-    },
-    {
-        "keywords": ["unsubscribe", "opt-out", "darse de baja", "oferta exclusiva",
-                     "ganaste", "has ganado", "premio", "free gift", "click aquí",
-                     "click here", "limited time offer", "50% off", "100% gratis"],
-        "label": "SPAM",
-        "action": "trash",
         "case_sensitive": False,
     },
 ]

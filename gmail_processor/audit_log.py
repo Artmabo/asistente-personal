@@ -24,6 +24,15 @@ logger = logging.getLogger("gmail_processor.audit")
 
 MAX_ENTRIES = 10_000
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _defuse_csv_formula(value):
+    """Prefixes a leading tab so spreadsheet apps don't treat the cell as a formula."""
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "\t" + value
+    return value
+
 
 class AuditLogger:
     def __init__(self, path: str = "audit_log.jsonl", dry_run: bool = False):
@@ -97,10 +106,21 @@ class AuditLogger:
         if not entries:
             return ""
         fieldnames = ["ts", "sender", "domain", "score", "decision", "rule", "reason", "learned", "protected", "dry_run", "msg_id"]
+        # sender/domain/reason ultimately come from email headers we don't
+        # control; neutralize formula-injection prefixes before they can be
+        # opened as a "live" formula in Excel/Sheets.
+        safe_entries = [
+            {**e, **{
+                field: _defuse_csv_formula(e[field])
+                for field in ("sender", "domain", "reason")
+                if field in e
+            }}
+            for e in entries
+        ]
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(entries)
+        writer.writerows(safe_entries)
         return buf.getvalue()
 
     # ── Private ───────────────────────────────────────────────────────────────
@@ -108,11 +128,23 @@ class AuditLogger:
     def _load(self) -> list[dict]:
         if not self.path.exists():
             return []
+        entries = []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        # Skip a single corrupt line (e.g. truncated by a
+                        # crash mid-write) instead of discarding the whole
+                        # log — flush() would otherwise treat this as an
+                        # empty history and overwrite it.
+                        continue
+        except OSError:
             return []
+        return entries
 
     def _load_tail(self, n: int) -> list[dict]:
         """Reads only the last n lines using a deque to avoid loading the whole file."""
