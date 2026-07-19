@@ -6,11 +6,16 @@ Entry point: run_menu()
   All destructive operations default to DRY RUN with explicit LIVE confirmation.
 """
 import os
+import re
 import sys
 import logging
 import importlib
 from pathlib import Path
 from typing import Callable, Optional
+
+# Conservative email shape used only to reject values that could break out of
+# a Python string literal before they are written into rules.py.
+_SAFE_EMAIL_RE = re.compile(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$")
 
 _W    = 54
 _SEP  = "─" * _W
@@ -277,14 +282,18 @@ def _menu_audit():
 
     from .processor import setup_logging
     setup_logging(level=logging.WARNING)
-    from .audit_log import AuditLogger
+    from .audit_log import AuditLogger, MAX_ENTRIES
     audit   = AuditLogger()
-    entries = audit.recent(max(n * 3, 200))
+    # When filtering by decision, pull the full log rather than a small
+    # window — otherwise a sparse decision type could return fewer than
+    # `n` matches even though more exist further back.
+    fetch   = MAX_ENTRIES if decision_filter else max(n * 3, 200)
+    entries = audit.recent(fetch)
 
     if decision_filter:
         entries = [e for e in entries if e.get("decision") == decision_filter]
 
-    entries = entries[-n:]
+    entries = entries[-n:] if n > 0 else []
 
     print()
     if not entries:
@@ -745,6 +754,9 @@ def _present_domains(domains) -> int:
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    if not _SAFE_EMAIL_RE.match(email or ""):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -767,12 +779,14 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     if end_idx is None:
         return False
 
+    key = f"{email!r}:"
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if line.strip().startswith(key):
             return False  # already exists
 
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # repr() safely escapes quotes/backslashes so `email`/`label` can never
+    # break out of the string literal they're written into.
+    new_entry = f"    {email!r}: {{'label': {label!r}, 'mark_important': {important!r}}},"
     lines.insert(end_idx, new_entry)
 
     try:
@@ -789,10 +803,11 @@ def _patch_rules_remove_contact(email: str) -> bool:
     except OSError:
         return False
 
+    key = f"{email!r}:"
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if line.strip().startswith(key):
             removed = True
             continue
         new_lines.append(line)
@@ -809,6 +824,11 @@ def _patch_rules_remove_contact(email: str) -> bool:
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    if action not in ("mark_important", "archive", "label_only", "trash"):
+        return False
+    if not re.match(r"^[^@\s\"'\\]+\.[^@\s\"'\\]+$", domain or ""):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -841,15 +861,16 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if repr(domain) in block_text:
         return False
 
+    # repr() safely escapes quotes/backslashes in domain/label/action.
     new_entry = (
-        f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
-        f'    }},'
+        f"    {{\n"
+        f"        'domains': [{domain!r}],\n"
+        f"        'label': {label!r},\n"
+        f"        'action': {action!r},\n"
+        f"    }},"
     )
     lines.insert(end_idx, new_entry)
 

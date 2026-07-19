@@ -24,6 +24,19 @@ _DAYS_ES = {
     "sunday":    "domingo",
 }
 
+# APScheduler's CronTrigger only accepts 0-6 or the 3-letter abbreviations
+# below for day_of_week — it rejects full names like "sunday", which is what
+# _empty_config()/app.py store and display.
+_DAYS_APSCHEDULER = {
+    "monday":    "mon",
+    "tuesday":   "tue",
+    "wednesday": "wed",
+    "thursday":  "thu",
+    "friday":    "fri",
+    "saturday":  "sat",
+    "sunday":    "sun",
+}
+
 
 def _empty_config() -> dict:
     return {
@@ -85,8 +98,15 @@ class CleanupScheduler:
         })
         self._save()
 
-        if enabled and self._scheduler and self._scheduler.running:
-            self._reschedule()
+        if self._scheduler and self._scheduler.running:
+            if enabled:
+                self._reschedule()
+            elif self._job:
+                try:
+                    self._job.remove()
+                except Exception:
+                    pass
+                self._job = None
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""
@@ -174,7 +194,7 @@ class CleanupScheduler:
         if freq == "daily":
             trigger = CronTrigger(hour=hour)
         elif freq == "weekly":
-            trigger = CronTrigger(day_of_week=dow, hour=hour)
+            trigger = CronTrigger(day_of_week=_DAYS_APSCHEDULER.get(dow, dow), hour=hour)
         else:   # monthly
             trigger = CronTrigger(day=1, hour=hour)
 
@@ -201,9 +221,15 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
+        """Atomic tmp → replace write, since this is called from both the
+        UI thread and the APScheduler background thread (post-run in
+        _run_cleanup) — a plain write_text() risks a torn/corrupt file if
+        the two overlap."""
+        tmp = self.config_path.with_suffix(".tmp")
+        tmp.write_text(
             json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        tmp.replace(self.config_path)
 
 
 def format_next_run(iso: str | None) -> str:

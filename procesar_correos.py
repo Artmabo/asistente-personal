@@ -67,6 +67,9 @@ def main():
                         help="Enable DEBUG log level — shows full pipeline trace per email")
     args = parser.parse_args()
 
+    if args.learning and not args.cleanup:
+        parser.error("--learning requires --cleanup")
+
     if args.live:
         cfg.DRY_RUN = False
 
@@ -201,14 +204,18 @@ def _cmd_audit(argv: list[str]):
 
     setup_logging(level=logging.WARNING)
 
-    from gmail_processor.audit_log import AuditLogger
-    audit   = AuditLogger()
-    entries = audit.recent(max(args.last * 3, 200))   # over-fetch to allow filtering
+    from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
+    audit = AuditLogger()
+    # When filtering by decision, pull the full log rather than a small
+    # window — otherwise a sparse decision type could return fewer than
+    # `--last` matches even though more exist further back.
+    fetch   = MAX_ENTRIES if args.decision else max(args.last * 3, 200)
+    entries = audit.recent(fetch)
 
     if args.decision:
         entries = [e for e in entries if e.get("decision") == args.decision]
 
-    entries = entries[-args.last:]
+    entries = entries[-args.last:] if args.last > 0 else []
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")

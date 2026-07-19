@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
+from . import utils
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -241,7 +242,7 @@ class LearningEngine:
         """
         label_ids = message.get("labelIds", [])
         headers   = message.get("payload", {}).get("headers", [])
-        email     = _email_from_headers(headers)
+        email     = utils.extract_email_address(utils.get_header(headers, "From"))
         domain    = email.split("@")[-1] if "@" in email else ""
 
         score:   float     = 0.0
@@ -270,7 +271,7 @@ class LearningEngine:
                     score -= 5;  factors.append(f"-5  dominio servicios ({domain})")
                 break
 
-        if email in cfg.CONTACT_RULES:
+        if email in cfg.CONTACT_RULES or (domain and f"@{domain}" in cfg.CONTACT_RULES):
             score += 50; factors.append(f"+50 contacto protegido ({email})")
 
         # ── Sender model (decay_lambda = DECAY_LAMBDA_SENDER) ─────────────────
@@ -656,15 +657,6 @@ def _decay(last_accepted: str, lam: float) -> float:
         return max(DECAY_FLOOR, math.exp(-lam * days))
     except ValueError:
         return 1.0
-
-
-def _email_from_headers(headers: list[dict]) -> str:
-    for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
-    return ""
 
 
 def _fmt(n: float) -> str:

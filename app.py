@@ -5,6 +5,7 @@ Ejecutar con:  streamlit run app.py
 import os
 import sys
 import json
+import html
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
@@ -239,9 +240,9 @@ _FREE_EMAIL_PROVIDERS = frozenset([
 
 
 def _derivar_label(email: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
+    words = name.strip().split() if name else []
+    if words:
+        clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
     domain = email.split("@")[-1] if "@" in email else ""
@@ -641,11 +642,12 @@ def _nav_to(page: str):
 
 
 def _get_quick_metrics() -> dict:
+    from gmail_processor.contact_analyzer import STATE_PATH
+
     state = {}
     try:
-        p = Path("analysis_state.json")
-        if p.exists():
-            state = json.loads(p.read_text(encoding="utf-8"))
+        if STATE_PATH.exists():
+            state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
         pass
     stats   = state.get("stats", {})
@@ -725,7 +727,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{_rel_names.get(rel, "Otro")}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1114,7 +1116,7 @@ if _current_page == "inicio":
         # ── Tarjeta de buenos días ──────────────────────────────────────────
         _brief = _get_morning_brief()
         if _brief:
-            _bsummary = _brief.get("summary_text", "Todo está en orden.")
+            _bsummary = html.escape(_brief.get("summary_text", "Todo está en orden."))
             st.markdown(
                 f'<div class="brief-card">'
                 f'<p style="margin:0;font-size:1.05rem;color:#1e40af;font-weight:500">'
@@ -1132,7 +1134,7 @@ if _current_page == "inicio":
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{html.escape(_bm.get('name', ''))}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1324,7 +1326,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{_rel_names.get(_cprel, "Otro")}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
@@ -1337,7 +1339,8 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(str(t))}</span>'
+                                        for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")
