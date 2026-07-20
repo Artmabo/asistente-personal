@@ -37,3 +37,18 @@ def extract_email_address(raw: str) -> str:
         if end > start:
             return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
+
+
+def gmail_address_query(operator: str, email: str) -> str:
+    """Builds a safe `<operator>:"..."` Gmail search operand for an email address.
+
+    Quotes the address and strips characters that could let it break out of
+    the quoted operand and inject additional search terms/operators.
+    """
+    safe = email.replace('"', "").replace("\n", "").replace("\r", "").strip()
+    return f'{operator}:"{safe}"'
+
+
+def gmail_from_query(email: str) -> str:
+    """Builds a safe `from:"..."` Gmail search operand for an email address."""
+    return gmail_address_query("from", email)

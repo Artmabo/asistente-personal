@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, gmail_from_query, gmail_address_query
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -153,7 +153,7 @@ class ContactProfiler:
 
         try:
             sent = service.users().messages().list(
-                userId="me", q=f"in:sent to:{addr}", maxResults=1,
+                userId="me", q=f"in:sent {gmail_address_query('to', addr)}", maxResults=1,
             ).execute()
             bidirectional = bool(sent.get("messages"))
         except Exception:
@@ -216,7 +216,7 @@ class ContactProfiler:
         result = []
         try:
             resp = service.users().messages().list(
-                userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
+                userId="me", q=gmail_from_query(addr), maxResults=_MAX_EMAILS,
             ).execute()
             stubs = resp.get("messages", [])
         except HttpError:

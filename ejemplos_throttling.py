@@ -1,30 +1,29 @@
 #!/usr/bin/env python
 """
-Ejemplos de uso avanzado del sistema de throttling adaptativo.
-Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
+Ejemplos de uso de limpiar_correos con distintos parámetros.
+
+`limpiar_bandeja` ya usa `batchModify` (hasta 1000 IDs por llamada) para
+mover correos a la papelera, lo que evita las llamadas 1-por-mensaje que
+antes disparaban 403/429 con volúmenes grandes.
 """
 
 from limpiar_correos import limpiar_correos
 from asistente_personal import get_gmail_service
 
 
-def ejemplo_1_modo_conservador():
-    """Modo por defecto - el más seguro, respeita límites de Gmail API."""
+def ejemplo_1_modo_por_defecto():
+    """Elimina no leídos de más de 6 meses (valores por defecto)."""
     print("\n" + "="*60)
-    print("EJEMPLO 1: Modo Conservador (RECOMENDADO)")
+    print("EJEMPLO 1: Modo por defecto")
     print("="*60)
-    print("✅ Usa delays adaptativos")
-    print("✅ Circuit breaker automático")
-    print("✅ Respeita límites de Gmail API")
-    print("❌ Más lento pero confiable")
-    
+
     resultado = limpiar_correos(
         meses=6,
         solo_no_leidos=True,
-        aggressive=False  # Conservative mode
     )
-    
-    print(f"\n✓ Resultado: {resultado['eliminados']} correos eliminados")
+
+    print(f"\n✓ Resultado: {resultado['exitos']} correos enviados a papelera"
+          f" ({resultado['errores']} errores)")
 
 
 def ejemplo_2_listar_sin_borrar():
@@ -61,33 +60,26 @@ def ejemplo_3_limpieza_personalizada():
     
     # Eliminar TODOS los correos (leídos y no leídos) de más de 1 año
     resultado = limpiar_correos(
-        meses=12,           # Más de 1 año
+        meses=12,              # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
     )
-    
-    print(f"\n✓ Se eliminaron {resultado['eliminados']} correos")
+
+    print(f"\n✓ Se enviaron a papelera {resultado['exitos']} correos"
+          f" ({resultado['errores']} errores)")
 
 
-def ejemplo_4_comparacion_modos():
-    """Comparar comportamiento en modo agresivo vs conservador."""
+def ejemplo_4_limpiar_por_categoria():
+    """Limpia una categoría específica usando limpiar_bandeja directamente."""
     print("\n" + "="*60)
-    print("EJEMPLO 4: Comparación de Modes")
+    print("EJEMPLO 4: Limpieza por categoría")
     print("="*60)
-    
-    print("\n📊 Modo AGRESIVO:")
-    print("   - REQUEST_DELAY: 0.1s (muy rápido)")
-    print("   - BATCH_SIZE: 30")
-    print("   - RIESGO: Alto para 403/429")
-    print("   - VELOCIDAD: Rápida")
-    
-    print("\n📊 Modo CONSERVADOR:")
-    print("   - REQUEST_DELAY: 0.5s (seguro)")
-    print("   - BATCH_SIZE: 15")
-    print("   - RIESGO: Bajo o nulo")
-    print("   - VELOCIDAD: Moderada")
-    
-    print("\n✅ RECOMENDACIÓN: Usar modo CONSERVADOR siempre")
+
+    from limpiar_correos import limpiar_bandeja
+
+    service = get_gmail_service()
+    resultado = limpiar_bandeja(service, categorias=["promociones"])
+    print(f"\n✓ Promociones: {resultado['exitos']}/{resultado['procesados']}"
+          f" enviados a papelera")
 
 
 
@@ -102,25 +94,22 @@ def ejemplo_6_errores_comunes():
             "causa": "Cuota de usuario excedida o permisos insuficientes",
             "solucion": [
                 "1. Esperar 24h (se resetea la cuota diaria)",
-                "2. Aumentar PAGE_DELAY y REQUEST_DELAY",
-                "3. Reducir BATCH_SIZE",
-                "4. Usar aggressive=False"
+                "2. Revisar que el token tenga los scopes necesarios",
             ]
         },
         "429 Too Many Requests": {
             "causa": "Rate limit de Gmail API",
             "solucion": [
-                "1. Circuit breaker se activa automáticamente",
-                "2. Espera exponencial con backoff",
-                "3. Aumenta PAGE_DELAY a 5.0+",
-                "4. Ejecuta en horarios menos concurridos"
+                "1. GmailActions reintenta automáticamente con backoff"
+                " exponencial (ver gmail_processor/actions.py)",
+                "2. Si persiste, ejecuta en horarios menos concurridos",
             ]
         },
         "401 Unauthorized": {
             "causa": "Token expirado o inválido",
             "solucion": [
                 "1. Elimina token.json",
-                "2. Ejecuta: python asistente-personal.py",
+                "2. Ejecuta: python asistente_personal.py",
                 "3. Autoriza de nuevo en navegador"
             ]
         }
@@ -136,16 +125,15 @@ def ejemplo_6_errores_comunes():
 
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("EJEMPLOS: Sistema de Throttling Adaptativo")
+    print("EJEMPLOS: limpiar_correos")
     print("="*60)
-    
+
     # Descomenta el ejemplo que quieras ejecutar:
-    
-    # ejemplo_1_modo_conservador()
+
+    # ejemplo_1_modo_por_defecto()
     ejemplo_2_listar_sin_borrar()
     # ejemplo_3_limpieza_personalizada()
-    # ejemplo_4_comparacion_modos()
-    # ejemplo_5_monitorear_throttle()
+    # ejemplo_4_limpiar_por_categoria()
     # ejemplo_6_errores_comunes()
-    
+
     print("\n✅ Fin de ejemplos")
