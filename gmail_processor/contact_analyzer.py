@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import gmail_from_query
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -646,7 +648,7 @@ class ContactAnalyzer:
     # ── Borrar correos de un remitente ────────────────────────────────────────
 
     def _trash_sender(self, addr: str) -> int:
-        query      = f"from:{addr}"
+        query      = gmail_from_query(addr)
         page_token = None
         total      = 0
 

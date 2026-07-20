@@ -22,6 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import get_header, extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -43,11 +44,12 @@ class StorageCleaner:
         self.learning_mode = learning_mode
         self._protected_domains = _build_protected_domains()
         self.stats = {
-            "examined": 0,
-            "trashed":  0,
-            "skipped":  0,
-            "kept":     0,
-            "errors":   0,
+            "examined":    0,
+            "trashed":     0,
+            "skipped":     0,
+            "kept":        0,
+            "errors":      0,
+            "freed_bytes": 0,
         }
 
     def run(self) -> dict:
@@ -238,6 +240,7 @@ class StorageCleaner:
 
         if self.actions.trash(msg_id):
             self.stats["trashed"] += 1
+            self.stats["freed_bytes"] += message.get("sizeEstimate", 0)
             if self.engine:
                 self.engine.metrics.record_trash(rule_name)
                 self.engine.update_category_stats(label_ids, "trash")
@@ -285,9 +288,10 @@ class StorageCleaner:
     def _write_summary(self):
         """Persists a cleanup summary to cleanup_summary.json for the UI."""
         summary = {
-            "ts":      datetime.now().isoformat(timespec="seconds"),
-            "dry_run": cfg.DRY_RUN,
+            "ts":       datetime.now().isoformat(timespec="seconds"),
+            "dry_run":  cfg.DRY_RUN,
             **self.stats,
+            "freed_mb": round(self.stats["freed_bytes"] / 1e6, 1),
         }
         try:
             _SUMMARY_PATH.write_text(
@@ -298,11 +302,12 @@ class StorageCleaner:
 
     def _print_summary(self):
         s = self.stats
+        freed_mb = round(s["freed_bytes"] / 1e6, 1)
         logger.info(
             f"\n{'='*55}\n"
             f"  RESUMEN CLEANUP\n"
             f"  Examinados : {s['examined']}\n"
-            f"  Papelera   : {s['trashed']}\n"
+            f"  Papelera   : {s['trashed']}  (~{freed_mb} MB liberados)\n"
             f"  Protegidos : {s['skipped']}  (reglas duras)\n"
             f"  Conservados: {s['kept']}  (score)\n"
             f"  Errores    : {s['errors']}\n"
@@ -320,26 +325,16 @@ def _build_protected_domains() -> frozenset[str]:
     return frozenset(protected)
 
 
-def _get_header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
-
-
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(get_header(message.get("payload", {}).get("headers", []), "From"))
 
 
 def _sender_display(message: dict) -> str:
-    return _get_header(message, "From") or "?"
+    return get_header(message.get("payload", {}).get("headers", []), "From") or "?"
 
 
 def _subject(message: dict) -> str:
-    return _get_header(message, "Subject") or "(sin asunto)"
+    return get_header(message.get("payload", {}).get("headers", []), "Subject") or "(sin asunto)"
 
 
 def _s(text: str, n: int) -> str:

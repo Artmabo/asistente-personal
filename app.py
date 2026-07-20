@@ -180,36 +180,37 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
         from collections import Counter
+        from gmail_processor.utils import get_header, extract_email_address
         svc    = st.session_state.service
         result = svc.users().messages().list(
             userId="me", q="in:inbox", maxResults=500,
         ).execute()
         stubs  = result.get("messages", [])[:150]
-        counts: Counter      = Counter()
+        counts: Counter        = Counter()
         names:  dict[str, str] = {}
-        for stub in stubs:
-            try:
-                msg = svc.users().messages().get(
+
+        def _on_response(_request_id, msg, exception):
+            if exception is not None or msg is None:
+                return
+            raw   = get_header(msg.get("payload", {}).get("headers", []), "From")
+            email = extract_email_address(raw)
+            name  = raw.split("<")[0].strip().strip('"').strip("'") if "<" in raw else ""
+            if email:
+                counts[email] += 1
+                if email not in names and name:
+                    names[email] = name
+
+        # Batch the per-message metadata fetches instead of one HTTP round
+        # trip per message (Gmail batch requests cap at 100 calls each).
+        for i in range(0, len(stubs), 100):
+            batch = svc.new_batch_http_request(callback=_on_response)
+            for stub in stubs[i:i + 100]:
+                batch.add(svc.users().messages().get(
                     userId="me", id=stub["id"],
                     format="metadata", metadataHeaders=["From"],
-                ).execute()
-                raw = next(
-                    (h["value"] for h in msg.get("payload", {}).get("headers", [])
-                     if h["name"].lower() == "from"),
-                    "",
-                )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
-                if email:
-                    counts[email] += 1
-                    if email not in names and name:
-                        names[email] = name
-            except Exception:
-                continue
+                ))
+            batch.execute()
+
         return [
             {"email": e, "name": names.get(e, ""), "count": c}
             for e, c in counts.most_common(15)
@@ -222,9 +223,10 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
 def _limpiar_remitente(email: str) -> dict | None:
     try:
         from limpiar_correos import limpiar_bandeja
+        from gmail_processor.utils import gmail_from_query
         return limpiar_bandeja(
             st.session_state.service,
-            query_custom=f"from:{email}",
+            query_custom=gmail_from_query(email),
         )
     except Exception as exc:
         st.error(f"Error: {exc}")
@@ -1997,9 +1999,16 @@ elif _current_page == "automatica":
                     if isinstance(_last_res, dict) and "error" in _last_res:
                         st.warning(f"Error: {_last_res['error']}")
                     elif isinstance(_last_res, dict):
-                        _lr_proc = _last_res.get("procesados", 0)
-                        _lr_ok   = _last_res.get("exitos",     0)
-                        st.success(f"✓ **{_lr_ok}** de {_lr_proc} correos movidos a la papelera.")
+                        # StorageCleaner.run() stats: examined/trashed/skipped/kept/errors/freed_bytes
+                        _lr_exam  = _last_res.get("examined", 0)
+                        _lr_trash = _last_res.get("trashed",  0)
+                        _lr_freed = _last_res.get("freed_mb")
+                        if _lr_freed is None:
+                            _lr_freed = round(_last_res.get("freed_bytes", 0) / 1e6, 1)
+                        st.success(
+                            f"✓ **{_lr_trash}** de {_lr_exam} correos movidos a la papelera"
+                            f" (~{_lr_freed} MB liberados)."
+                        )
                     else:
                         st.caption("Sin información del resultado.")
 

@@ -768,11 +768,17 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         return False
 
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if repr(email) in line or f'"{email}"' in line:
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # repr() escapes quotes/backslashes so untrusted email/label values (parsed
+    # from mail headers) can't break out of the string literal and inject code
+    # into rules.py, which is imported as live Python.
+    new_entry = f'    {repr(email)}: {{"label": {repr(label)}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -792,7 +798,8 @@ def _patch_rules_remove_contact(email: str) -> bool:
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        stripped = line.strip()
+        if not stripped.startswith("#") and (repr(email) in line or f'"{email}"' in line):
             removed = True
             continue
         new_lines.append(line)
@@ -841,14 +848,17 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if repr(domain) in block_text or f'"{domain}"' in block_text:
         return False
 
+    # repr() escapes quotes/backslashes so an untrusted domain/label (parsed
+    # from mail headers) can't break out of the string literal and inject code
+    # into rules.py, which is imported as live Python.
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{repr(domain)}],\n'
+        f'        "label": {repr(label)},\n'
+        f'        "action": {repr(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
