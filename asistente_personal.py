@@ -1,5 +1,6 @@
 from __future__ import print_function
 import os.path
+import stat
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -21,10 +22,16 @@ def get_gmail_service(creds_path="config/credentials.json", token_path="token.js
     # Si no hay credenciales válidas
     if not creds or not creds.valid:
 
+        refreshed = False
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+                refreshed = True
+            except Exception:
+                # Refresh token revocado o fallo de red — forzar re-auth completo
+                creds = None
 
-        else:
+        if not refreshed:
             flow = InstalledAppFlow.from_client_secrets_file(
                 creds_path,
                 SCOPES
@@ -35,8 +42,10 @@ def get_gmail_service(creds_path="config/credentials.json", token_path="token.js
             print("\nSCOPES DEL TOKEN:")
             print(creds.scopes)
 
-        # Guardar token (tanto si fue refrescado como si es nuevo)
-        with open(token_path, "w") as token:
+        # Guardar token (tanto si fue refrescado como si es nuevo), solo
+        # legible por el usuario propietario (contiene el refresh token)
+        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "w") as token:
             token.write(creds.to_json())
 
     service = build("gmail", "v1", credentials=creds)

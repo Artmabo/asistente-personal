@@ -63,7 +63,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     Returns:
         {'procesados': int, 'exitos': int, 'errores': int}
     """
-    if categorias:
+    if categorias is not None:
         queries = {cat: CATEGORIAS[cat] for cat in categorias if cat in CATEGORIAS}
     elif query_custom:
         queries = {"consulta": query_custom}

@@ -185,7 +185,8 @@ class ContactAnalyzer:
         pending_set = set(self.state["pending"])
 
         _working: dict[str, dict] = {}
-        scanned    = 0
+        scanned          = 0
+        already_reviewed = 0
         page_token = None
         page       = 0
         date_q     = _date_filter(days_range)
@@ -229,6 +230,7 @@ class ContactAnalyzer:
                     continue
 
                 if addr in reviewed or addr in pending_set:
+                    already_reviewed += 1
                     continue
 
                 subject   = _get_header(headers, "Subject")
@@ -309,8 +311,6 @@ class ContactAnalyzer:
                     "asked_at":        now,
                 }
                 new_pending += 1
-
-        already_reviewed  = scanned - sum(w["count"] for w in _working.values())
 
         self.state["pending"]             = list(pending_set)
         self.state["pending_meta"]        = pending_meta
@@ -646,7 +646,10 @@ class ContactAnalyzer:
     # ── Borrar correos de un remitente ────────────────────────────────────────
 
     def _trash_sender(self, addr: str) -> int:
-        query      = f"from:{addr}"
+        # Quote the address so Gmail search operators embedded in a malformed
+        # From header (spaces, "OR", "-in:", etc.) can't broaden the query
+        # beyond the intended sender before a bulk trash/batchModify.
+        query = f'from:"{addr}"'
         page_token = None
         total      = 0
 
@@ -681,6 +684,9 @@ class ContactAnalyzer:
     # ── Escribir en rules.py ──────────────────────────────────────────────────
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
+        if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email_addr):
+            return {"error": f"Dirección de correo no válida: {email_addr}"}
+
         try:
             import importlib
             import gmail_processor.rules as rules_mod
@@ -708,9 +714,8 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            # repr() safely escapes quotes, backslashes and any other special chars
+            new_line = f"    {repr(email_addr)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
             lines.insert(insert_at, new_line)
             rules_path.write_text("\n".join(lines), encoding="utf-8")
             importlib.reload(rules_mod)

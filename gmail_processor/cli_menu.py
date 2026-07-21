@@ -6,6 +6,7 @@ Entry point: run_menu()
   All destructive operations default to DRY RUN with explicit LIVE confirmation.
 """
 import os
+import re
 import sys
 import logging
 import importlib
@@ -744,7 +745,13 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+_EMAIL_RE = re.compile(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$")
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    if not _EMAIL_RE.match(email):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -768,11 +775,15 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         return False
 
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email in line and not line.strip().startswith("#"):
             return False  # already exists
 
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # repr() safely escapes quotes/backslashes; _EMAIL_RE already rejects
+    # newlines and other characters that could break the Python syntax.
+    new_entry = (
+        f"    {repr(email)}: "
+        f"{{\"label\": {repr(label)}, \"mark_important\": {important}}},"
+    )
     lines.insert(end_idx, new_entry)
 
     try:
@@ -792,7 +803,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email in line and not line.strip().startswith("#"):
             removed = True
             continue
         new_lines.append(line)
@@ -807,8 +818,14 @@ def _patch_rules_remove_contact(email: str) -> bool:
         return False
 
 
+_DOMAIN_RE = re.compile(r"^[^\s\"'\\]+\.[^\s\"'\\]+$")
+
+
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    if not _DOMAIN_RE.match(domain):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -841,14 +858,14 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if domain in block_text:
         return False
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{repr(domain)}],\n'
+        f'        "label": {repr(label)},\n'
+        f'        "action": {repr(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)

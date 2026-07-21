@@ -16,6 +16,7 @@ import csv
 import io
 import json
 import logging
+import os
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -68,9 +69,11 @@ class AuditLogger:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             for entry in combined:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        os.replace(tmp, self.path)
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 
@@ -111,7 +114,7 @@ class AuditLogger:
         try:
             with open(self.path, encoding="utf-8") as f:
                 return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return []
 
     def _load_tail(self, n: int) -> list[dict]:
@@ -125,5 +128,5 @@ class AuditLogger:
                     maxlen=n,
                 )
             return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return []
