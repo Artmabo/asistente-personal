@@ -153,7 +153,7 @@ class ContactProfiler:
 
         try:
             sent = service.users().messages().list(
-                userId="me", q=f"in:sent to:{addr}", maxResults=1,
+                userId="me", q=f'in:sent to:"{addr}"', maxResults=1,
             ).execute()
             bidirectional = bool(sent.get("messages"))
         except Exception:
@@ -216,7 +216,7 @@ class ContactProfiler:
         result = []
         try:
             resp = service.users().messages().list(
-                userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
+                userId="me", q=f'from:"{addr}"', maxResults=_MAX_EMAILS,
             ).execute()
             stubs = resp.get("messages", [])
         except HttpError:
@@ -245,10 +245,8 @@ class ContactProfiler:
                     return h.get("value", "")
             return ""
 
-        from_raw   = hdr("From")
-        from_name  = ""
-        if "<" in from_raw:
-            from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
+        from_raw  = hdr("From")
+        from_name, _addr = email.utils.parseaddr(from_raw)
 
         date_str    = hdr("Date")
         date_parsed = None

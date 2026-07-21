@@ -2,6 +2,7 @@
 Gmail Cleanup — Interfaz web para usuarios no técnicos.
 Ejecutar con:  streamlit run app.py
 """
+import html
 import os
 import sys
 import json
@@ -22,6 +23,7 @@ st.set_page_config(
 # ── Session state ───────────────────────────────────────────────────────────────
 _CATS_KEYS = ["spam", "promociones", "social", "actualizaciones"]
 _ALL_KEYS  = _CATS_KEYS + ["todo"]
+_MAX_CHAT_HISTORY = 40  # entries kept in session_state; the panel only displays the last 10
 
 st.session_state.setdefault("service",            None)
 st.session_state.setdefault("current_page",       "inicio")
@@ -179,12 +181,14 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
+        import email.utils as email_utils
         from collections import Counter
+        from gmail_processor.utils import extract_email_address, get_header
         svc    = st.session_state.service
         result = svc.users().messages().list(
-            userId="me", q="in:inbox", maxResults=500,
+            userId="me", q="in:inbox", maxResults=150,
         ).execute()
-        stubs  = result.get("messages", [])[:150]
+        stubs  = result.get("messages", [])
         counts: Counter      = Counter()
         names:  dict[str, str] = {}
         for stub in stubs:
@@ -193,21 +197,13 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                     userId="me", id=stub["id"],
                     format="metadata", metadataHeaders=["From"],
                 ).execute()
-                raw = next(
-                    (h["value"] for h in msg.get("payload", {}).get("headers", [])
-                     if h["name"].lower() == "from"),
-                    "",
-                )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
-                if email:
-                    counts[email] += 1
-                    if email not in names and name:
-                        names[email] = name
+                raw  = get_header(msg.get("payload", {}).get("headers", []), "From")
+                addr = extract_email_address(raw)
+                name, _ = email_utils.parseaddr(raw)
+                if addr:
+                    counts[addr] += 1
+                    if addr not in names and name:
+                        names[addr] = name
             except Exception:
                 continue
         return [
@@ -276,8 +272,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -508,6 +505,12 @@ def _ca_learning_summary() -> dict:
     from gmail_processor.contact_analyzer import ContactAnalyzer
     a = ContactAnalyzer(st.session_state.service)
     return a.get_learning_stats()
+
+
+def _ca_unsubscribe_candidates() -> list[dict]:
+    from gmail_processor.contact_analyzer import ContactAnalyzer
+    a = ContactAnalyzer(st.session_state.service)
+    return a.get_unsubscribe_candidates()
 
 
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
@@ -758,6 +761,8 @@ def _send_chat_message(msg_text: str, chat_msgs: list):
         except Exception as _ce:
             _resp = f"Hubo un problema: {_ce}"
     chat_msgs.append({"role": "assistant", "content": _resp})
+    if len(chat_msgs) > _MAX_CHAT_HISTORY:
+        del chat_msgs[:-_MAX_CHAT_HISTORY]
     st.session_state["chat_messages"]      = chat_msgs
     st.session_state["chat_input_counter"] = st.session_state.get("chat_input_counter", 0) + 1
     st.rerun()
@@ -1114,7 +1119,7 @@ if _current_page == "inicio":
         # ── Tarjeta de buenos días ──────────────────────────────────────────
         _brief = _get_morning_brief()
         if _brief:
-            _bsummary = _brief.get("summary_text", "Todo está en orden.")
+            _bsummary = html.escape(_brief.get("summary_text", "Todo está en orden."))
             st.markdown(
                 f'<div class="brief-card">'
                 f'<p style="margin:0;font-size:1.05rem;color:#1e40af;font-weight:500">'
@@ -1132,7 +1137,7 @@ if _current_page == "inicio":
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{html.escape(_bm.get('name', ''))}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1337,7 +1342,8 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(str(t))}</span>'
+                                        for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")
@@ -1538,6 +1544,34 @@ elif _current_page == "analizar":
                     with st.expander(f"⚠️ {len(_apr_e)} errores"):
                         for _e in _apr_e:
                             st.caption(_e)
+
+        # ── Candidatos a darse de baja ───────────────────────────────────────
+        if _ca_prev:
+            try:
+                _unsub_candidates = _ca_unsubscribe_candidates()
+            except Exception:
+                _unsub_candidates = []
+            if _unsub_candidates:
+                st.markdown("")
+                with st.expander(f"📧 {len(_unsub_candidates)} remitentes con enlace de baja"):
+                    st.caption(
+                        "Correos comerciales con enlace de baja (unsubscribe) que aún no has "
+                        "marcado como importantes. Puedes darte de baja desde Gmail abriendo "
+                        "cualquiera de sus correos."
+                    )
+                    for _uc in _unsub_candidates:
+                        _uc_label = f"{_uc['name']} <{_uc['email']}>" if _uc.get("name") else _uc["email"]
+                        st.markdown(f"**{_uc_label}**")  # no unsafe_allow_html — Streamlit escapes HTML by default
+                        _uc_ctx = [f"📧 {_uc['count']} correos"] if _uc.get("count") else []
+                        if _uc.get("last_seen"):
+                            _uc_ctx.append(f"📅 Último: {_time_ago(_uc['last_seen'])}")
+                        if _uc_ctx:
+                            st.caption("  ·  ".join(_uc_ctx))
+                        if _uc.get("sample_subjects"):
+                            st.caption(
+                                "Asuntos: " + "  ·  ".join(f'"{s[:50]}"' for s in _uc["sample_subjects"][:2])
+                            )
+                        st.markdown("")
 
         # ── Configuración del análisis ────────────────────────────────────────
         st.markdown("")

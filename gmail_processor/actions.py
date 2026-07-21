@@ -53,6 +53,9 @@ class GmailActions:
         return ""
 
     def _load_labels(self):
+        if self.dry_run:
+            # Dry-run mode must never touch the live API (see module docstring).
+            return
         result = self._call(self.service.users().labels().list, userId="me")
         if result:
             for lbl in result.get("labels", []):
@@ -106,7 +109,7 @@ class GmailActions:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _modify(self, msg_id: str, add: list = None, remove: list = None) -> bool:
+    def _modify(self, msg_id: str, add: list | None = None, remove: list | None = None) -> bool:
         body = {}
         if add:
             body["addLabelIds"] = add

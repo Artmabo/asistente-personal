@@ -22,6 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import extract_email_address, get_header
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -69,10 +70,14 @@ class StorageCleaner:
         for target in targets:
             self._run_target(target, max_per)
 
-        if self.engine and self.learning_mode:
-            changes = self.engine.update_rule_thresholds()
-            if not changes:
-                logger.info("Sin ajustes de threshold necesarios.")
+        if self.engine:
+            if self.learning_mode:
+                changes = self.engine.update_rule_thresholds()
+                if not changes:
+                    logger.info("Sin ajustes de threshold necesarios.")
+            # Metrics/category stats are recorded on every run regardless of
+            # learning_mode (see _evaluate), so persist unconditionally or
+            # they're silently discarded when learning_mode is off.
             self.engine.persist()
 
         if self.audit:
@@ -236,7 +241,17 @@ class StorageCleaner:
             f"           Acción : [{mode}] trash → {msg_id}"
         )
 
-        if self.actions.trash(msg_id):
+        try:
+            trashed = self.actions.trash(msg_id)
+        except HttpError as e:
+            # A hard permission failure (e.g. a revoked/narrowed OAuth scope
+            # mid-run) must not abort the whole cleanup run — skip this
+            # message and keep processing the rest of the target.
+            logger.error(f"  Trash failed for {msg_id}: {e}")
+            self.stats["errors"] += 1
+            return
+
+        if trashed:
             self.stats["trashed"] += 1
             if self.engine:
                 self.engine.metrics.record_trash(rule_name)
@@ -321,17 +336,11 @@ def _build_protected_domains() -> frozenset[str]:
 
 
 def _get_header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
+    return get_header(message.get("payload", {}).get("headers", []), name)
 
 
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(_get_header(message, "From"))
 
 
 def _sender_display(message: dict) -> str:

@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
+from .utils import extract_email_address, get_header
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -659,12 +660,7 @@ def _decay(last_accepted: str, lam: float) -> float:
 
 
 def _email_from_headers(headers: list[dict]) -> str:
-    for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
-    return ""
+    return extract_email_address(get_header(headers, "from"))
 
 
 def _fmt(n: float) -> str:
@@ -685,17 +681,21 @@ def _migrate_to_v3(old: dict) -> dict:
         entry["last_accepted"]      = src.get("last_feedback", src.get("last_accepted", ""))
         return entry
 
-    # v1 used sender_scores/domain_scores; v2 used same names
+    # v1 used sender_scores/domain_scores; v2 renamed both to sender_model/domain_model.
+    # Read every known key name for each side so neither v1 nor v2 files lose data.
     for old_key, new_key in [
         ("sender_scores", "sender_model"),
         ("domain_model",  "domain_model"),
     ]:
         for k, v in old.get(old_key, {}).items():
             new[new_key][k] = _to_v3_entry(v)
-    # v2 already has domain_model
-    for k, v in old.get("domain_scores", {}).items():
-        if k not in new["domain_model"]:
-            new["domain_model"][k] = _to_v3_entry(v)
+    for old_key, new_key in [
+        ("domain_scores", "domain_model"),
+        ("sender_model",  "sender_model"),
+    ]:
+        for k, v in old.get(old_key, {}).items():
+            if k not in new[new_key]:
+                new[new_key][k] = _to_v3_entry(v)
 
     new["rule_stats"]       = copy.deepcopy(old.get("rule_stats", {}))
     new["pending_feedback"] = copy.deepcopy(old.get("pending_feedback", {}))

@@ -7,6 +7,7 @@ automáticamente al recargar la página si enabled=true.
 """
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -201,9 +202,11 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
+        tmp = self.config_path.with_suffix(".tmp")
+        tmp.write_text(
             json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        os.replace(tmp, self.config_path)
 
 
 def format_next_run(iso: str | None) -> str:
@@ -212,7 +215,7 @@ def format_next_run(iso: str | None) -> str:
         return "No programada"
     try:
         dt    = datetime.fromisoformat(iso)
-        now   = datetime.now()
+        now   = datetime.now(dt.tzinfo)  # match dt's awareness or both stay naive
         delta = dt - now
         if delta.total_seconds() < 0:
             return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"
