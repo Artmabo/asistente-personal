@@ -9,6 +9,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable
 
@@ -17,6 +18,38 @@ from googleapiclient.errors import HttpError
 from .utils import get_api_key
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Strips tags/scripts/styles from an HTML email body, keeping visible text."""
+
+    _SKIP_TAGS = frozenset({"script", "style"})
+
+    def __init__(self):
+        super().__init__()
+        self._skip_depth = 0
+        self.chunks: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data):
+        if not self._skip_depth:
+            self.chunks.append(data)
+
+
+def _html_to_text(html_content: str) -> str:
+    parser = _HTMLTextExtractor()
+    try:
+        parser.feed(html_content)
+    except Exception:
+        pass
+    return " ".join(" ".join(parser.chunks).split())
 
 _CLAUDE_MAX_RETRIES = 3
 _CLAUDE_BASE_DELAY  = 2.0
@@ -267,15 +300,29 @@ class ContactProfiler:
         }
 
     def _extract_body(self, payload: dict) -> str:
-        if payload.get("mimeType") == "text/plain":
+        """Returns a plain-text snippet of the message body.
+
+        Prefers a text/plain part; falls back to stripping tags from text/html
+        when no text/plain part exists (common for bank/service marketing mail).
+        """
+        text = self._find_part_data(payload, "text/plain")
+        if not text:
+            html_raw = self._find_part_data(payload, "text/html")
+            if html_raw:
+                text = _html_to_text(html_raw)
+        return text[:_MAX_BODY].strip()
+
+    def _find_part_data(self, payload: dict, mime_type: str) -> str:
+        """Recursively finds and decodes the first body part matching `mime_type`."""
+        if payload.get("mimeType") == mime_type:
             data = payload.get("body", {}).get("data", "")
             if data:
                 try:
-                    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")[:_MAX_BODY].strip()
+                    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
                 except Exception:
                     pass
         for part in payload.get("parts", []):
-            text = self._extract_body(part)
+            text = self._find_part_data(part, mime_type)
             if text:
                 return text
         return ""

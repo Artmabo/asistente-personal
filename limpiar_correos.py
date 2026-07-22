@@ -28,6 +28,27 @@ def obtener_servicio(creds_path="config/credentials.json", token_path="token.jso
     return get_service(creds_path=creds_path, token_path=token_path)
 
 
+def _clausula_proteccion() -> str:
+    """Gmail search clause that excludes protected contacts/domains + IMPORTANT/STARRED.
+
+    Mirrors StorageCleaner's hard-protection checks (CONTACT_RULES, mark_important
+    domains in DOMAIN_RULES, safe_domains) so that limpiar_bandeja() can never move a
+    protected sender's mail to trash, regardless of which screen (app.py, cli_menu.py,
+    a script) calls it — previously this path had none of those safeguards.
+    """
+    from gmail_processor import rules as cfg
+    terms = ["-is:important", "-is:starred"]
+    for key in cfg.CONTACT_RULES:
+        target = key[1:] if key.startswith("@") else key
+        terms.append(f"-from:{target}")
+    for rule in cfg.DOMAIN_RULES:
+        if rule.get("action") == "mark_important":
+            terms.extend(f"-from:{d}" for d in rule["domains"])
+    for d in cfg.CLEANUP_RULES.get("safe_domains", []):
+        terms.append(f"-from:{d}")
+    return " ".join(terms)
+
+
 def mover_lote_a_papelera(service, ids: list) -> int:
     """Move up to 1000 IDs to trash via batchModify. Returns count successfully sent."""
     if not ids:
@@ -70,6 +91,9 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     else:
         fecha = (datetime.now() - timedelta(days=180)).strftime("%Y/%m/%d")
         queries = {"consulta": f"before:{fecha} is:unread"}
+
+    proteccion = _clausula_proteccion()
+    queries = {nombre: f"{q} {proteccion}" for nombre, q in queries.items()}
 
     if dry_run:
         print("  [DRY RUN] Solo contando mensajes, no se moverá nada.")

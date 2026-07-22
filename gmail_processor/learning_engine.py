@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
+from .utils import get_header, extract_email_address
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -270,7 +271,7 @@ class LearningEngine:
                     score -= 5;  factors.append(f"-5  dominio servicios ({domain})")
                 break
 
-        if email in cfg.CONTACT_RULES:
+        if email in cfg.CONTACT_RULES or (domain and f"@{domain}" in cfg.CONTACT_RULES):
             score += 50; factors.append(f"+50 contacto protegido ({email})")
 
         # ── Sender model (decay_lambda = DECAY_LAMBDA_SENDER) ─────────────────
@@ -394,9 +395,12 @@ class LearningEngine:
                     f"{scaled_delta:+.1f} → {allowed:+.1f} (daily cap)"
                 )
 
-            entry["adjustment"]    = round(old_adj + allowed, 1)
-            entry[ok_key]         += 1
-            entry["last_accepted"] = today
+            entry["adjustment"] = round(old_adj + allowed, 1)
+            if allowed != 0:
+                # Only touch the decay clock/counters when something actually changed —
+                # a fully drift-capped day must not look like a fresh acceptance.
+                entry[ok_key]         += 1
+                entry["last_accepted"] = today
             impact_parts.append(f"{model_label}:{key} {old_adj:+.1f} → {entry['adjustment']:+.1f}")
 
         # 6. Clear pending
@@ -489,7 +493,7 @@ class LearningEngine:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, indent=2, ensure_ascii=False)
             tmp.replace(self.path)
-        except OSError:
+        except (OSError, TypeError, ValueError):
             tmp.unlink(missing_ok=True)
             raise
         logger.info(f"Estado guardado → {self.path}")
@@ -659,12 +663,7 @@ def _decay(last_accepted: str, lam: float) -> float:
 
 
 def _email_from_headers(headers: list[dict]) -> str:
-    for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
-    return ""
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _fmt(n: float) -> str:
@@ -699,5 +698,5 @@ def _migrate_to_v3(old: dict) -> dict:
 
     new["rule_stats"]       = copy.deepcopy(old.get("rule_stats", {}))
     new["pending_feedback"] = copy.deepcopy(old.get("pending_feedback", {}))
-    new["metrics"]          = old.get("metrics", _new_metrics())
+    new["metrics"]          = {**_new_metrics(), **old.get("metrics", {})}
     return new
