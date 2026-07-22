@@ -5,6 +5,8 @@ Entry point: run_menu()
   Launched automatically when procesar_correos.py is run with no arguments.
   All destructive operations default to DRY RUN with explicit LIVE confirmation.
 """
+import ast
+import json
 import os
 import sys
 import logging
@@ -266,7 +268,7 @@ def _menu_audit():
 
     n_str = _ask("Cuántas entradas mostrar", "20")
     try:
-        n = int(n_str)
+        n = max(int(n_str), 0)
     except ValueError:
         n = 20
 
@@ -284,7 +286,7 @@ def _menu_audit():
     if decision_filter:
         entries = [e for e in entries if e.get("decision") == decision_filter]
 
-    entries = entries[-n:]
+    entries = entries[-n:] if n > 0 else []
 
     print()
     if not entries:
@@ -743,13 +745,39 @@ def _present_domains(domains) -> int:
 
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
+#
+# email/label/domain values below can originate from real Gmail sender addresses
+# (e.g. smart-setup suggestions), so they must never be interpolated verbatim into
+# rules.py source — a crafted quoted-local-part address like '"a\"; import os;#"@x.com'
+# would otherwise break out of the string literal. _safe_literal() renders a value
+# as a properly escaped Python string literal, and _write_rules() re-parses the
+# result before committing so a malformed patch can never corrupt rules.py on disk.
+
+def _safe_literal(value: str) -> str:
+    """Renders `value` as a safely escaped, double-quoted Python string literal."""
+    return json.dumps(value)
+
+
+def _write_rules(rules_path: Path, original: str, new_content: str) -> bool:
+    """Writes new_content to rules_path only if it parses as valid Python."""
+    try:
+        ast.parse(new_content, filename=str(rules_path))
+    except SyntaxError:
+        return False
+    try:
+        rules_path.write_text(new_content, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
+        original = rules_path.read_text(encoding="utf-8")
     except OSError:
         return False
+    lines = original.splitlines()
 
     start_idx = None
     for i, line in enumerate(lines):
@@ -767,32 +795,31 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     if end_idx is None:
         return False
 
+    email_literal = _safe_literal(email)
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email_literal in line and not line.strip().startswith("#"):
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f'    {email_literal}: {{"label": {_safe_literal(label)}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules(rules_path, original, "\n".join(lines) + "\n")
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
+        original = rules_path.read_text(encoding="utf-8")
     except OSError:
         return False
+    lines = original.splitlines()
 
+    email_literal = _safe_literal(email)
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email_literal in line and not line.strip().startswith("#"):
             removed = True
             continue
         new_lines.append(line)
@@ -800,20 +827,17 @@ def _patch_rules_remove_contact(email: str) -> bool:
     if not removed:
         return False
 
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules(rules_path, original, "\n".join(new_lines) + "\n")
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
     rules_path = Path(__file__).parent / "rules.py"
     try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
+        original = rules_path.read_text(encoding="utf-8")
     except OSError:
         return False
+    lines = original.splitlines()
 
     # Find DOMAIN_RULES list start
     start_idx = None
@@ -840,24 +864,21 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
         return False
 
     # Check if domain already exists anywhere in the block
+    domain_literal = _safe_literal(domain)
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if domain_literal in block_text:
         return False
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{domain_literal}],\n'
+        f'        "label": {_safe_literal(label)},\n'
+        f'        "action": {_safe_literal(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules(rules_path, original, "\n".join(lines) + "\n")
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────

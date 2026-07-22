@@ -22,6 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import get_header, extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -289,11 +290,14 @@ class StorageCleaner:
             "dry_run": cfg.DRY_RUN,
             **self.stats,
         }
+        tmp = _SUMMARY_PATH.with_suffix(".tmp")
         try:
-            _SUMMARY_PATH.write_text(
+            tmp.write_text(
                 json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            tmp.replace(_SUMMARY_PATH)
         except OSError as e:
+            tmp.unlink(missing_ok=True)
             logger.warning(f"Could not write cleanup summary: {e}")
 
     def _print_summary(self):
@@ -321,17 +325,11 @@ def _build_protected_domains() -> frozenset[str]:
 
 
 def _get_header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
+    return get_header(message.get("payload", {}).get("headers", []), name)
 
 
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(_get_header(message, "From"))
 
 
 def _sender_display(message: dict) -> str:

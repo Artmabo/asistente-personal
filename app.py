@@ -180,11 +180,12 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
         from collections import Counter
+        from gmail_processor.utils import extract_email_address
         svc    = st.session_state.service
         result = svc.users().messages().list(
-            userId="me", q="in:inbox", maxResults=500,
+            userId="me", q="in:inbox", maxResults=150,
         ).execute()
-        stubs  = result.get("messages", [])[:150]
+        stubs  = result.get("messages", [])
         counts: Counter      = Counter()
         names:  dict[str, str] = {}
         for stub in stubs:
@@ -198,12 +199,8 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                      if h["name"].lower() == "from"),
                     "",
                 )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
+                email = extract_email_address(raw)
+                name  = raw.split("<")[0].strip().strip('"').strip("'") if "<" in raw else ""
                 if email:
                     counts[email] += 1
                     if email not in names and name:
@@ -276,7 +273,8 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
         lines   = content.split("\n")
 
         in_cr     = False
