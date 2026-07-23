@@ -5,7 +5,11 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://mail.google.com/"]
+# Least-privilege scope: covers list/get, label management, trash, and
+# archive — everything gmail_processor/actions.py actually calls. The
+# previous "https://mail.google.com/" scope granted full, unrestricted
+# account access (including permanent delete and settings changes).
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 def get_service(
@@ -16,7 +20,12 @@ def get_service(
     creds = None
 
     if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        except (ValueError, KeyError):
+            # token.json is malformed/truncated (e.g. an interrupted write) —
+            # fall through to full re-authentication instead of crashing.
+            creds = None
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -35,8 +44,12 @@ def get_service(
                 )
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
             creds = flow.run_local_server(port=0)
-        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+        # Write atomically (tmp file + rename) so a crash mid-write can't
+        # leave a truncated token.json behind for the next run to choke on.
+        tmp_path = token_path + ".tmp"
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w") as f:
             f.write(creds.to_json())
+        os.replace(tmp_path, token_path)
 
     return build("gmail", "v1", credentials=creds)

@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import get_header
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -113,14 +115,6 @@ def _date_filter(days: int | None) -> str:
         return ""
     since = (datetime.now() - timedelta(days=days)).strftime("%Y/%m/%d")
     return f" after:{since}"
-
-
-def _get_header(headers: list[dict], name: str) -> str:
-    name_l = name.lower()
-    for h in headers:
-        if h.get("name", "").lower() == name_l:
-            return h.get("value", "")
-    return ""
 
 
 def _parse_date(date_str: str) -> datetime | None:
@@ -224,16 +218,16 @@ class ContactAnalyzer:
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
-                addr, name     = _parse_from(_get_header(headers, "From"))
+                addr, name     = _parse_from(get_header(headers, "From"))
                 if not addr:
                     continue
 
                 if addr in reviewed or addr in pending_set:
                     continue
 
-                subject   = _get_header(headers, "Subject")
-                date_hdr  = _get_header(headers, "Date")
-                has_unsub = bool(_get_header(headers, "List-Unsubscribe"))
+                subject   = get_header(headers, "Subject")
+                date_hdr  = get_header(headers, "Date")
+                has_unsub = bool(get_header(headers, "List-Unsubscribe"))
 
                 if addr not in _working:
                     _working[addr] = {
@@ -619,7 +613,7 @@ class ContactAnalyzer:
                     ).execute()
                     headers = msg.get("payload", {}).get("headers", [])
                     for hname in ("To", "Cc"):
-                        raw = _get_header(headers, hname)
+                        raw = get_header(headers, hname)
                         if raw:
                             for _, a in email.utils.getaddresses([raw]):
                                 if a:
@@ -708,11 +702,16 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            # repr() safely escapes quotes, backslashes AND newlines — a manual
+            # .replace("\\", ...).replace('"', ...) misses newlines, which lets
+            # a crafted From header (attacker-controlled) break out of the
+            # string literal and inject Python into a module that gets
+            # importlib.reload()-ed right after.
+            new_line = f'    {repr(email_addr)}: {{"label": {repr(label)}, "mark_important": True}},'
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path = rules_path.with_suffix(".tmp")
+            tmp_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path.replace(rules_path)
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:
@@ -764,9 +763,9 @@ def _atomic_write(path: Path, data: dict) -> None:
 
 
 def _derive_label(email_addr: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
+    words = name.strip().split() if name else []
+    if words:
+        clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
     domain = email_addr.split("@")[-1] if "@" in email_addr else ""

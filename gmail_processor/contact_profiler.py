@@ -80,7 +80,7 @@ class ContactProfiler:
         return self.data.get("profiles", {})
 
     def get_profile(self, email: str) -> dict | None:
-        return self.data["profiles"].get(email)
+        return self.data.get("profiles", {}).get(email)
 
     def needs_rebuild(self, email: str) -> bool:
         profile = self.get_profile(email)

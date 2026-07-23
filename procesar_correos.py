@@ -16,7 +16,7 @@ Entry point for the Gmail rule-based processor.
   feedback <sender> correct|incorrect [--rule RULE] [--source SOURCE]
                                       [--time-to-action SEC]
   stats [--section learning|metrics|categories|all]
-  audit [--last N] [--decision TRASH|KEEP|SKIP]
+  audit [--last N] [--decision TRASH|KEEP|SKIP] [--export-csv PATH]
 
 ── Ejemplos ─────────────────────────────────────────────────────────────────
   python procesar_correos.py feedback newsletter@spam.com correct
@@ -197,6 +197,9 @@ def _cmd_audit(argv: list[str]):
     parser.add_argument("--decision", default=None,
                         choices=["TRASH", "KEEP", "SKIP"],
                         help="Filter by decision type")
+    parser.add_argument("--export-csv", default=None, metavar="PATH",
+                        dest="export_csv",
+                        help="Write the matched entries as CSV to PATH instead of printing")
     args = parser.parse_args(argv)
 
     setup_logging(level=logging.WARNING)
@@ -208,7 +211,21 @@ def _cmd_audit(argv: list[str]):
     if args.decision:
         entries = [e for e in entries if e.get("decision") == args.decision]
 
-    entries = entries[-args.last:]
+    entries = entries[-args.last:] if args.last > 0 else []
+
+    if args.export_csv:
+        if not entries:
+            print("Audit log vacío o sin entradas para el filtro seleccionado.")
+            return
+        import csv as _csv
+        fieldnames = ["ts", "sender", "domain", "score", "decision", "rule",
+                      "reason", "learned", "protected", "dry_run", "msg_id"]
+        with open(args.export_csv, "w", encoding="utf-8", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(entries)
+        print(f"Exportadas {len(entries)} entradas a {args.export_csv}")
+        return
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")
