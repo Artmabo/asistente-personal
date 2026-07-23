@@ -16,6 +16,8 @@ import csv
 import io
 import json
 import logging
+import os
+import stat
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -68,9 +70,15 @@ class AuditLogger:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
+        # Write atomically (tmp file + rename) so a crash mid-write, or two
+        # overlapping runs both flushing, can't corrupt or drop entries —
+        # and restrict permissions since this file contains sender PII.
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             for entry in combined:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+        os.replace(tmp_path, self.path)
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 

@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
+from .utils import extract_email_address, get_header
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -585,7 +586,9 @@ class LearningEngine:
                     logger.info(f"Estado migrado v{v} → v3")
                 logger.debug(f"Estado cargado desde {self.path}")
                 return data
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+                # AttributeError covers a malformed old-schema entry (e.g. a
+                # non-dict value) tripping .get() calls inside _migrate_to_v3.
                 logger.warning(f"Estado corrupto en {self.path}, reiniciando.")
         return copy.deepcopy(_EMPTY_STATE_V3)
 
@@ -659,12 +662,7 @@ def _decay(last_accepted: str, lam: float) -> float:
 
 
 def _email_from_headers(headers: list[dict]) -> str:
-    for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
-            return (raw.split("<")[1].rstrip(">").strip().lower()
-                    if "<" in raw else raw.strip().lower())
-    return ""
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _fmt(n: float) -> str:
@@ -699,5 +697,8 @@ def _migrate_to_v3(old: dict) -> dict:
 
     new["rule_stats"]       = copy.deepcopy(old.get("rule_stats", {}))
     new["pending_feedback"] = copy.deepcopy(old.get("pending_feedback", {}))
-    new["metrics"]          = old.get("metrics", _new_metrics())
+    # Merge onto a fresh metrics dict (not replace) so fields added after the
+    # persisted state was written (e.g. manual_overrides) are still present —
+    # Metrics methods use direct bracket access and would KeyError otherwise.
+    new["metrics"] = {**_new_metrics(), **old.get("metrics", {})}
     return new

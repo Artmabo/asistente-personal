@@ -10,6 +10,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from .utils import atomic_write_json
+
 logger = logging.getLogger("gmail_processor.scheduler")
 
 _CONFIG_PATH = Path("cleanup_schedule.json")
@@ -139,9 +141,13 @@ class CleanupScheduler:
             from .cleanup_storage import StorageCleaner
             from .learning_engine import LearningEngine
             from .audit_log import AuditLogger
+            from . import rules as cfg
 
             service = get_service()
-            actions = GmailActions(service, dry_run=False)
+            # Honor the app's global dry-run switch — a scheduled run must
+            # not silently perform real deletions when the user hasn't
+            # explicitly enabled live mode elsewhere.
+            actions = GmailActions(service, dry_run=cfg.DRY_RUN)
             engine  = LearningEngine()
             audit   = AuditLogger()
             cleaner = StorageCleaner(service, actions, engine=engine, audit=audit)
@@ -201,9 +207,7 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
-            json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_write_json(self.config_path, self.config)
 
 
 def format_next_run(iso: str | None) -> str:
@@ -212,7 +216,10 @@ def format_next_run(iso: str | None) -> str:
         return "No programada"
     try:
         dt    = datetime.fromisoformat(iso)
-        now   = datetime.now()
+        # APScheduler's next_run_time is timezone-aware; datetime.now() is
+        # naive. Subtracting them raises TypeError, which silently killed
+        # this whole friendly-format path (caught by the except below).
+        now   = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
         delta = dt - now
         if delta.total_seconds() < 0:
             return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"

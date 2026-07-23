@@ -2,6 +2,7 @@
 Gmail Cleanup — Interfaz web para usuarios no técnicos.
 Ejecutar con:  streamlit run app.py
 """
+import html
 import os
 import sys
 import json
@@ -220,6 +221,14 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
 
 
 def _limpiar_remitente(email: str) -> dict | None:
+    import re
+    # `email` comes from a real From header (see _cargar_remitentes_frecuentes),
+    # which is not otherwise validated. Reject anything that could break out
+    # of the intended "from:<address>" query and widen a destructive
+    # bulk-trash to match more than the selected sender.
+    if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
+        st.error(f"Dirección de correo no válida: {email}")
+        return None
     try:
         from limpiar_correos import limpiar_bandeja
         return limpiar_bandeja(
@@ -239,9 +248,9 @@ _FREE_EMAIL_PROVIDERS = frozenset([
 
 
 def _derivar_label(email: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
+    words = name.strip().split() if name else []
+    if words:
+        clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
     domain = email.split("@")[-1] if "@" in email else ""
@@ -276,8 +285,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -1132,7 +1142,7 @@ if _current_page == "inicio":
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{html.escape(_bm.get('name', ''))}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1337,7 +1347,8 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(t)}</span>'
+                                        for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")

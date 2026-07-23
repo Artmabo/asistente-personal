@@ -1,9 +1,12 @@
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from gmail_processor.cleanup_storage import protection_reason, build_protected_domains
 
 CATEGORIAS = {
     "spam":            "in:spam",
@@ -50,6 +53,34 @@ def mover_lote_a_papelera(service, ids: list) -> int:
     return total
 
 
+def _filtrar_protegidos(service, ids: list, protected_domains) -> tuple:
+    """Excluye de `ids` los mensajes protegidos (STARRED/IMPORTANT, contactos
+    o dominios protegidos en rules.py) antes de un trash masivo.
+
+    Un mensaje cuyo estado no se pueda verificar (error de API) se trata
+    como protegido — más vale conservarlo de más que borrarlo por error.
+
+    Returns (ids_seguros, cantidad_protegidos).
+    """
+    seguros = []
+    protegidos = 0
+    for msg_id in ids:
+        try:
+            msg = service.users().messages().get(
+                userId='me', id=msg_id, format='metadata',
+                metadataHeaders=['From'],
+            ).execute()
+        except HttpError:
+            protegidos += 1
+            continue
+        if protection_reason(msg, protected_domains):
+            protegidos += 1
+        else:
+            seguros.append(msg_id)
+        time.sleep(0.02)
+    return seguros, protegidos
+
+
 def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     """
     Mueve a la papelera los correos que coincidan con la query o categorías.
@@ -74,6 +105,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     if dry_run:
         print("  [DRY RUN] Solo contando mensajes, no se moverá nada.")
 
+    protected_domains = build_protected_domains()
     total_procesados = 0
     total_exitos = 0
 
@@ -103,15 +135,23 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
                     print("  No se encontraron correos.")
                 break
 
-            ids = [m['id'] for m in messages]
+            ids_encontrados = [m['id'] for m in messages]
+            ids, protegidos = _filtrar_protegidos(service, ids_encontrados, protected_domains)
             if dry_run:
-                print(f"  Página {page_num}: {len(ids)} correos encontrados (no se mueven).")
+                print(
+                    f"  Página {page_num}: {len(ids_encontrados)} correos encontrados"
+                    f" ({protegidos} protegidos, {len(ids)} se moverían — no se mueven)."
+                )
                 exitos = len(ids)
             else:
-                print(f"  Página {page_num}: {len(ids)} correos → enviando a papelera...", end="", flush=True)
+                print(
+                    f"  Página {page_num}: {len(ids_encontrados)} correos"
+                    f" ({protegidos} protegidos) → enviando {len(ids)} a papelera...",
+                    end="", flush=True,
+                )
                 exitos = mover_lote_a_papelera(service, ids)
                 print(f" {exitos} movidos.")
-            cat_total += len(ids)
+            cat_total += len(ids_encontrados)
             cat_exitos += exitos
 
             page_token = result.get('nextPageToken')

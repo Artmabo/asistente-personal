@@ -2,6 +2,8 @@
 GmailProcessor: orchestrates fetching, classifying, and acting on emails.
 """
 import logging
+import os
+import stat
 from googleapiclient.errors import HttpError
 
 from .auth import get_service
@@ -10,6 +12,7 @@ from .actions import GmailActions
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
+from .utils import get_header
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
@@ -29,6 +32,12 @@ def setup_logging(
             logging.FileHandler(log_file, encoding="utf-8"),
         ],
     )
+    # The log records sender addresses and subject lines (PII) — restrict to
+    # the owner, same as token.json.
+    try:
+        os.chmod(log_file, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
 
 
 class GmailProcessor:
@@ -120,13 +129,20 @@ class GmailProcessor:
             self.stats["errors"] += 1
             return
 
-        c = self.classifier.classify(message)
-        self._apply(msg_id, message, c)
-        self.stats["processed"] += 1
+        try:
+            c = self.classifier.classify(message)
+            self._apply(msg_id, message, c)
+            self.stats["processed"] += 1
+        except HttpError as e:
+            # A hard permission failure on one message (e.g. missing scope)
+            # must not abort the rest of the batch — skip and keep going.
+            logger.error(f"Could not apply actions to {msg_id}: {e}")
+            self.stats["errors"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):
-        sender  = _header(message, "From")  or "?"
-        subject = _header(message, "Subject") or "(sin asunto)"
+        headers = message.get("payload", {}).get("headers", [])
+        sender  = get_header(headers, "From")  or "?"
+        subject = get_header(headers, "Subject") or "(sin asunto)"
 
         logger.info(
             f"[{c.email_type.upper():<12}] {_short(sender, 40)} | {_short(subject, 50)}"
@@ -172,13 +188,6 @@ class GmailProcessor:
             f"  Errores    : {s['errors']}\n"
             f"{'='*55}"
         )
-
-
-def _header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
 
 
 def _short(text: str, n: int) -> str:

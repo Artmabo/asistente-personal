@@ -10,6 +10,7 @@ Priority order (first match wins):
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
+from .utils import get_header, extract_email_address
 
 
 @dataclass
@@ -29,9 +30,9 @@ class EmailClassifier:
         headers  = message.get("payload", {}).get("headers", [])
         label_ids = message.get("labelIds", [])
 
-        sender  = _extract_email(headers)
+        sender  = extract_email_address(get_header(headers, "From"))
         domain  = sender.split("@")[-1] if "@" in sender else ""
-        subject = _extract_header(headers, "Subject")
+        subject = get_header(headers, "Subject")
         search_text = f"{sender} {subject}"
 
         # 1. Contact rules (highest priority — always protected)
@@ -53,7 +54,7 @@ class EmailClassifier:
         for rule in cfg.KEYWORD_RULES:
             if _matches_any(search_text, rule["keywords"], rule.get("case_sensitive", False)):
                 return Classification(
-                    email_type="spam" if rule["action"] == "trash" else "important",
+                    email_type=_ACTION_TO_TYPE.get(rule["action"], "label"),
                     action=rule["action"],
                     labels=[rule["label"]] if rule.get("label") else [],
                     protected=False,
@@ -85,18 +86,9 @@ class EmailClassifier:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _extract_header(headers: list[dict], name: str) -> str:
-    for h in headers:
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
-
-
-def _extract_email(headers: list[dict]) -> str:
-    raw = _extract_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+# Maps a KEYWORD_RULES action to the Classification.email_type it represents.
+# Falls back to "label" for actions (archive, label_only) that aren't spam/important.
+_ACTION_TO_TYPE = {"trash": "spam", "mark_important": "important"}
 
 
 def _matches_any(text: str, keywords: list[str], case_sensitive: bool) -> bool:
