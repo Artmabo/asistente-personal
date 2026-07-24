@@ -32,6 +32,7 @@ for _k in _ALL_KEYS:
 st.session_state.setdefault("confirm_proc",       False)
 st.session_state.setdefault("proc_result",        None)
 st.session_state.setdefault("senders_data",       None)
+st.session_state.setdefault("unsub_candidates_data", None)
 st.session_state.setdefault("stats_data",         None)
 st.session_state.setdefault("audit_data",         None)
 st.session_state.setdefault("feedback_result",    None)
@@ -508,6 +509,17 @@ def _ca_learning_summary() -> dict:
     from gmail_processor.contact_analyzer import ContactAnalyzer
     a = ContactAnalyzer(st.session_state.service)
     return a.get_learning_stats()
+
+
+def _ca_unsubscribe_candidates() -> dict:
+    """Candidatos a darse de baja: remitentes con link de unsubscribe y score bajo."""
+    try:
+        analyzer = _ca_get_analyzer()
+        if not analyzer.has_previous_state():
+            return {"needs_analysis": True, "candidates": []}
+        return {"needs_analysis": False, "candidates": analyzer.get_unsubscribe_candidates()}
+    except Exception as exc:
+        return {"error": str(exc), "candidates": []}
 
 
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
@@ -1881,6 +1893,80 @@ elif _current_page == "limpiar":
                             st.success(f"🛡️ **{_se_email}** protegido con etiqueta **{_ps_res['label']}**.")
                         elif _ps_res.get("error"):
                             st.error(f"Error: {_ps_res['error']}")
+                    st.markdown("---")
+
+        # ── Candidatos para darse de baja ─────────────────────────────────────
+        st.markdown("")
+        with st.expander("📭 Candidatos para darte de baja (unsubscribe)"):
+            st.caption(
+                "Remitentes con enlace de 'darse de baja' y score bajo (probable "
+                "newsletter/marketing) detectados por el análisis de contactos. "
+                "Requiere haber corrido 'Revisar contactos' al menos una vez."
+            )
+            if st.button("🔍 Buscar candidatos", key="btn_load_unsub"):
+                with st.spinner("Analizando…"):
+                    st.session_state["unsub_candidates_data"] = _ca_unsubscribe_candidates()
+                st.rerun()
+
+            _unsub = st.session_state.get("unsub_candidates_data")
+            if _unsub is None:
+                st.info("Haz clic en 'Buscar candidatos' para ver sugerencias.")
+            elif _unsub.get("error"):
+                st.error(f"Error: {_unsub['error']}")
+            elif _unsub.get("needs_analysis"):
+                st.info(
+                    "Aún no hay datos del analizador de contactos. Ve a "
+                    "**Contactos → Revisar contactos** y corre un análisis primero."
+                )
+            elif not _unsub["candidates"]:
+                st.info("No se encontraron candidatos claros para darte de baja.")
+            else:
+                for _ui, _cand in enumerate(_unsub["candidates"]):
+                    _un_email = _cand["email"]
+                    _un_name  = _cand.get("name", "")
+                    _un_label = f"{_un_name} <{_un_email}>" if _un_name else _un_email
+                    _uck = f"confirm_trash_unsub_{_ui}"
+                    _urk = f"result_trash_unsub_{_ui}"
+                    st.session_state.setdefault(_uck, False)
+                    st.session_state.setdefault(_urk, None)
+
+                    _u_c1, _u_c2, _u_c3 = st.columns([6, 1, 2])
+                    with _u_c1:
+                        st.markdown(f"**{_un_label}**")
+                        _subjects = _cand.get("sample_subjects", [])
+                        if _subjects:
+                            st.caption(_subjects[0])
+                    with _u_c2:
+                        st.caption(f"{_cand.get('count', 0)}")
+                    with _u_c3:
+                        if not st.session_state[_uck]:
+                            st.button(
+                                "🗑️ Limpiar", key=f"btn_tu_{_ui}", use_container_width=True,
+                                on_click=lambda k=_uck: st.session_state.update({k: True}),
+                            )
+                        else:
+                            st.warning(f"¿Mover todos los correos de {_un_email}?")
+                            _utc1, _utc2 = st.columns(2)
+                            with _utc1:
+                                if st.button("✓ Sí", key=f"exec_tu_{_ui}", type="primary", use_container_width=True):
+                                    with st.spinner("Limpiando…"):
+                                        _tu_r = _limpiar_remitente(_un_email)
+                                    st.session_state[_urk] = _tu_r
+                                    st.session_state[_uck] = False
+                                    st.rerun()
+                            with _utc2:
+                                if st.button("✗ No", key=f"cancel_tu_{_ui}", use_container_width=True):
+                                    st.session_state[_uck] = False
+                                    st.rerun()
+
+                    if st.session_state.get(_urk):
+                        _tu_res = st.session_state[_urk]
+                        _tu_mov = _tu_res.get("exitos", 0)
+                        _tu_tot = _tu_res.get("procesados", 0)
+                        if _tu_tot == 0:
+                            st.info(f"No se encontraron correos de {_un_email}.")
+                        else:
+                            st.success(f"✓ {_tu_mov} de {_tu_tot} correos de {_un_email} movidos.")
                     st.markdown("---")
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -17,6 +17,9 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .actions import call_with_retry
+from .utils import get_header
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -115,14 +118,6 @@ def _date_filter(days: int | None) -> str:
     return f" after:{since}"
 
 
-def _get_header(headers: list[dict], name: str) -> str:
-    name_l = name.lower()
-    for h in headers:
-        if h.get("name", "").lower() == name_l:
-            return h.get("value", "")
-    return ""
-
-
 def _parse_date(date_str: str) -> datetime | None:
     try:
         return email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
@@ -194,15 +189,15 @@ class ContactAnalyzer:
         while scanned < batch_size:
             page += 1
             remaining = batch_size - scanned
-            try:
-                result = self.svc.users().messages().list(
-                    userId="me",
-                    q=query,
-                    maxResults=min(remaining, 500),
-                    pageToken=page_token,
-                ).execute()
-            except HttpError as e:
-                logger.warning(f"Error al listar mensajes (página {page}): {e}")
+            result = call_with_retry(
+                self.svc.users().messages().list,
+                userId="me",
+                q=query,
+                maxResults=min(remaining, 500),
+                pageToken=page_token,
+            )
+            if result is None:
+                logger.warning(f"Error al listar mensajes (página {page}) tras reintentos.")
                 break
 
             stubs = result.get("messages", [])
@@ -224,16 +219,16 @@ class ContactAnalyzer:
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
-                addr, name     = _parse_from(_get_header(headers, "From"))
+                addr, name     = _parse_from(get_header(headers, "From"))
                 if not addr:
                     continue
 
                 if addr in reviewed or addr in pending_set:
                     continue
 
-                subject   = _get_header(headers, "Subject")
-                date_hdr  = _get_header(headers, "Date")
-                has_unsub = bool(_get_header(headers, "List-Unsubscribe"))
+                subject   = get_header(headers, "Subject")
+                date_hdr  = get_header(headers, "Date")
+                has_unsub = bool(get_header(headers, "List-Unsubscribe"))
 
                 if addr not in _working:
                     _working[addr] = {
@@ -595,14 +590,14 @@ class ContactAnalyzer:
         while fetched < _MAX_SENT_INDEXED:
             page += 1
             remaining = _MAX_SENT_INDEXED - fetched
-            try:
-                result = self.svc.users().messages().list(
-                    userId="me", q=query,
-                    maxResults=min(500, remaining),
-                    pageToken=page_token,
-                ).execute()
-            except HttpError as e:
-                logger.warning(f"Error al indexar enviados (página {page}): {e}")
+            result = call_with_retry(
+                self.svc.users().messages().list,
+                userId="me", q=query,
+                maxResults=min(500, remaining),
+                pageToken=page_token,
+            )
+            if result is None:
+                logger.warning(f"Error al indexar enviados (página {page}) tras reintentos.")
                 break
 
             stubs = result.get("messages", [])
@@ -619,7 +614,7 @@ class ContactAnalyzer:
                     ).execute()
                     headers = msg.get("payload", {}).get("headers", [])
                     for hname in ("To", "Cc"):
-                        raw = _get_header(headers, hname)
+                        raw = get_header(headers, hname)
                         if raw:
                             for _, a in email.utils.getaddresses([raw]):
                                 if a:
@@ -651,11 +646,11 @@ class ContactAnalyzer:
         total      = 0
 
         while True:
-            try:
-                result = self.svc.users().messages().list(
-                    userId="me", q=query, maxResults=500, pageToken=page_token,
-                ).execute()
-            except HttpError:
+            result = call_with_retry(
+                self.svc.users().messages().list,
+                userId="me", q=query, maxResults=500, pageToken=page_token,
+            )
+            if result is None:
                 return -1
 
             msgs = result.get("messages", [])

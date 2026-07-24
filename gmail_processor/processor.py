@@ -6,10 +6,11 @@ from googleapiclient.errors import HttpError
 
 from .auth import get_service
 from .classifier import EmailClassifier, Classification
-from .actions import GmailActions
+from .actions import GmailActions, call_with_retry
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
+from .utils import get_header
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
@@ -64,15 +65,15 @@ class GmailProcessor:
         page = 0
         while True:
             page += 1
-            try:
-                result = self.service.users().messages().list(
-                    userId="me",
-                    q=query,
-                    maxResults=cfg.MAX_RESULTS_PER_PAGE,
-                    pageToken=page_token,
-                ).execute()
-            except HttpError as e:
-                logger.error(f"Failed to list messages (page {page}): {e}")
+            result = call_with_retry(
+                self.service.users().messages().list,
+                userId="me",
+                q=query,
+                maxResults=cfg.MAX_RESULTS_PER_PAGE,
+                pageToken=page_token,
+            )
+            if result is None:
+                logger.error(f"Failed to list messages (page {page}) after retries — stopping.")
                 break
 
             messages = result.get("messages", [])
@@ -125,8 +126,8 @@ class GmailProcessor:
         self.stats["processed"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):
-        sender  = _header(message, "From")  or "?"
-        subject = _header(message, "Subject") or "(sin asunto)"
+        sender  = get_header(message.get("payload", {}).get("headers", []), "From")  or "?"
+        subject = get_header(message.get("payload", {}).get("headers", []), "Subject") or "(sin asunto)"
 
         logger.info(
             f"[{c.email_type.upper():<12}] {_short(sender, 40)} | {_short(subject, 50)}"
@@ -172,13 +173,6 @@ class GmailProcessor:
             f"  Errores    : {s['errors']}\n"
             f"{'='*55}"
         )
-
-
-def _header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
 
 
 def _short(text: str, n: int) -> str:
