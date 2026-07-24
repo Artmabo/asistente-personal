@@ -39,6 +39,9 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
+from .actions import call_with_retry
+from .utils import get_header, extract_email_address
+
 logger = logging.getLogger("gmail_processor.smart_setup")
 
 # ── Scan limits ───────────────────────────────────────────────────────────────
@@ -304,14 +307,14 @@ class SmartSetup:
         page        = 0
 
         while True:
-            try:
-                result = self.service.users().messages().list(
-                    userId="me", q=query,
-                    maxResults=500,
-                    pageToken=page_token,
-                ).execute()
-            except HttpError as e:
-                logger.warning(f"Error al indexar enviados: {e}")
+            result = call_with_retry(
+                self.service.users().messages().list,
+                userId="me", q=query,
+                maxResults=500,
+                pageToken=page_token,
+            )
+            if result is None:
+                logger.warning("Error al indexar enviados tras reintentos.")
                 break
 
             stubs = result.get("messages", [])
@@ -364,14 +367,14 @@ class SmartSetup:
         page       = 0
 
         while True:
-            try:
-                result = self.service.users().messages().list(
-                    userId="me", q=query,
-                    maxResults=500,
-                    pageToken=page_token,
-                ).execute()
-            except HttpError as e:
-                logger.warning(f"Error al listar (fase {phase}): {e}")
+            result = call_with_retry(
+                self.service.users().messages().list,
+                userId="me", q=query,
+                maxResults=500,
+                pageToken=page_token,
+            )
+            if result is None:
+                logger.warning(f"Error al listar (fase {phase}) tras reintentos.")
                 break
 
             stubs = result.get("messages", [])
@@ -570,22 +573,12 @@ def _is_definitely_automated(email: str) -> bool:
 
 # ── Header helpers ────────────────────────────────────────────────────────────
 
-def _get_header(headers: list[dict], name: str) -> str:
-    for h in headers:
-        if h.get("name", "").lower() == name.lower():
-            return h.get("value", "")
-    return ""
-
-
 def _extract_email(headers: list[dict]) -> str:
-    raw = _get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _extract_name(headers: list[dict]) -> str:
-    raw = _get_header(headers, "From")
+    raw = get_header(headers, "From")
     if "<" in raw:
         return raw.split("<")[0].strip().strip('"').strip("'")
     return ""

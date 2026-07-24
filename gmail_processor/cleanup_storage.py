@@ -19,9 +19,10 @@ from googleapiclient.errors import HttpError
 
 _SUMMARY_PATH = Path("cleanup_summary.json")
 
-from .actions import GmailActions
+from .actions import GmailActions, call_with_retry
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import get_header, extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -95,15 +96,15 @@ class StorageCleaner:
         page_token = None
 
         while count < cap:
-            try:
-                result = self.service.users().messages().list(
-                    userId="me",
-                    q=query,
-                    maxResults=min(100, cap - count),
-                    pageToken=page_token,
-                ).execute()
-            except HttpError as e:
-                logger.error(f"  List failed: {e}")
+            result = call_with_retry(
+                self.service.users().messages().list,
+                userId="me",
+                q=query,
+                maxResults=min(100, cap - count),
+                pageToken=page_token,
+            )
+            if result is None:
+                logger.error("  List failed after retries — stopping this target.")
                 break
 
             messages = result.get("messages", [])
@@ -320,18 +321,8 @@ def _build_protected_domains() -> frozenset[str]:
     return frozenset(protected)
 
 
-def _get_header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
-
-
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return extract_email_address(_get_header(message, "From"))
 
 
 def _sender_display(message: dict) -> str:
@@ -340,6 +331,10 @@ def _sender_display(message: dict) -> str:
 
 def _subject(message: dict) -> str:
     return _get_header(message, "Subject") or "(sin asunto)"
+
+
+def _get_header(message: dict, name: str) -> str:
+    return get_header(message.get("payload", {}).get("headers", []), name)
 
 
 def _s(text: str, n: int) -> str:

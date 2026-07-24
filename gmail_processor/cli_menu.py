@@ -441,9 +441,10 @@ def _show_keyword_rules(cfg):
 
 
 def _add_contact_interactive(cfg):
+    import re
     print()
     email = _ask("Email del contacto (ej: papa@gmail.com)")
-    if not email or "@" not in email:
+    if not email or not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
         print("  Email no válido.")
         return
 
@@ -768,11 +769,13 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         return False
 
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if (f'"{email}"' in line or repr(email) in line) and not line.strip().startswith("#"):
             return False  # already exists
 
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # Use repr() so quotes, backslashes and other special characters in
+    # user-supplied input can't break out of the string literal in rules.py
+    # (which is later imported/reloaded as executable Python source).
+    new_entry = f"    {email!r}: {{\"label\": {label!r}, \"mark_important\": {important!r}}},"
     lines.insert(end_idx, new_entry)
 
     try:

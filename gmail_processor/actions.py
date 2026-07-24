@@ -122,26 +122,38 @@ class GmailActions:
 
     def _call(self, method, **kwargs):
         """Executes a Gmail API call with exponential-backoff retry on rate limits."""
-        delay = _BASE_DELAY
-        for attempt in range(1, _MAX_RETRIES + 1):
-            try:
-                return method(**kwargs).execute()
-            except HttpError as e:
-                status = int(e.resp.status)
-                # Hard permission failure — raise immediately (do not retry)
-                if status == 403 and _is_permission_error(e):
-                    logger.error(f"Insufficient permissions: {e}")
-                    raise
-                # Rate limit or transient server error — retry with backoff
-                if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
-                    kind = "Rate limit" if status in (403, 429) else "Server error"
-                    logger.warning(f"{kind} ({status}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
-                    time.sleep(delay)
-                    delay *= 2
-                    continue
-                logger.error(f"API error {status} on attempt {attempt}: {e}")
-                return None
-        return None
+        return call_with_retry(method, **kwargs)
+
+
+def call_with_retry(method, **kwargs):
+    """Executes any Gmail API method (e.g. `service.users().messages().list`) with
+    exponential-backoff retry on rate limits and transient server errors.
+
+    Returns the parsed response dict, or None once retries are exhausted.
+    Shared by GmailActions and by the read-only list()/get() call sites across
+    processor.py, cleanup_storage.py, contact_analyzer.py and smart_setup.py so a
+    single transient error doesn't abort an entire paginated scan.
+    """
+    delay = _BASE_DELAY
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return method(**kwargs).execute()
+        except HttpError as e:
+            status = int(e.resp.status)
+            # Hard permission failure — raise immediately (do not retry)
+            if status == 403 and _is_permission_error(e):
+                logger.error(f"Insufficient permissions: {e}")
+                raise
+            # Rate limit or transient server error — retry with backoff
+            if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
+                kind = "Rate limit" if status in (403, 429) else "Server error"
+                logger.warning(f"{kind} ({status}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            logger.error(f"API error {status} on attempt {attempt}: {e}")
+            return None
+    return None
 
 
 def _is_permission_error(exc: HttpError) -> bool:
