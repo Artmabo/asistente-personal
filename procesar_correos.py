@@ -198,6 +198,8 @@ def _cmd_audit(argv: list[str]):
                         choices=["TRASH", "KEEP", "SKIP"],
                         help="Filter by decision type")
     args = parser.parse_args(argv)
+    if args.last <= 0:
+        args.last = 20
 
     setup_logging(level=logging.WARNING)
 

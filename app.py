@@ -2,6 +2,7 @@
 Gmail Cleanup — Interfaz web para usuarios no técnicos.
 Ejecutar con:  streamlit run app.py
 """
+import html
 import os
 import sys
 import json
@@ -180,11 +181,12 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
         from collections import Counter
+        from gmail_processor.utils import get_header, extract_email_address
         svc    = st.session_state.service
         result = svc.users().messages().list(
-            userId="me", q="in:inbox", maxResults=500,
+            userId="me", q="in:inbox", maxResults=150,
         ).execute()
-        stubs  = result.get("messages", [])[:150]
+        stubs  = result.get("messages", [])
         counts: Counter      = Counter()
         names:  dict[str, str] = {}
         for stub in stubs:
@@ -193,17 +195,10 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                     userId="me", id=stub["id"],
                     format="metadata", metadataHeaders=["From"],
                 ).execute()
-                raw = next(
-                    (h["value"] for h in msg.get("payload", {}).get("headers", [])
-                     if h["name"].lower() == "from"),
-                    "",
-                )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
+                headers = msg.get("payload", {}).get("headers", [])
+                raw     = get_header(headers, "From")
+                email   = extract_email_address(raw)
+                name    = raw.split("<")[0].strip().strip('"').strip("'") if "<" in raw else ""
                 if email:
                     counts[email] += 1
                     if email not in names and name:
@@ -239,9 +234,9 @@ _FREE_EMAIL_PROVIDERS = frozenset([
 
 
 def _derivar_label(email: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
+    words = name.strip().split() if name else []
+    if words:
+        clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
     domain = email.split("@")[-1] if "@" in email else ""
@@ -266,6 +261,7 @@ def _proteger_remitente(email: str, name: str) -> dict:
     try:
         import importlib
         import gmail_processor.rules as rules_mod
+        from gmail_processor.utils import backup_rules_file
 
         if email in rules_mod.CONTACT_RULES:
             return {"already_protected": True}
@@ -276,8 +272,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -300,6 +297,7 @@ def _proteger_remitente(email: str, name: str) -> dict:
         new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
         lines.insert(insert_at, new_line)
 
+        backup_rules_file(rules_path)
         with open(rules_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
@@ -571,12 +569,8 @@ def _time_ago(date_str: str) -> str:
 # ── Helpers: perfiles y chat ───────────────────────────────────────────────────
 
 def _check_api_key() -> bool:
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-    return bool(os.getenv("ANTHROPIC_API_KEY"))
+    from gmail_processor.utils import get_api_key
+    return bool(get_api_key())
 
 
 def _get_morning_brief() -> dict:
@@ -1132,7 +1126,7 @@ if _current_page == "inicio":
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{html.escape(_bm.get('name', ''))}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1337,7 +1331,8 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(str(t))}</span>'
+                                        for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")
