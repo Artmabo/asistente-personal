@@ -22,6 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from .utils import get_header, extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -320,26 +321,19 @@ def _build_protected_domains() -> frozenset[str]:
     return frozenset(protected)
 
 
-def _get_header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
-
-
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    headers = message.get("payload", {}).get("headers", [])
+    return extract_email_address(get_header(headers, "From"))
 
 
 def _sender_display(message: dict) -> str:
-    return _get_header(message, "From") or "?"
+    headers = message.get("payload", {}).get("headers", [])
+    return get_header(headers, "From") or "?"
 
 
 def _subject(message: dict) -> str:
-    return _get_header(message, "Subject") or "(sin asunto)"
+    headers = message.get("payload", {}).get("headers", [])
+    return get_header(headers, "Subject") or "(sin asunto)"
 
 
 def _s(text: str, n: int) -> str:

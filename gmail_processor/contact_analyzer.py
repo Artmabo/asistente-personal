@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from .utils import get_header as _get_header, is_safe_rule_value, backup_rules_file
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -113,14 +115,6 @@ def _date_filter(days: int | None) -> str:
         return ""
     since = (datetime.now() - timedelta(days=days)).strftime("%Y/%m/%d")
     return f" after:{since}"
-
-
-def _get_header(headers: list[dict], name: str) -> str:
-    name_l = name.lower()
-    for h in headers:
-        if h.get("name", "").lower() == name_l:
-            return h.get("value", "")
-    return ""
 
 
 def _parse_date(date_str: str) -> datetime | None:
@@ -688,7 +682,13 @@ class ContactAnalyzer:
             if email_addr in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
-            label      = _derive_label(email_addr, name)
+            if not is_safe_rule_value(email_addr):
+                return {"error": f"email contains unsupported characters: {email_addr!r}"}
+
+            label = _derive_label(email_addr, name)
+            if not is_safe_rule_value(label):
+                return {"error": f"label contains unsupported characters: {label!r}"}
+
             rules_path = Path(__file__).parent / "rules.py"
             content    = rules_path.read_text(encoding="utf-8")
             lines      = content.split("\n")
@@ -708,10 +708,9 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            new_line = f'    "{email_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
+            backup_rules_file(rules_path)
             rules_path.write_text("\n".join(lines), encoding="utf-8")
             importlib.reload(rules_mod)
             return {"success": True, "label": label}

@@ -23,6 +23,8 @@ class AssistantChat:
         self.context: dict = {}
         self.history: list[dict] = self._load_history()
         self.refresh_context()
+        self._client = None
+        self._client_api_key = None
 
     # ── API pública ───────────────────────────────────────────────────────────
 
@@ -54,8 +56,7 @@ class AssistantChat:
             )
 
         try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
+            client = self._get_client(api_key)
         except ImportError:
             return "No está instalado el módulo necesario. Ejecuta: pip install anthropic"
 
@@ -66,7 +67,7 @@ class AssistantChat:
         hist = conversation_history if conversation_history is not None else self.history
         api_messages = [
             {"role": m["role"], "content": m["content"]}
-            for m in hist[-(  _MAX_HISTORY * 2):]
+            for m in hist[-(_MAX_HISTORY * 2):]
         ]
         api_messages.append({"role": "user", "content": user_message})
 
@@ -77,7 +78,8 @@ class AssistantChat:
             )
             answer = resp.content[0].text.strip()
         except Exception as exc:
-            return f"Ocurrió un problema al contactar al asistente: {exc}"
+            logger.error(f"Error al contactar la API de Claude: {exc}")
+            return "Ocurrió un problema al contactar al asistente. Intenta de nuevo en un momento."
 
         # Guardar en historial
         ts = datetime.now().isoformat(timespec="seconds")
@@ -87,6 +89,14 @@ class AssistantChat:
             self.history = self.history[-(_MAX_HISTORY * 2):]
         self._save_history()
         return answer
+
+    def _get_client(self, api_key: str):
+        """Returns a cached anthropic.Anthropic client, rebuilding only if the key changed."""
+        if self._client is None or self._client_api_key != api_key:
+            import anthropic
+            self._client = anthropic.Anthropic(api_key=api_key)
+            self._client_api_key = api_key
+        return self._client
 
     # ── Construcción del prompt de sistema ───────────────────────────────────
 

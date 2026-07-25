@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, get_header
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -80,7 +80,7 @@ class ContactProfiler:
         return self.data.get("profiles", {})
 
     def get_profile(self, email: str) -> dict | None:
-        return self.data["profiles"].get(email)
+        return self.data.get("profiles", {}).get(email)
 
     def needs_rebuild(self, email: str) -> bool:
         profile = self.get_profile(email)
@@ -102,13 +102,17 @@ class ContactProfiler:
         addr_lower = addr.lower()
         domain     = addr_lower.split("@")[-1] if "@" in addr_lower else ""
         local      = addr_lower.split("@")[0]  if "@" in addr_lower else addr_lower
+        # First label of the domain (e.g. "amazon" from "amazon.com.mx") — used
+        # for exact matching below so a lookalike domain like
+        # "paypal-security-alert.com" or "mail.gob.mx.evil.com" cannot spoof
+        # a trusted classification via naive substring matching.
+        domain_sld = domain.split(".")[0] if domain else ""
 
         # Gobierno
-        if ".gob.mx" in domain or ".gob." in domain:
+        if domain == "gob.mx" or domain.endswith(".gob.mx"):
             return "gobierno"
-        for kw in ("sat.", "imss.", "infonavit.", "issste.", "sep.", "consar."):
-            if kw in addr_lower:
-                return "gobierno"
+        if domain_sld in ("sat", "imss", "infonavit", "issste", "sep", "consar"):
+            return "gobierno"
 
         # Servicio
         _SVC = {
@@ -119,9 +123,8 @@ class ContactProfiler:
             "rappi", "didi", "zoom", "dropbox", "twitter", "facebook",
             "instagram", "linkedin", "youtube",
         }
-        for svc in _SVC:
-            if svc in domain:
-                return "servicio"
+        if domain_sld in _SVC:
+            return "servicio"
 
         # Familiar: dominio personal + local que no parece bot o empresa
         _PERSONAL = {
@@ -239,11 +242,7 @@ class ContactProfiler:
         headers  = payload.get("headers", [])
 
         def hdr(name: str) -> str:
-            nl = name.lower()
-            for h in headers:
-                if h.get("name", "").lower() == nl:
-                    return h.get("value", "")
-            return ""
+            return get_header(headers, name)
 
         from_raw   = hdr("From")
         from_name  = ""

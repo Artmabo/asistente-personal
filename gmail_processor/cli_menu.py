@@ -12,6 +12,8 @@ import importlib
 from pathlib import Path
 from typing import Callable, Optional
 
+from .utils import is_safe_rule_value, backup_rules_file
+
 _W    = 54
 _SEP  = "─" * _W
 _SEP2 = "═" * _W
@@ -268,6 +270,8 @@ def _menu_audit():
     try:
         n = int(n_str)
     except ValueError:
+        n = 20
+    if n <= 0:
         n = 20
 
     print("  Filtrar por: 1=TRASH  2=KEEP  3=SKIP  0=Todos")
@@ -745,6 +749,9 @@ def _present_domains(domains) -> int:
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    if not is_safe_rule_value(email) or not is_safe_rule_value(label):
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -776,6 +783,7 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     lines.insert(end_idx, new_entry)
 
     try:
+        backup_rules_file(rules_path)
         rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return True
     except OSError:
@@ -807,8 +815,16 @@ def _patch_rules_remove_contact(email: str) -> bool:
         return False
 
 
+_VALID_DOMAIN_ACTIONS = {"mark_important", "archive", "label_only"}
+
+
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    if not is_safe_rule_value(domain) or not is_safe_rule_value(label):
+        return False
+    if action not in _VALID_DOMAIN_ACTIONS:
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -854,6 +870,7 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
     lines.insert(end_idx, new_entry)
 
     try:
+        backup_rules_file(rules_path)
         rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return True
     except OSError:

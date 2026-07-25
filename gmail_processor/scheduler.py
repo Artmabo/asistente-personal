@@ -201,9 +201,13 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
+        """Writes config atomically (tmp file + rename) to avoid a partial/corrupt
+        read if a scheduled cleanup and a UI action save concurrently."""
+        tmp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+        tmp_path.write_text(
             json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        tmp_path.replace(self.config_path)
 
 
 def format_next_run(iso: str | None) -> str:
@@ -212,7 +216,9 @@ def format_next_run(iso: str | None) -> str:
         return "No programada"
     try:
         dt    = datetime.fromisoformat(iso)
-        now   = datetime.now()
+        # `dt` may be tz-aware (APScheduler's next_run_time always is) — match
+        # `now`'s awareness or the subtraction below raises TypeError.
+        now   = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
         delta = dt - now
         if delta.total_seconds() < 0:
             return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"
