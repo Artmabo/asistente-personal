@@ -7,8 +7,11 @@ si las credenciales tienen acceso a Drive, también devuelve cuota en GB.
 estimate_cleanup_size() lista todos los mensajes de cada categoría,
 muestrea sizeEstimate de hasta 50 mensajes y extrapola para el total.
 """
+import logging
 import time
 from googleapiclient.errors import HttpError
+
+logger = logging.getLogger("gmail_processor.storage_analyzer")
 
 _CATEGORY_QUERIES: dict[str, str] = {
     "spam":            "in:spam",
@@ -56,10 +59,12 @@ class StorageAnalyzer:
             result["used_gb"]      = round(used_bytes  / 1e9, 2)
             result["total_gb"]     = round(total_bytes / 1e9, 1)
             result["percent_used"] = int(100 * used_bytes / total_bytes) if total_bytes else 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Drive storage quota unavailable: {e}")
             result["used_gb"]      = None
             result["total_gb"]     = None
             result["percent_used"] = None
+            result["error_drive"]  = str(e)
 
         return result
 
@@ -80,9 +85,9 @@ class StorageAnalyzer:
             if not query:
                 continue
 
-            all_ids, count = self._list_all_ids(query)
+            all_ids, count, truncated = self._list_all_ids(query)
             if count == 0:
-                result[cat] = {"count": 0, "size_mb": 0}
+                result[cat] = {"count": 0, "size_mb": 0, "truncated": False}
                 continue
 
             # Muestrear sizeEstimate
@@ -103,8 +108,13 @@ class StorageAnalyzer:
             avg_bytes = total_bytes / sampled if sampled else _AVG_BYTES_FALLBACK
             size_mb   = int(count * avg_bytes / 1e6)
 
-            result[cat] = {"count": count, "size_mb": size_mb}
+            result[cat] = {"count": count, "size_mb": size_mb, "truncated": truncated}
             total_mb   += size_mb
+            if truncated:
+                logger.info(
+                    f"'{cat}' tiene más de {count} mensajes; "
+                    f"el conteo/tamaño está truncado a la muestra máxima."
+                )
 
         result["total_mb"] = total_mb
         result["total_gb"] = round(total_mb / 1000, 2)
@@ -132,10 +142,15 @@ class StorageAnalyzer:
                 result[cat] = 0
         return result
 
-    def _list_all_ids(self, query: str, max_ids: int = 5_000) -> tuple[list[str], int]:
-        """Lista los IDs de mensajes que coinciden con la query, hasta max_ids."""
+    def _list_all_ids(self, query: str, max_ids: int = 5_000) -> tuple[list[str], int, bool]:
+        """Lista los IDs de mensajes que coinciden con la query, hasta max_ids.
+
+        Devuelve (ids, count, truncated) — truncated=True indica que la query
+        tiene más resultados que max_ids y el conteo/tamaño es solo un piso.
+        """
         ids: list[str] = []
         page_token     = None
+        truncated      = False
 
         while len(ids) < max_ids:
             try:
@@ -153,6 +168,9 @@ class StorageAnalyzer:
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
+            if len(ids) >= max_ids:
+                truncated = True
+                break
             time.sleep(0.1)
 
-        return ids[:max_ids], len(ids[:max_ids])
+        return ids[:max_ids], len(ids[:max_ids]), truncated

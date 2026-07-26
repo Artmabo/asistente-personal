@@ -289,7 +289,8 @@ class SmartSetup:
         try:
             profile = self.service.users().getProfile(userId="me").execute()
             return profile.get("emailAddress", "").lower()
-        except Exception:
+        except HttpError as e:
+            logger.warning(f"No se pudo obtener el email de la cuenta: {e}")
             return ""
 
     def _index_sent_threads(
@@ -384,7 +385,8 @@ class SmartSetup:
                         userId="me", id=stub["id"],
                         format="metadata", metadataHeaders=["From"],
                     ).execute()
-                except HttpError:
+                except HttpError as e:
+                    logger.warning(f"No se pudo obtener mensaje {stub['id']} (fase {phase}): {e}")
                     fetched += 1
                     continue
                 self._ingest(msg, sent_threads, senders)

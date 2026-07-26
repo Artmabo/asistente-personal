@@ -17,6 +17,8 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
+from . import rules_patcher
+
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -220,7 +222,8 @@ class ContactAnalyzer:
                         format="metadata",
                         metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
                     ).execute()
-                except HttpError:
+                except HttpError as e:
+                    logger.warning(f"No se pudo obtener mensaje {stub['id']}: {e}")
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
@@ -365,10 +368,12 @@ class ContactAnalyzer:
                 else:
                     protected += 1
             elif decision == "spam":
-                n = self._trash_sender(addr)
+                n, had_failure = self._trash_sender(addr)
                 if n >= 0:
                     trashed_senders += 1
                     trashed_msgs    += n
+                    if had_failure:
+                        errors.append(f"{addr}: algunos mensajes no se pudieron mover a papelera")
                 else:
                     errors.append(f"{addr}: error al mover a papelera")
 
@@ -624,8 +629,8 @@ class ContactAnalyzer:
                             for _, a in email.utils.getaddresses([raw]):
                                 if a:
                                     addrs.add(a.strip().lower())
-                except HttpError:
-                    pass
+                except HttpError as e:
+                    logger.warning(f"No se pudo obtener mensaje enviado {stub['id']}: {e}")
                 fetched += 1
 
             if progress_cb:
@@ -645,10 +650,15 @@ class ContactAnalyzer:
 
     # ── Borrar correos de un remitente ────────────────────────────────────────
 
-    def _trash_sender(self, addr: str) -> int:
-        query      = f"from:{addr}"
-        page_token = None
-        total      = 0
+    def _trash_sender(self, addr: str) -> tuple[int, bool]:
+        """Returns (messages_trashed, had_partial_failure). had_partial_failure
+        is True when at least one page's batchModify failed but others
+        succeeded, so the caller can report the operation as incomplete
+        instead of indistinguishable from a full success."""
+        query        = f"from:{addr}"
+        page_token   = None
+        total        = 0
+        had_failure  = False
 
         while True:
             try:
@@ -656,7 +666,7 @@ class ContactAnalyzer:
                     userId="me", q=query, maxResults=500, pageToken=page_token,
                 ).execute()
             except HttpError:
-                return -1
+                return -1, True
 
             msgs = result.get("messages", [])
             if not msgs:
@@ -671,49 +681,27 @@ class ContactAnalyzer:
                 total += len(ids)
             except HttpError as e:
                 logger.warning(f"batchModify failed for {len(ids)} msgs from {addr}: {e}")
+                had_failure = True
 
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
 
-        return total
+        return total, had_failure
 
     # ── Escribir en rules.py ──────────────────────────────────────────────────
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
         try:
-            import importlib
             import gmail_processor.rules as rules_mod
 
             if email_addr in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
-            label      = _derive_label(email_addr, name)
-            rules_path = Path(__file__).parent / "rules.py"
-            content    = rules_path.read_text(encoding="utf-8")
-            lines      = content.split("\n")
-
-            in_cr = False; depth = 0; insert_at = -1
-            for i, line in enumerate(lines):
-                if not in_cr:
-                    if "CONTACT_RULES" in line and "=" in line and "{" in line:
-                        in_cr = True
-                        depth = line.count("{") - line.count("}")
-                else:
-                    depth += line.count("{") - line.count("}")
-                    if depth <= 0:
-                        insert_at = i
-                        break
-
-            if insert_at == -1:
-                return {"error": "CONTACT_RULES closing brace not found"}
-
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
-            lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
-            importlib.reload(rules_mod)
+            label = _derive_label(email_addr, name)
+            ok = rules_patcher.add_contact_rule(email_addr, label, important=True)
+            if not ok:
+                return {"error": "could not write rules.py (already exists or parse/write error)"}
             return {"success": True, "label": label}
         except Exception as exc:
             return {"error": str(exc)}

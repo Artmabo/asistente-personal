@@ -121,7 +121,16 @@ class GmailProcessor:
             return
 
         c = self.classifier.classify(message)
-        self._apply(msg_id, message, c)
+        try:
+            self._apply(msg_id, message, c)
+        except HttpError as e:
+            # GmailActions._call() re-raises permission errors (403 insufficientPermissions/
+            # authError) instead of returning False — without this, one such message
+            # would abort run()'s whole loop, skipping every remaining message and the
+            # cleanup pass that follows it.
+            logger.error(f"Could not apply action to {msg_id}: {e}")
+            self.stats["errors"] += 1
+            return
         self.stats["processed"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):
@@ -176,8 +185,8 @@ class GmailProcessor:
 
 def _header(message: dict, name: str) -> str:
     for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
+        if h.get("name", "").lower() == name.lower():
+            return h.get("value", "")
     return ""
 
 

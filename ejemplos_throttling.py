@@ -120,7 +120,7 @@ def ejemplo_6_errores_comunes():
             "causa": "Token expirado o inválido",
             "solucion": [
                 "1. Elimina token.json",
-                "2. Ejecuta: python asistente-personal.py",
+                "2. Ejecuta: python asistente_personal.py",
                 "3. Autoriza de nuevo en navegador"
             ]
         }

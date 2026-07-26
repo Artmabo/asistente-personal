@@ -15,13 +15,13 @@ logger = logging.getLogger("gmail_processor.scheduler")
 _CONFIG_PATH = Path("cleanup_schedule.json")
 
 _DAYS_ES = {
-    "monday":    "lunes",
-    "tuesday":   "martes",
-    "wednesday": "miércoles",
-    "thursday":  "jueves",
-    "friday":    "viernes",
-    "saturday":  "sábado",
-    "sunday":    "domingo",
+    0: "lunes",
+    1: "martes",
+    2: "miércoles",
+    3: "jueves",
+    4: "viernes",
+    5: "sábado",
+    6: "domingo",
 }
 
 
@@ -226,7 +226,7 @@ def format_next_run(iso: str | None) -> str:
         elif days == 1:
             return f"mañana a las {dt.strftime('%H:%M')}"
         elif days < 7:
-            dia = _DAYS_ES.get(dt.strftime("%A").lower(), dt.strftime("%A"))
+            dia = _DAYS_ES.get(dt.weekday(), dt.strftime("%A"))
             return f"el {dia} a las {dt.strftime('%H:%M')}"
         else:
             return dt.strftime("%d/%m/%Y a las %H:%M")
