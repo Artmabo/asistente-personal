@@ -22,6 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
+from . import protection
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -41,7 +42,6 @@ class StorageCleaner:
         self.engine        = engine
         self.audit         = audit
         self.learning_mode = learning_mode
-        self._protected_domains = _build_protected_domains()
         self.stats = {
             "examined": 0,
             "trashed":  0,
@@ -53,7 +53,7 @@ class StorageCleaner:
     def run(self) -> dict:
         targets = cfg.CLEANUP_RULES.get("targets", [])
         max_per = cfg.CLEANUP_RULES.get("max_per_query", 200)
-        mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode    = "DRY RUN" if self.actions.dry_run else "LIVE"
         scoring = "activo" if self.engine else "inactivo"
 
         logger.info(f"\n{'─'*55}")
@@ -217,7 +217,7 @@ class StorageCleaner:
                 return
 
         # 3. Trash
-        mode       = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode       = "DRY RUN" if self.actions.dry_run else "LIVE"
         score_line = ""
         if scored:
             factors_str = " | ".join(scored.factors) if scored.factors else "sin señales"
@@ -255,30 +255,12 @@ class StorageCleaner:
             self.stats["errors"] += 1
 
     # ── Hard protection check ─────────────────────────────────────────────────
+    # Delegates to gmail_processor.protection so this stays identical to the
+    # check limpiar_correos.py applies — a single source of truth for what
+    # can never be auto-trashed.
 
     def _protection_reason(self, message: dict) -> str | None:
-        label_ids = message.get("labelIds", [])
-
-        if "STARRED" in label_ids:
-            return "marcado con estrella (STARRED)"
-        if "IMPORTANT" in label_ids:
-            return "marcado como importante (IMPORTANT)"
-
-        email  = _sender_email(message)
-        domain = email.split("@")[-1] if "@" in email else ""
-
-        if email in cfg.CONTACT_RULES:
-            return f"contacto protegido ({email})"
-        if domain and f"@{domain}" in cfg.CONTACT_RULES:
-            return f"dominio protegido por contacto ({domain})"
-        if domain in self._protected_domains:
-            return f"dominio protegido ({domain})"
-
-        extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
-        if domain in extra:
-            return f"dominio seguro adicional ({domain})"
-
-        return None
+        return protection.protection_reason(message)
 
     # ── Summary ───────────────────────────────────────────────────────────────
 
@@ -286,13 +268,15 @@ class StorageCleaner:
         """Persists a cleanup summary to cleanup_summary.json for the UI."""
         summary = {
             "ts":      datetime.now().isoformat(timespec="seconds"),
-            "dry_run": cfg.DRY_RUN,
+            "dry_run": self.actions.dry_run,
             **self.stats,
         }
         try:
-            _SUMMARY_PATH.write_text(
+            tmp_path = _SUMMARY_PATH.with_suffix(".tmp")
+            tmp_path.write_text(
                 json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            tmp_path.replace(_SUMMARY_PATH)
         except OSError as e:
             logger.warning(f"Could not write cleanup summary: {e}")
 
@@ -312,26 +296,12 @@ class StorageCleaner:
 
 # ── Module helpers ────────────────────────────────────────────────────────────
 
-def _build_protected_domains() -> frozenset[str]:
-    protected: set[str] = set()
-    for rule in cfg.DOMAIN_RULES:
-        if rule.get("action") == "mark_important":
-            protected.update(rule["domains"])
-    return frozenset(protected)
-
-
 def _get_header(message: dict, name: str) -> str:
-    for h in message.get("payload", {}).get("headers", []):
-        if h["name"].lower() == name.lower():
-            return h["value"]
-    return ""
+    return protection.get_header(message, name)
 
 
 def _sender_email(message: dict) -> str:
-    raw = _get_header(message, "From")
-    if "<" in raw:
-        return raw.split("<")[1].rstrip(">").strip().lower()
-    return raw.strip().lower()
+    return protection.sender_email(message)
 
 
 def _sender_display(message: dict) -> str:

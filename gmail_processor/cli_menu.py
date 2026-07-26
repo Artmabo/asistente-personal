@@ -12,6 +12,8 @@ import importlib
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import rules_patcher
+
 _W    = 54
 _SEP  = "─" * _W
 _SEP2 = "═" * _W
@@ -268,6 +270,8 @@ def _menu_audit():
     try:
         n = int(n_str)
     except ValueError:
+        n = 20
+    if n <= 0:
         n = 20
 
     print("  Filtrar por: 1=TRASH  2=KEEP  3=SKIP  0=Todos")
@@ -743,121 +747,20 @@ def _present_domains(domains) -> int:
 
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
+# Escaping, block-scoping and atomic writes live in rules_patcher.py so this
+# logic isn't duplicated (and doesn't drift) between here and contact_analyzer.py.
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    start_idx = None
-    for i, line in enumerate(lines):
-        if "CONTACT_RULES: dict[str, dict] = {" in line:
-            start_idx = i
-            break
-    if start_idx is None:
-        return False
-
-    end_idx = None
-    for i in range(start_idx + 1, len(lines)):
-        if lines[i].strip() == "}":
-            end_idx = i
-            break
-    if end_idx is None:
-        return False
-
-    for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            return False  # already exists
-
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
-    lines.insert(end_idx, new_entry)
-
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return rules_patcher.add_contact_rule(email, label, important)
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    new_lines = []
-    removed   = False
-    for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            removed = True
-            continue
-        new_lines.append(line)
-
-    if not removed:
-        return False
-
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return rules_patcher.remove_contact_rule(email)
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    # Find DOMAIN_RULES list start
-    start_idx = None
-    for i, line in enumerate(lines):
-        if "DOMAIN_RULES: list[dict] = [" in line:
-            start_idx = i
-            break
-    if start_idx is None:
-        return False
-
-    # Find closing ] by tracking bracket depth
-    depth   = 1
-    end_idx = None
-    for i in range(start_idx + 1, len(lines)):
-        for ch in lines[i]:
-            if   ch == "[": depth += 1
-            elif ch == "]": depth -= 1
-            if depth == 0:
-                end_idx = i
-                break
-        if end_idx is not None:
-            break
-    if end_idx is None:
-        return False
-
-    # Check if domain already exists anywhere in the block
-    block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
-        return False
-
-    new_entry = (
-        f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
-        f'    }},'
-    )
-    lines.insert(end_idx, new_entry)
-
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return rules_patcher.add_domain_rule(domain, label, action)
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────

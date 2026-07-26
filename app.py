@@ -2,12 +2,16 @@
 Gmail Cleanup — Interfaz web para usuarios no técnicos.
 Ejecutar con:  streamlit run app.py
 """
+import html
+import logging
 import os
 import sys
 import json
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
+
+logger = logging.getLogger("gmail_processor.app")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -194,8 +198,8 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
                     format="metadata", metadataHeaders=["From"],
                 ).execute()
                 raw = next(
-                    (h["value"] for h in msg.get("payload", {}).get("headers", [])
-                     if h["name"].lower() == "from"),
+                    (h.get("value", "") for h in msg.get("payload", {}).get("headers", [])
+                     if h.get("name", "").lower() == "from"),
                     "",
                 )
                 if "<" in raw:
@@ -264,46 +268,16 @@ def _proteger_remitente(email: str, name: str) -> dict:
         return {"error": f"Dirección de correo no válida: {email}"}
 
     try:
-        import importlib
         import gmail_processor.rules as rules_mod
+        from gmail_processor import rules_patcher
 
         if email in rules_mod.CONTACT_RULES:
             return {"already_protected": True}
 
-        label      = _derivar_label(email, name)
-        rules_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "gmail_processor", "rules.py",
-        )
-
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
-
-        in_cr     = False
-        depth     = 0
-        insert_at = -1
-        for i, line in enumerate(lines):
-            if not in_cr:
-                if "CONTACT_RULES" in line and "=" in line and "{" in line:
-                    in_cr = True
-                    depth = line.count("{") - line.count("}")
-            else:
-                depth += line.count("{") - line.count("}")
-                if depth <= 0:
-                    insert_at = i
-                    break
-
-        if insert_at == -1:
-            return {"error": "No se encontró CONTACT_RULES en rules.py"}
-
-        # Use repr() so quotes, backslashes and special chars are safely escaped
-        new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
-        lines.insert(insert_at, new_line)
-
-        with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-
-        importlib.reload(rules_mod)
+        label = _derivar_label(email, name)
+        ok = rules_patcher.add_contact_rule(email, label, important=True)
+        if not ok:
+            return {"error": "No se pudo modificar rules.py (ya existe o error de escritura)"}
         return {"success": True, "email": email, "label": label}
     except Exception as exc:
         return {"error": str(exc)}
@@ -604,6 +578,7 @@ def _get_important_contacts() -> list[str]:
             if _v.get("decision") == "personal"
         ]
     except Exception:
+        logger.exception("No se pudo leer analysis_state.json (archivo existe pero falló la lectura)")
         return []
 
 
@@ -614,6 +589,7 @@ def _load_profiles() -> dict:
             return {}
         return ContactProfiler().get_profiles()
     except Exception:
+        logger.exception("No se pudo leer contact_profiles.json (archivo existe pero falló la lectura)")
         return {}
 
 
@@ -838,8 +814,9 @@ if os.path.exists("cleanup_schedule.json"):
         _sch_auto = _get_scheduler()
         if _sch_auto.config.get("enabled") and _sch_auto._job is None:
             _sch_auto.start()
-    except Exception:
-        pass
+    except Exception as _sch_exc:
+        logger.exception("No se pudo reanudar la limpieza automática programada")
+        st.session_state["scheduler_autostart_error"] = str(_sch_exc)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CSS GLOBAL
@@ -1131,8 +1108,9 @@ if _current_page == "inicio":
                     if _bnif:
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
+                            _bm_name = html.escape(_bm.get('name', '') or '')
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{_bm_name}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1231,8 +1209,13 @@ elif _current_page == "contactos":
             elif _prof_r.get("error"):
                 st.error(f"Error al construir perfiles: {_prof_r['error']}")
             elif "built" in _prof_r:
+                _skipped_msg = (
+                    f" ({_prof_r['skipped']} ya estaban al día y se omitieron)"
+                    if _prof_r.get("skipped") else ""
+                )
                 st.success(
                     f"✓ {_prof_r['built']} de {_prof_r['total']} perfiles construidos."
+                    f"{_skipped_msg}"
                 )
                 _profiles = _load_profiles()
 
@@ -1337,7 +1320,7 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(t)}</span>' for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")
@@ -1704,9 +1687,10 @@ elif _current_page == "limpiar":
                         _ce_all = st.session_state.get("cleanup_size_data") or {}
                         _cat_ce = _ce_all.get(k)
                         if _cat_ce:
+                            _plus = "+" if _cat_ce.get("truncated") else ""
                             st.caption(
                                 f"📊 Estimado: **{_cat_ce.get('size_mb', 0):,} MB** · "
-                                f"{_cat_ce.get('count', 0):,} correos"
+                                f"{_cat_ce.get('count', 0):,}{_plus} correos"
                             )
 
                         if not st.session_state[confirm_key]:
@@ -1798,6 +1782,16 @@ elif _current_page == "limpiar":
             if st.button("🔍 Cargar remitentes", key="btn_load_senders_limpiar"):
                 with st.spinner("Analizando…"):
                     st.session_state["senders_data"] = _cargar_remitentes_frecuentes()
+                # Discard confirm/result state from any previous sender list — it's
+                # keyed by sender email below, but a stale entry for an email that
+                # no longer appears (or appears at a different position) must not
+                # leak a leftover confirmation/result into the new list.
+                for _k in list(st.session_state.keys()):
+                    if _k.startswith((
+                        "confirm_trash_sender_", "result_trash_sender_",
+                        "confirm_protect_sender_", "result_protect_sender_",
+                    )):
+                        del st.session_state[_k]
                 st.rerun()
 
             _senders = st.session_state["senders_data"]
@@ -1806,15 +1800,17 @@ elif _current_page == "limpiar":
             elif not _senders:
                 st.info("No se encontraron remitentes en la bandeja de entrada.")
             else:
-                for _si, _sndr in enumerate(_senders):
+                for _sndr in _senders:
                     _se_email   = _sndr["email"]
                     _se_name    = _sndr.get("name", "")
                     _se_count   = _sndr["count"]
                     _se_label   = f"{_se_name} <{_se_email}>" if _se_name else _se_email
-                    _csk  = f"confirm_trash_sender_{_si}"
-                    _rsk  = f"result_trash_sender_{_si}"
-                    _cpsk = f"confirm_protect_sender_{_si}"
-                    _rpsk = f"result_protect_sender_{_si}"
+                    # Keyed by sender email (not list position) so a confirmation or
+                    # result never attaches to the wrong sender after the list reloads.
+                    _csk  = f"confirm_trash_sender_{_se_email}"
+                    _rsk  = f"result_trash_sender_{_se_email}"
+                    _cpsk = f"confirm_protect_sender_{_se_email}"
+                    _rpsk = f"result_protect_sender_{_se_email}"
                     st.session_state.setdefault(_csk,  False)
                     st.session_state.setdefault(_rsk,  None)
                     st.session_state.setdefault(_cpsk, False)
@@ -1828,40 +1824,40 @@ elif _current_page == "limpiar":
                     with _s_c3:
                         if not st.session_state[_csk]:
                             st.button(
-                                "🗑️ Limpiar", key=f"btn_ts_{_si}", use_container_width=True,
+                                "🗑️ Limpiar", key=f"btn_ts_{_se_email}", use_container_width=True,
                                 on_click=lambda k=_csk: st.session_state.update({k: True}),
                             )
                         else:
                             st.warning(f"¿Mover todos los correos de {_se_email}?")
                             _tc1b, _tc2b = st.columns(2)
                             with _tc1b:
-                                if st.button("✓ Sí", key=f"exec_ts_{_si}", type="primary", use_container_width=True):
+                                if st.button("✓ Sí", key=f"exec_ts_{_se_email}", type="primary", use_container_width=True):
                                     with st.spinner(f"Limpiando…"):
                                         _ts_r = _limpiar_remitente(_se_email)
                                     st.session_state[_rsk]  = _ts_r
                                     st.session_state[_csk]  = False
                                     st.rerun()
                             with _tc2b:
-                                if st.button("✗ No", key=f"cancel_ts_{_si}", use_container_width=True):
+                                if st.button("✗ No", key=f"cancel_ts_{_se_email}", use_container_width=True):
                                     st.session_state[_csk] = False
                                     st.rerun()
                     with _s_c4:
                         if not st.session_state[_cpsk]:
                             st.button(
-                                "🛡️ Proteger", key=f"btn_ps_{_si}", use_container_width=True,
+                                "🛡️ Proteger", key=f"btn_ps_{_se_email}", use_container_width=True,
                                 on_click=lambda k=_cpsk: st.session_state.update({k: True}),
                             )
                         else:
                             st.info(f"¿Proteger {_se_email}?")
                             _pc1b, _pc2b = st.columns(2)
                             with _pc1b:
-                                if st.button("✓ Sí", key=f"exec_ps_{_si}", type="primary", use_container_width=True):
+                                if st.button("✓ Sí", key=f"exec_ps_{_se_email}", type="primary", use_container_width=True):
                                     _ps_r = _proteger_remitente(_se_email, _se_name)
                                     st.session_state[_rpsk]  = _ps_r
                                     st.session_state[_cpsk]  = False
                                     st.rerun()
                             with _pc2b:
-                                if st.button("✗ No", key=f"cancel_ps_{_si}", use_container_width=True):
+                                if st.button("✗ No", key=f"cancel_ps_{_se_email}", use_container_width=True):
                                     st.session_state[_cpsk] = False
                                     st.rerun()
 
@@ -1897,6 +1893,14 @@ elif _current_page == "automatica":
     _sch_obj    = _get_scheduler()
     _sch_status = _schedule_status()
     _sch_avail  = _sch_status.get("scheduler_available", False)
+
+    _sch_autostart_err = st.session_state.get("scheduler_autostart_error")
+    if _sch_autostart_err and _sch_status.get("enabled"):
+        st.error(
+            "La limpieza automática está activada pero no se pudo reanudar al "
+            f"iniciar la app: {_sch_autostart_err}. Desactívala y vuelve a "
+            "activarla para reintentarlo."
+        )
 
     if not _sch_avail:
         st.warning("Para activar limpiezas automáticas instala APScheduler: `pip install APScheduler>=3.10`")

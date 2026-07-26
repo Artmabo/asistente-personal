@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -42,9 +42,14 @@ class ContactProfiler:
         service,
         important_contacts: list[str],
         progress_cb: Callable | None = None,
+        force: bool = False,
     ) -> dict:
         """
-        Construye un perfil por cada email en important_contacts.
+        Construye un perfil por cada email en important_contacts que lo necesite
+        (perfil ausente, con error previo, o con más de 7 días de antigüedad —
+        ver needs_rebuild). Cada rebuild hace ~52 llamadas a la API de Gmail más
+        una llamada a Claude, así que reprocesar contactos ya frescos es costoso
+        en tiempo y en cuota/dinero; pasa force=True para ignorar ese filtro.
         Persiste después de cada contacto para tolerar interrupciones.
         """
         api_key = get_api_key()
@@ -57,11 +62,16 @@ class ContactProfiler:
         except ImportError:
             return {"error": "anthropic_not_installed"}
 
-        total  = len(important_contacts)
+        pending = important_contacts if force else [
+            addr for addr in important_contacts if self.needs_rebuild(addr)
+        ]
+        skipped = len(important_contacts) - len(pending)
+
+        total  = len(pending)
         built  = 0
         errors: list[str] = []
 
-        for i, addr in enumerate(important_contacts):
+        for i, addr in enumerate(pending):
             if progress_cb:
                 progress_cb(i + 1, total, addr)
             try:
@@ -74,7 +84,7 @@ class ContactProfiler:
             except Exception as exc:
                 errors.append(f"{addr}: {exc}")
 
-        return {"built": built, "total": total, "errors": errors}
+        return {"built": built, "total": total, "skipped": skipped, "errors": errors}
 
     def get_profiles(self) -> dict:
         return self.data.get("profiles", {})
@@ -253,7 +263,12 @@ class ContactProfiler:
         date_str    = hdr("Date")
         date_parsed = None
         try:
-            date_parsed = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
+            parsed = email.utils.parsedate_to_datetime(date_str)
+            # Normalize to UTC before dropping tzinfo so first/last-contact
+            # comparisons across senders in different timezones stay correct.
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc)
+            date_parsed = parsed.replace(tzinfo=None)
         except Exception:
             pass
 
@@ -267,7 +282,7 @@ class ContactProfiler:
         }
 
     def _extract_body(self, payload: dict) -> str:
-        if payload.get("mimeType") == "text/plain":
+        if payload.get("mimeType") == "text/plain" and not payload.get("filename"):
             data = payload.get("body", {}).get("data", "")
             if data:
                 try:
@@ -433,7 +448,8 @@ class ContactProfiler:
     def _load(self) -> dict:
         if PROFILES_PATH.exists():
             try:
-                return json.loads(PROFILES_PATH.read_text(encoding="utf-8"))
+                loaded = json.loads(PROFILES_PATH.read_text(encoding="utf-8"))
+                return {**_empty_profiles(), **loaded}
             except (OSError, json.JSONDecodeError):
                 pass
         return _empty_profiles()

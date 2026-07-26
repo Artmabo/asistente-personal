@@ -270,7 +270,7 @@ class LearningEngine:
                     score -= 5;  factors.append(f"-5  dominio servicios ({domain})")
                 break
 
-        if email in cfg.CONTACT_RULES:
+        if email in cfg.CONTACT_RULES or (domain and f"@{domain}" in cfg.CONTACT_RULES):
             score += 50; factors.append(f"+50 contacto protegido ({email})")
 
         # ── Sender model (decay_lambda = DECAY_LAMBDA_SENDER) ─────────────────
@@ -594,7 +594,13 @@ class LearningEngine:
 
 def _drift_control(entry: dict, delta: float) -> tuple[float, bool]:
     """
-    Caps delta to MAX_DAILY_DELTA per calendar day.
+    Caps delta to MAX_DAILY_DELTA of net movement *away from zero* per entity
+    per calendar day. A delta that moves daily_delta back toward zero (i.e.
+    it corrects the day's prior drift, e.g. a manual override reversing
+    earlier automatic feedback) is never capped — only deltas that push
+    further in the same direction the entry has already drifted are
+    throttled. Without this, a correction could be silently zeroed out by
+    the same-day budget while still being reported as accepted.
     Returns (allowed_delta, was_capped).
     Resets daily counter at midnight.
     """
@@ -603,7 +609,14 @@ def _drift_control(entry: dict, delta: float) -> tuple[float, bool]:
         entry["daily_delta"]      = 0.0
         entry["daily_delta_date"] = today
 
-    used      = abs(entry.get("daily_delta", 0.0))
+    daily_delta = entry.get("daily_delta", 0.0)
+
+    moves_toward_zero = daily_delta != 0.0 and math.copysign(1, delta) != math.copysign(1, daily_delta)
+    if moves_toward_zero:
+        entry["daily_delta"] = round(daily_delta + delta, 1)
+        return round(delta, 1), False
+
+    used      = abs(daily_delta)
     remaining = max(0.0, MAX_DAILY_DELTA - used)
 
     if remaining <= 0.0:
@@ -611,7 +624,7 @@ def _drift_control(entry: dict, delta: float) -> tuple[float, bool]:
 
     allowed  = math.copysign(min(abs(delta), remaining), delta)
     was_capped = abs(allowed) < abs(delta)
-    entry["daily_delta"] = round(entry.get("daily_delta", 0.0) + allowed, 1)
+    entry["daily_delta"] = round(daily_delta + allowed, 1)
     return round(allowed, 1), was_capped
 
 
@@ -660,8 +673,8 @@ def _decay(last_accepted: str, lam: float) -> float:
 
 def _email_from_headers(headers: list[dict]) -> str:
     for h in headers:
-        if h["name"].lower() == "from":
-            raw = h["value"]
+        if h.get("name", "").lower() == "from":
+            raw = h.get("value", "")
             return (raw.split("<")[1].rstrip(">").strip().lower()
                     if "<" in raw else raw.strip().lower())
     return ""
@@ -699,5 +712,9 @@ def _migrate_to_v3(old: dict) -> dict:
 
     new["rule_stats"]       = copy.deepcopy(old.get("rule_stats", {}))
     new["pending_feedback"] = copy.deepcopy(old.get("pending_feedback", {}))
-    new["metrics"]          = old.get("metrics", _new_metrics())
+    # Merge over a fresh v3 metrics dict rather than trusting the old shape
+    # verbatim — Metrics accesses fields directly (self._d["total_processed"]
+    # etc.) with no .get() fallback, so a missing key here would raise
+    # KeyError on the very next record_processed()/touch_run() call.
+    new["metrics"] = {**_new_metrics(), **old.get("metrics", {})}
     return new
