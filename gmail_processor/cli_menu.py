@@ -165,7 +165,7 @@ def _menu_cleanup(get_svc: Callable):
     print(f"  Cap por target       : {cap} correos")
     print()
     for t in targets:
-        print(f"    • {t['rule']:<20} {t['query']}")
+        print(f"    • {t.get('rule', '?'):<20} {t.get('query', '?')}")
 
     print()
     live = False
@@ -253,8 +253,7 @@ def _menu_stats():
         print("  Audit log (acumulado)")
         print(_SEP)
         for decision, count in stats.items():
-            if decision:
-                print(f"  {decision:<6}: {count}")
+            print(f"  {decision:<6}: {count}")
 
     _pause()
 
@@ -277,12 +276,20 @@ def _menu_audit():
 
     from .processor import setup_logging
     setup_logging(level=logging.WARNING)
-    from .audit_log import AuditLogger
-    audit   = AuditLogger()
-    entries = audit.recent(max(n * 3, 200))
+    from .audit_log import AuditLogger, MAX_ENTRIES
+    audit = AuditLogger()
 
     if decision_filter:
-        entries = [e for e in entries if e.get("decision") == decision_filter]
+        # The filtered decision may be sparse in the log, so keep widening the
+        # fetch window until we have enough matches or run out of entries.
+        fetch_n = max(n * 3, 200)
+        while True:
+            entries = [e for e in audit.recent(fetch_n) if e.get("decision") == decision_filter]
+            if len(entries) >= n or fetch_n >= MAX_ENTRIES:
+                break
+            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
+    else:
+        entries = audit.recent(n)
 
     entries = entries[-n:]
 
@@ -292,9 +299,9 @@ def _menu_audit():
         _pause()
         return
 
-    header = f"{'TIMESTAMP':<20} {'DEC':<6} {'SENDER':<32} {'SCORE':>7}  {'REGLA'}"
+    header = f"{'TIMESTAMP':<20} {'DEC':<6} {'SENDER':<32} {'SCORE':>7}  {'REGLA':<20}  MODE"
     print(f"  {header}")
-    print(f"  {'─'*78}")
+    print(f"  {'─'*84}")
     for e in entries:
         mode = "DRY" if e.get("dry_run") else "LIVE"
         ts   = e.get("ts", "")[:19]
@@ -302,7 +309,7 @@ def _menu_audit():
         sndr = (e.get("sender", "") or "")[:31]
         sc   = e.get("score", 0)
         rule = e.get("rule", "")
-        print(f"  {ts:<20} {dec:<6} {sndr:<32} {sc:>+7.1f}  {rule}  {mode}")
+        print(f"  {ts:<20} {dec:<6} {sndr:<32} {sc:>+7.1f}  {rule:<20}  {mode}")
 
     _pause()
 
@@ -371,8 +378,8 @@ def _menu_config():
         _section("CONFIGURACIÓN")
 
         n_contacts = len(cfg.CONTACT_RULES)
-        n_domains  = sum(len(r["domains"]) for r in cfg.DOMAIN_RULES)
-        n_keywords = sum(len(r["keywords"]) for r in cfg.KEYWORD_RULES)
+        n_domains  = sum(len(r.get("domains", [])) for r in cfg.DOMAIN_RULES)
+        n_keywords = sum(len(r.get("keywords", [])) for r in cfg.KEYWORD_RULES)
         n_targets  = len(cfg.CLEANUP_RULES.get("targets", []))
         mode       = "DRY RUN" if cfg.DRY_RUN else "LIVE"
 
@@ -427,16 +434,16 @@ def _show_contacts(cfg):
 def _show_domain_rules(cfg):
     print()
     for rule in cfg.DOMAIN_RULES:
-        print(f"  [{rule['action'].upper()}] label={rule.get('label','')}:")
-        for d in rule["domains"]:
+        print(f"  [{rule.get('action', '?').upper()}] label={rule.get('label','')}:")
+        for d in rule.get("domains", []):
             print(f"    • {d}")
 
 
 def _show_keyword_rules(cfg):
     print()
     for rule in cfg.KEYWORD_RULES:
-        print(f"  [{rule['action'].upper()}] label={rule.get('label','')}:")
-        for kw in rule["keywords"]:
+        print(f"  [{rule.get('action', '?').upper()}] label={rule.get('label','')}:")
+        for kw in rule.get("keywords", []):
             print(f"    • {kw}")
 
 
@@ -873,8 +880,9 @@ def _menu_limpiar_spam(get_svc: Callable):
     if svc is None:
         return
     from limpiar_correos import limpiar_bandeja
-    r = limpiar_bandeja(svc, categorias=["spam"])
-    _resumen_limpieza(r)
+    r = _preview_then_run_live(svc, limpiar_bandeja, categorias=["spam"])
+    if r is not None:
+        _resumen_limpieza(r)
     _pause()
 
 
@@ -891,8 +899,9 @@ def _menu_limpiar_promo(get_svc: Callable):
     if svc is None:
         return
     from limpiar_correos import limpiar_bandeja
-    r = limpiar_bandeja(svc, categorias=["promociones"])
-    _resumen_limpieza(r)
+    r = _preview_then_run_live(svc, limpiar_bandeja, categorias=["promociones"])
+    if r is not None:
+        _resumen_limpieza(r)
     _pause()
 
 
@@ -919,6 +928,20 @@ def _menu_limpiar_todo(get_svc: Callable):
     from limpiar_correos import limpiar_todo_basura
     limpiar_todo_basura(svc)
     _pause()
+
+
+def _preview_then_run_live(svc, limpiar_bandeja: Callable, categorias: list) -> Optional[dict]:
+    """Counts matching messages with dry_run=True, shows the count, then asks a
+    second confirmation before actually trashing them. Returns the live result
+    dict, or None if the user backed out. Mirrors the double-confirm safeguard
+    already used by the other destructive menu options."""
+    preview = limpiar_bandeja(svc, categorias=categorias, dry_run=True)
+    print(f"\n  Se encontraron {preview['procesados']} correos que coinciden.")
+    if preview["procesados"] == 0:
+        return None
+    if not _confirm(f"  Confirmar: mover {preview['procesados']} correos a la papelera"):
+        return None
+    return limpiar_bandeja(svc, categorias=categorias)
 
 
 def _resumen_limpieza(r: dict):

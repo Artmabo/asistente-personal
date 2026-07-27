@@ -2,6 +2,7 @@
 Gmail Cleanup — Interfaz web para usuarios no técnicos.
 Ejecutar con:  streamlit run app.py
 """
+import html
 import os
 import sys
 import json
@@ -179,37 +180,42 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 
 def _cargar_remitentes_frecuentes() -> list[dict]:
     try:
+        import email.utils as eutils
         from collections import Counter
+        from gmail_processor.utils import get_header, extract_email_address
+
         svc    = st.session_state.service
         result = svc.users().messages().list(
-            userId="me", q="in:inbox", maxResults=500,
+            userId="me", q="in:inbox", maxResults=150,
         ).execute()
-        stubs  = result.get("messages", [])[:150]
-        counts: Counter      = Counter()
+        stubs = result.get("messages", [])
+
+        counts: Counter        = Counter()
         names:  dict[str, str] = {}
-        for stub in stubs:
-            try:
-                msg = svc.users().messages().get(
+
+        def _on_response(_request_id, response, exception):
+            if exception is not None or response is None:
+                return
+            raw   = get_header(response.get("payload", {}).get("headers", []), "From")
+            addr  = extract_email_address(raw)
+            if not addr:
+                return
+            name = eutils.parseaddr(raw)[0].strip()
+            counts[addr] += 1
+            if addr not in names and name:
+                names[addr] = name
+
+        # Batch metadata fetches (Gmail caps ~100 calls/batch) instead of one
+        # HTTP round-trip per message — cuts up to 150 sequential calls to 2.
+        for i in range(0, len(stubs), 100):
+            batch = svc.new_batch_http_request(callback=_on_response)
+            for stub in stubs[i:i + 100]:
+                batch.add(svc.users().messages().get(
                     userId="me", id=stub["id"],
                     format="metadata", metadataHeaders=["From"],
-                ).execute()
-                raw = next(
-                    (h["value"] for h in msg.get("payload", {}).get("headers", [])
-                     if h["name"].lower() == "from"),
-                    "",
-                )
-                if "<" in raw:
-                    email = raw.split("<")[1].rstrip(">").strip().lower()
-                    name  = raw.split("<")[0].strip().strip('"').strip("'")
-                else:
-                    email = raw.strip().lower()
-                    name  = ""
-                if email:
-                    counts[email] += 1
-                    if email not in names and name:
-                        names[email] = name
-            except Exception:
-                continue
+                ))
+            batch.execute()
+
         return [
             {"email": e, "name": names.get(e, ""), "count": c}
             for e, c in counts.most_common(15)
@@ -239,9 +245,9 @@ _FREE_EMAIL_PROVIDERS = frozenset([
 
 
 def _derivar_label(email: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
+    words = name.strip().split()
+    if words:
+        clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
     domain = email.split("@")[-1] if "@" in email else ""
@@ -328,11 +334,18 @@ def _cargar_stats() -> dict:
 
 def _cargar_audit(last: int, decision: str | None) -> list[dict]:
     try:
-        from gmail_processor.audit_log import AuditLogger
-        entries = AuditLogger().recent(max(last * 3, 200))
-        if decision:
-            entries = [e for e in entries if e.get("decision") == decision]
-        return entries[-last:]
+        from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
+        audit = AuditLogger()
+        if not decision:
+            return audit.recent(last)
+        # The requested decision may be sparse, so widen the fetch window
+        # until there are enough matches (or the whole log has been read).
+        fetch_n = max(last * 3, 200)
+        while True:
+            entries = [e for e in audit.recent(fetch_n) if e.get("decision") == decision]
+            if len(entries) >= last or fetch_n >= MAX_ENTRIES:
+                return entries[-last:]
+            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
     except Exception as exc:
         st.error(f"Error al cargar audit log: {exc}")
         return []
@@ -571,12 +584,8 @@ def _time_ago(date_str: str) -> str:
 # ── Helpers: perfiles y chat ───────────────────────────────────────────────────
 
 def _check_api_key() -> bool:
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-    return bool(os.getenv("ANTHROPIC_API_KEY"))
+    from gmail_processor.utils import get_api_key
+    return bool(get_api_key())
 
 
 def _get_morning_brief() -> dict:
@@ -1114,7 +1123,7 @@ if _current_page == "inicio":
         # ── Tarjeta de buenos días ──────────────────────────────────────────
         _brief = _get_morning_brief()
         if _brief:
-            _bsummary = _brief.get("summary_text", "Todo está en orden.")
+            _bsummary = html.escape(_brief.get("summary_text", "Todo está en orden."))
             st.markdown(
                 f'<div class="brief-card">'
                 f'<p style="margin:0;font-size:1.05rem;color:#1e40af;font-weight:500">'
@@ -1131,8 +1140,9 @@ if _current_page == "inicio":
                     if _bnif:
                         st.markdown("**Novedades de tus contactos importantes:**")
                         for _bm in _bnif[:5]:
+                            _bm_name = html.escape(_bm.get('name', ''))
                             st.markdown(
-                                f"&nbsp;&nbsp;📧 **{_bm.get('name', '')}** "
+                                f"&nbsp;&nbsp;📧 **{_bm_name}** "
                                 f"· {_time_ago(_bm.get('date', ''))}",
                                 unsafe_allow_html=True,
                             )
@@ -1337,7 +1347,8 @@ elif _current_page == "contactos":
                                     )
                                 if _cptopics:
                                     _tags_html = " ".join(
-                                        f'<span class="tag">{t}</span>' for t in _cptopics[:3]
+                                        f'<span class="tag">{html.escape(str(t))}</span>'
+                                        for t in _cptopics[:3]
                                     )
                                     st.markdown(_tags_html, unsafe_allow_html=True)
                                 st.markdown("")

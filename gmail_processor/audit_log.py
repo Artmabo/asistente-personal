@@ -93,7 +93,10 @@ class AuditLogger:
 
     def export_csv(self, n: int = MAX_ENTRIES) -> str:
         """Returns the most recent `n` log entries as a UTF-8 CSV string."""
-        entries = self.recent(n)
+        return self.entries_to_csv(self.recent(n))
+
+    def entries_to_csv(self, entries: list[dict]) -> str:
+        """Serializes a list of audit entries (e.g. pre-filtered by caller) to CSV."""
         if not entries:
             return ""
         fieldnames = ["ts", "sender", "domain", "score", "decision", "rule", "reason", "learned", "protected", "dry_run", "msg_id"]

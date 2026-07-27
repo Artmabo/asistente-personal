@@ -85,22 +85,26 @@ class StorageAnalyzer:
                 result[cat] = {"count": 0, "size_mb": 0}
                 continue
 
-            # Muestrear sizeEstimate
-            sample_ids  = all_ids[:_SAMPLE_PER_CAT]
-            total_bytes = 0
-            sampled     = 0
-            for msg_id in sample_ids:
-                try:
-                    msg = self.svc.users().messages().get(
-                        userId="me", id=msg_id, format="minimal"
-                    ).execute()
-                    total_bytes += msg.get("sizeEstimate", 0)
-                    sampled     += 1
-                    time.sleep(0.02)
-                except HttpError:
-                    continue
+            # Muestrear sizeEstimate — un solo batch HTTP en vez de N llamadas secuenciales
+            sample_ids = all_ids[:_SAMPLE_PER_CAT]
+            sample_sizes: list[int] = []
 
-            avg_bytes = total_bytes / sampled if sampled else _AVG_BYTES_FALLBACK
+            def _on_sample(_request_id, response, exception):
+                if exception is None and response is not None:
+                    sample_sizes.append(response.get("sizeEstimate", 0))
+
+            batch = self.svc.new_batch_http_request(callback=_on_sample)
+            for msg_id in sample_ids:
+                batch.add(self.svc.users().messages().get(
+                    userId="me", id=msg_id, format="minimal"
+                ))
+            try:
+                batch.execute()
+            except HttpError:
+                pass
+
+            sampled   = len(sample_sizes)
+            avg_bytes = sum(sample_sizes) / sampled if sampled else _AVG_BYTES_FALLBACK
             size_mb   = int(count * avg_bytes / 1e6)
 
             result[cat] = {"count": count, "size_mb": size_mb}
