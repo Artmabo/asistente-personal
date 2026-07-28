@@ -1,51 +1,21 @@
+"""
+Legacy entry point kept for backward compatibility with ejemplos*.py.
+Delegates authentication to gmail_processor.auth (which handles token
+refresh failures and restricts token.json permissions to the owner).
+"""
 from __future__ import print_function
-import os.path
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
 
-SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+from gmail_processor.auth import get_service
+
+SCOPES = ["https://mail.google.com/"]
+
 
 def get_gmail_service(creds_path="config/credentials.json", token_path="token.json"):
-
-    creds = None
-
-    # Si ya existe token
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-
-        print("\nTOKEN CARGADO:")
-        print(creds.scopes)
-
-    # Si no hay credenciales válidas
-    if not creds or not creds.valid:
-
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                creds_path,
-                SCOPES
-            )
-
-            creds = flow.run_local_server(port=0)
-
-            print("\nSCOPES DEL TOKEN:")
-            print(creds.scopes)
-
-        # Guardar token (tanto si fue refrescado como si es nuevo)
-        with open(token_path, "w") as token:
-            token.write(creds.to_json())
-
-    service = build("gmail", "v1", credentials=creds)
-
-    return service
+    """Builds and returns an authenticated Gmail API service."""
+    return get_service(creds_path=creds_path, token_path=token_path)
 
 
 def main():
-
     service = get_gmail_service()
 
     results = service.users().labels().list(userId="me").execute()

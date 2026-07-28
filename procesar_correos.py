@@ -16,13 +16,14 @@ Entry point for the Gmail rule-based processor.
   feedback <sender> correct|incorrect [--rule RULE] [--source SOURCE]
                                       [--time-to-action SEC]
   stats [--section learning|metrics|categories|all]
-  audit [--last N] [--decision TRASH|KEEP|SKIP]
+  audit [--last N] [--decision TRASH|KEEP|SKIP] [--csv PATH]
 
 ── Ejemplos ─────────────────────────────────────────────────────────────────
   python procesar_correos.py feedback newsletter@spam.com correct
   python procesar_correos.py feedback papa@gmail.com incorrect --rule promotions_60d
   python procesar_correos.py stats --section metrics
   python procesar_correos.py audit --last 50 --decision TRASH
+  python procesar_correos.py audit --last 500 --csv audit_export.csv
 """
 import sys
 import argparse
@@ -197,21 +198,37 @@ def _cmd_audit(argv: list[str]):
     parser.add_argument("--decision", default=None,
                         choices=["TRASH", "KEEP", "SKIP"],
                         help="Filter by decision type")
+    parser.add_argument("--csv", default=None, metavar="PATH",
+                        help="Write the selected entries as CSV to PATH instead of printing a table")
     args = parser.parse_args(argv)
 
     setup_logging(level=logging.WARNING)
 
-    from gmail_processor.audit_log import AuditLogger
-    audit   = AuditLogger()
-    entries = audit.recent(max(args.last * 3, 200))   # over-fetch to allow filtering
+    from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
+    audit = AuditLogger()
 
     if args.decision:
-        entries = [e for e in entries if e.get("decision") == args.decision]
+        # The requested decision may be sparse, so widen the fetch window
+        # until there are enough matches (or the whole log has been read).
+        fetch_n = max(args.last * 3, 200)
+        while True:
+            entries = [e for e in audit.recent(fetch_n) if e.get("decision") == args.decision]
+            if len(entries) >= args.last or fetch_n >= MAX_ENTRIES:
+                break
+            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
+    else:
+        entries = audit.recent(args.last)
 
     entries = entries[-args.last:]
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")
+        return
+
+    if args.csv:
+        with open(args.csv, "w", encoding="utf-8", newline="") as f:
+            f.write(audit.entries_to_csv(entries))
+        print(f"Audit log exportado ({len(entries)} entradas) → {args.csv}")
         return
 
     print(f"\nÚltimas {len(entries)} entradas del audit log:\n")
