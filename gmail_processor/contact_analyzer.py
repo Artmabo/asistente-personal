@@ -17,7 +17,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header
+from .utils import get_header, extract_domain
 
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
@@ -97,7 +97,7 @@ def _parse_from(raw: str) -> tuple[str, str]:
 
 
 def _domain(addr: str) -> str:
-    return addr.split("@")[-1].lower() if "@" in addr else ""
+    return extract_domain(addr)
 
 
 def _is_esp(addr: str) -> bool:
@@ -179,7 +179,8 @@ class ContactAnalyzer:
         pending_set = set(self.state["pending"])
 
         _working: dict[str, dict] = {}
-        scanned    = 0
+        scanned           = 0
+        already_reviewed  = 0
         page_token = None
         page       = 0
         date_q     = _date_filter(days_range)
@@ -223,6 +224,7 @@ class ContactAnalyzer:
                     continue
 
                 if addr in reviewed or addr in pending_set:
+                    already_reviewed += 1
                     continue
 
                 subject   = get_header(headers, "Subject")
@@ -303,8 +305,6 @@ class ContactAnalyzer:
                     "asked_at":        now,
                 }
                 new_pending += 1
-
-        already_reviewed  = scanned - sum(w["count"] for w in _working.values())
 
         self.state["pending"]             = list(pending_set)
         self.state["pending_meta"]        = pending_meta
@@ -676,6 +676,7 @@ class ContactAnalyzer:
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
         try:
+            import ast
             import importlib
             import gmail_processor.rules as rules_mod
 
@@ -706,8 +707,23 @@ class ContactAnalyzer:
             safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
             new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
-            importlib.reload(rules_mod)
+            new_content = "\n".join(lines)
+
+            # Guard against the brace-counting insertion above landing in the
+            # wrong place (e.g. a stray "{"/"}" inside a comment or string
+            # earlier in the file) and silently corrupting an executable module.
+            try:
+                ast.parse(new_content)
+            except SyntaxError as e:
+                return {"error": f"Refusing to write: would make rules.py invalid Python ({e})"}
+
+            rules_path.write_text(new_content, encoding="utf-8")
+            try:
+                importlib.reload(rules_mod)
+            except Exception as e:
+                rules_path.write_text(content, encoding="utf-8")  # roll back
+                importlib.reload(rules_mod)
+                return {"error": f"Reload failed after write, rolled back: {e}"}
             return {"success": True, "label": label}
         except Exception as exc:
             return {"error": str(exc)}
@@ -763,7 +779,7 @@ def _derive_label(email_addr: str, name: str) -> str:
         clean = "".join(c for c in word if c.isalpha())[:10]
         if clean:
             return clean.upper()
-    domain = email_addr.split("@")[-1] if "@" in email_addr else ""
+    domain = _domain(email_addr)
     local  = email_addr.split("@")[0]  if "@" in email_addr else email_addr
     if domain in _FREE_PROVIDERS:
         clean = "".join(c for c in local if c.isalpha())[:10]

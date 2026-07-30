@@ -5,6 +5,8 @@ from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from gmail_processor.utils import with_backoff
+
 CATEGORIAS = {
     "spam":            "in:spam",
     "promociones":     "category:promotions",
@@ -28,6 +30,28 @@ def obtener_servicio(creds_path="config/credentials.json", token_path="token.jso
     return get_service(creds_path=creds_path, token_path=token_path)
 
 
+@with_backoff()
+def _list_page(service, query, page_token):
+    return service.users().messages().list(
+        userId='me',
+        q=query,
+        maxResults=500,
+        pageToken=page_token,
+    ).execute()
+
+
+@with_backoff()
+def _batch_modify(service, chunk):
+    service.users().messages().batchModify(
+        userId='me',
+        body={
+            'ids': chunk,
+            'addLabelIds': ['TRASH'],
+            'removeLabelIds': ['INBOX'],
+        }
+    ).execute()
+
+
 def mover_lote_a_papelera(service, ids: list) -> int:
     """Move up to 1000 IDs to trash via batchModify. Returns count successfully sent."""
     if not ids:
@@ -36,14 +60,7 @@ def mover_lote_a_papelera(service, ids: list) -> int:
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
         try:
-            service.users().messages().batchModify(
-                userId='me',
-                body={
-                    'ids': chunk,
-                    'addLabelIds': ['TRASH'],
-                    'removeLabelIds': ['INBOX'],
-                }
-            ).execute()
+            _batch_modify(service, chunk)
             total += len(chunk)
         except HttpError as e:
             print(f"  Error en lote ({len(chunk)} mensajes): {e}")
@@ -87,12 +104,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         while True:
             page_num += 1
             try:
-                result = service.users().messages().list(
-                    userId='me',
-                    q=query,
-                    maxResults=500,
-                    pageToken=page_token,
-                ).execute()
+                result = _list_page(service, query, page_token)
             except HttpError as e:
                 print(f"  Error al listar página {page_num}: {e}")
                 break
@@ -142,7 +154,11 @@ def limpiar_todo_basura(service) -> dict:
     for cat in CATEGORIAS:
         print(f"\n  {'─'*44}")
         print(f"  {_NOMBRES_ES[cat].upper()}")
-        r = limpiar_bandeja(service, categorias=[cat])
+        try:
+            r = limpiar_bandeja(service, categorias=[cat])
+        except Exception as e:
+            print(f"  Error inesperado limpiando '{cat}', continuando con el resto: {e}")
+            r = {"procesados": 0, "exitos": 0, "errores": 0}
         resultados[cat] = r
         total_p += r['procesados']
         total_e += r['exitos']
@@ -162,7 +178,7 @@ def limpiar_todo_basura(service) -> dict:
 
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
 
-def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False):
+def limpiar_correos(service=None, meses=6, solo_no_leidos=True):
     if service is None:
         service = obtener_servicio()
     fecha = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")

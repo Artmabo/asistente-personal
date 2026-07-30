@@ -245,12 +245,13 @@ _FREE_EMAIL_PROVIDERS = frozenset([
 
 
 def _derivar_label(email: str, name: str) -> str:
+    from gmail_processor.utils import extract_domain
     words = name.strip().split()
     if words:
         clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
-    domain = email.split("@")[-1] if "@" in email else ""
+    domain = extract_domain(email)
     local  = email.split("@")[0]  if "@" in email else email
     if domain in _FREE_EMAIL_PROVIDERS:
         clean = "".join(c for c in local if c.isalpha())[:10]
@@ -305,11 +306,26 @@ def _proteger_remitente(email: str, name: str) -> dict:
         # Use repr() so quotes, backslashes and special chars are safely escaped
         new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
         lines.insert(insert_at, new_line)
+        new_content = "\n".join(lines)
+
+        # Guard against the brace-counting insertion above landing in the
+        # wrong place and silently corrupting an executable module.
+        import ast
+        try:
+            ast.parse(new_content)
+        except SyntaxError as e:
+            return {"error": f"No se escribió: dejaría rules.py con sintaxis inválida ({e})"}
 
         with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+            f.write(new_content)
 
-        importlib.reload(rules_mod)
+        try:
+            importlib.reload(rules_mod)
+        except Exception as e:
+            with open(rules_path, "w", encoding="utf-8") as f:
+                f.write(content)  # roll back
+            importlib.reload(rules_mod)
+            return {"error": f"Fallo al recargar tras escribir, se revirtió: {e}"}
         return {"success": True, "email": email, "label": label}
     except Exception as exc:
         return {"error": str(exc)}
@@ -357,7 +373,8 @@ def _enviar_feedback(sender: str, outcome: str, rule: str) -> dict | None:
         from gmail_processor import setup_logging
         from gmail_processor.learning_engine import LearningEngine, FeedbackEvent
         setup_logging(level=logging.WARNING)
-        domain = sender.split("@")[-1] if "@" in sender else sender
+        from gmail_processor.utils import extract_domain
+        domain = extract_domain(sender) or sender
         engine = LearningEngine()
         event  = FeedbackEvent(
             outcome=outcome, source="manual",
@@ -1134,8 +1151,9 @@ if _current_page == "inicio":
             _bnif    = _brief.get("new_from_important", [])
             _bpend   = _brief.get("pending_decisions",  0)
             _balerts = _brief.get("alerts",             [])
+            _bunsub  = _brief.get("unsubscribe_candidates", [])
 
-            if _bnif or _bpend > 0 or _balerts:
+            if _bnif or _bpend > 0 or _balerts or _bunsub:
                 with st.container(border=True):
                     if _bnif:
                         st.markdown("**Novedades de tus contactos importantes:**")
@@ -1158,6 +1176,15 @@ if _current_page == "inicio":
                             st.rerun()
                     for _ba in _balerts[:3]:
                         st.warning(_ba)
+                    if _bunsub:
+                        st.markdown("**Candidatos para darte de baja:**")
+                        for _bu in _bunsub[:5]:
+                            _bu_name = html.escape(_bu.get("name", ""))
+                            _bu_n    = _bu.get("count", 0)
+                            st.markdown(
+                                f"&nbsp;&nbsp;✉️ **{_bu_name}** · {_bu_n} correo{'s' if _bu_n != 1 else ''}",
+                                unsafe_allow_html=True,
+                            )
             else:
                 st.success("✅ Todo en orden · No hay novedades hoy")
 
@@ -1588,11 +1615,15 @@ elif _current_page == "analizar":
                     )
 
                 if _ca_btn_new:
-                    _ca_reset()
-                    st.session_state["ca_batch_result"] = None
-                    st.session_state["ca_apply_result"] = None
-                    st.session_state["ca_decisions"]    = {}
-                    st.rerun()
+                    try:
+                        _ca_reset()
+                    except Exception as exc:
+                        st.error(f"Error al reiniciar el análisis: {exc}")
+                    else:
+                        st.session_state["ca_batch_result"] = None
+                        st.session_state["ca_apply_result"] = None
+                        st.session_state["ca_decisions"]    = {}
+                        st.rerun()
                 if _ca_btn_review:
                     st.session_state["ca_batch_result"] = {
                         "auto_personal": 0, "auto_spam": 0,

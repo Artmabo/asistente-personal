@@ -76,6 +76,8 @@ class AuditLogger:
 
     def recent(self, n: int = 20) -> list[dict]:
         """Returns the n most recent entries (including un-flushed buffer)."""
+        if n <= 0:
+            return []
         buf_entries = self._buf[-n:]
         if len(buf_entries) >= n:
             return buf_entries
@@ -113,9 +115,10 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                lines = f.readlines()
+        except OSError:
             return []
+        return self._parse_lines(lines)
 
     def _load_tail(self, n: int) -> list[dict]:
         """Reads only the last n lines using a deque to avoid loading the whole file."""
@@ -123,10 +126,22 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                tail = deque(
-                    (ln for ln in f if ln.strip()),
-                    maxlen=n,
-                )
-            return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+                tail = deque((ln for ln in f if ln.strip()), maxlen=n)
+        except OSError:
             return []
+        return self._parse_lines(tail)
+
+    @staticmethod
+    def _parse_lines(lines) -> list[dict]:
+        """Parses JSONL lines, skipping any individual malformed line instead of
+        discarding the whole log (a single truncated line, e.g. from a process
+        killed mid-write, must not lose every prior audit entry)."""
+        entries = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed audit log line")
+        return entries
