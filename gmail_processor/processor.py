@@ -10,7 +10,7 @@ from .actions import GmailActions
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
-from .utils import get_header
+from .utils import get_header, with_backoff
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
@@ -66,12 +66,7 @@ class GmailProcessor:
         while True:
             page += 1
             try:
-                result = self.service.users().messages().list(
-                    userId="me",
-                    q=query,
-                    maxResults=cfg.MAX_RESULTS_PER_PAGE,
-                    pageToken=page_token,
-                ).execute()
+                result = self._list_page(query, page_token)
             except HttpError as e:
                 logger.error(f"Failed to list messages (page {page}): {e}")
                 break
@@ -83,7 +78,11 @@ class GmailProcessor:
 
             logger.info(f"Page {page}: {len(messages)} messages")
             for stub in messages:
-                self._process_one(stub["id"])
+                try:
+                    self._process_one(stub["id"])
+                except Exception:
+                    logger.exception(f"Unexpected error processing {stub['id']}, skipping")
+                    self.stats["errors"] += 1
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -108,14 +107,27 @@ class GmailProcessor:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
+    @with_backoff()
+    def _list_page(self, query: str, page_token: str | None):
+        return self.service.users().messages().list(
+            userId="me",
+            q=query,
+            maxResults=cfg.MAX_RESULTS_PER_PAGE,
+            pageToken=page_token,
+        ).execute()
+
+    @with_backoff()
+    def _get_message(self, msg_id: str):
+        return self.service.users().messages().get(
+            userId="me",
+            id=msg_id,
+            format="metadata",
+            metadataHeaders=["From", "Subject", "Date"],
+        ).execute()
+
     def _process_one(self, msg_id: str):
         try:
-            message = self.service.users().messages().get(
-                userId="me",
-                id=msg_id,
-                format="metadata",
-                metadataHeaders=["From", "Subject", "Date"],
-            ).execute()
+            message = self._get_message(msg_id)
         except HttpError as e:
             logger.error(f"Could not fetch {msg_id}: {e}")
             self.stats["errors"] += 1

@@ -101,7 +101,8 @@ def _cmd_feedback(argv: list[str]):
     args = parser.parse_args(argv)
 
     setup_logging(level=logging.INFO)
-    domain = args.sender.split("@")[-1] if "@" in args.sender else args.sender
+    from gmail_processor.utils import extract_domain
+    domain = extract_domain(args.sender) or args.sender
 
     from gmail_processor.learning_engine import LearningEngine, FeedbackEvent
     engine = LearningEngine()
@@ -219,7 +220,7 @@ def _cmd_audit(argv: list[str]):
     else:
         entries = audit.recent(args.last)
 
-    entries = entries[-args.last:]
+    entries = entries[-args.last:] if args.last > 0 else []
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")

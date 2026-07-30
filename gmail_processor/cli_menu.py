@@ -64,6 +64,9 @@ def run_menu():
                 _pause()
         except (KeyboardInterrupt, EOFError):
             pass   # Ctrl+C at any submenu returns to main menu
+        except Exception as exc:
+            print(f"\n  ERROR inesperado: {exc}")
+            _pause()
 
 
 # ── Menu rendering ────────────────────────────────────────────────────────────
@@ -338,7 +341,8 @@ def _menu_feedback():
     if source not in ("manual", "recovery", "automatic"):
         source = "manual"
 
-    domain = sender.split("@")[-1] if "@" in sender else sender
+    from .utils import extract_domain
+    domain = extract_domain(sender) or sender
 
     from .processor import setup_logging
     setup_logging(level=logging.INFO)
@@ -781,9 +785,16 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     important_str = "True" if important else "False"
     new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
+    new_content = "\n".join(lines) + "\n"
+
+    import ast
+    try:
+        ast.parse(new_content)
+    except SyntaxError:
+        return False  # would corrupt rules.py — don't write it
 
     try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        rules_path.write_text(new_content, encoding="utf-8")
         return True
     except OSError:
         return False

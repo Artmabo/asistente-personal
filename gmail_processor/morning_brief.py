@@ -57,8 +57,10 @@ class MorningBrief:
         alerts: list[str] = []
         stale_profiles: list[str] = []
         for addr, p in profiles.items():
-            for al in p.get("alerts", [])[:1]:
-                alerts.append(al)
+            profile_alerts = p.get("alerts", [])
+            if isinstance(profile_alerts, list):
+                for al in profile_alerts[:1]:
+                    alerts.append(al)
             try:
                 built_at = datetime.fromisoformat(p.get("built_at", ""))
                 if (today - built_at).days > 7:
@@ -93,6 +95,19 @@ class MorningBrief:
             except Exception:
                 continue
 
+        # Candidatos a darse de baja (ContactAnalyzer ya calcula esto a partir del
+        # mismo analysis_state.json; se reutiliza en vez de reimplementar la lógica).
+        unsubscribe_candidates: list[dict] = []
+        try:
+            from .contact_analyzer import ContactAnalyzer
+            candidates = ContactAnalyzer(None).get_unsubscribe_candidates(max_results=5)
+            unsubscribe_candidates = [
+                {"name": c["name"] or c["email"], "email": c["email"], "count": c["count"]}
+                for c in candidates
+            ]
+        except Exception:
+            pass
+
         # Last cleanup run info
         last_cleanup = self._read_json("cleanup_summary.json", {})
         last_cleanup_info = None
@@ -125,6 +140,9 @@ class MorningBrief:
             parts.append(f"{pending_count} contacto{'s' if pending_count > 1 else ''} pendiente{'s' if pending_count > 1 else ''} de revisión")
         if alerts:
             parts.append(f"{len(alerts)} aviso{'s' if len(alerts) > 1 else ''} de tus contactos")
+        if unsubscribe_candidates:
+            n = len(unsubscribe_candidates)
+            parts.append(f"{n} remitente{'s' if n > 1 else ''} candidato{'s' if n > 1 else ''} para darte de baja")
 
         summary_text = ("Hoy " + ", ".join(parts) + ".") if parts else "Todo está en orden. Tu correo está al día."
 
@@ -134,6 +152,7 @@ class MorningBrief:
             "new_from_important":   new_from_important[:5],
             "pending_decisions":    pending_count,
             "alerts":               alerts[:5],
+            "unsubscribe_candidates": unsubscribe_candidates,
             "storage_percent":      None,
             "personal_count":       personal,
             "spam_count":           spam,

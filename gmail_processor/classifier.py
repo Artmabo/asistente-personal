@@ -10,7 +10,7 @@ Priority order (first match wins):
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, extract_domain
 
 
 @dataclass
@@ -31,7 +31,7 @@ class EmailClassifier:
         label_ids = message.get("labelIds", [])
 
         sender  = extract_email_address(get_header(headers, "From"))
-        domain  = sender.split("@")[-1] if "@" in sender else ""
+        domain  = extract_domain(sender)
         subject = get_header(headers, "Subject")
         search_text = f"{sender} {subject}"
 

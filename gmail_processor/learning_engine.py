@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, extract_domain
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -243,7 +243,7 @@ class LearningEngine:
         label_ids = message.get("labelIds", [])
         headers   = message.get("payload", {}).get("headers", [])
         email     = extract_email_address(get_header(headers, "From"))
-        domain    = email.split("@")[-1] if "@" in email else ""
+        domain    = extract_domain(email)
 
         score:   float     = 0.0
         factors: list[str] = []
@@ -655,7 +655,7 @@ def _decay(last_accepted: str, lam: float) -> float:
     try:
         days = (date.today() - date.fromisoformat(last_accepted)).days
         return max(DECAY_FLOOR, math.exp(-lam * days))
-    except ValueError:
+    except (ValueError, TypeError):
         return 1.0
 
 

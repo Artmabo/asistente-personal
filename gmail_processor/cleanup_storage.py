@@ -22,7 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, extract_domain
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -143,7 +143,7 @@ class StorageCleaner:
         sender    = _sender_display(message)
         subject   = _subject(message)
         email     = _sender_email(message)
-        domain    = email.split("@")[-1] if "@" in email else ""
+        domain    = extract_domain(email)
         label_ids = message.get("labelIds", [])
 
         if self.engine:
@@ -266,7 +266,7 @@ class StorageCleaner:
             return "marcado como importante (IMPORTANT)"
 
         email  = _sender_email(message)
-        domain = email.split("@")[-1] if "@" in email else ""
+        domain = extract_domain(email)
 
         if email in cfg.CONTACT_RULES:
             return f"contacto protegido ({email})"

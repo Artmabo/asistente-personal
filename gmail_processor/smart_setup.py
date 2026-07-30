@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, extract_domain
 
 logger = logging.getLogger("gmail_processor.smart_setup")
 
@@ -414,7 +414,7 @@ class SmartSetup:
             return
 
         name   = _extract_name(headers)
-        domain = email.split("@")[-1] if "@" in email else ""
+        domain = extract_domain(email)
 
         if email not in senders:
             senders[email] = SenderStats(email=email, name=name, domain=domain)

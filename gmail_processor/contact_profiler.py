@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, get_header, extract_domain
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -100,7 +100,7 @@ class ContactProfiler:
     def _pre_classify(addr: str) -> str | None:
         """Pre-clasifica relation_type por reglas de dominio. Devuelve None si no aplica."""
         addr_lower = addr.lower()
-        domain     = addr_lower.split("@")[-1] if "@" in addr_lower else ""
+        domain     = extract_domain(addr_lower)
         local      = addr_lower.split("@")[0]  if "@" in addr_lower else addr_lower
 
         # Gobierno
@@ -213,7 +213,6 @@ class ContactProfiler:
     # ── Obtener correos ───────────────────────────────────────────────────────
 
     def _fetch_emails(self, service, addr: str) -> list[dict]:
-        result = []
         try:
             resp = service.users().messages().list(
                 userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
@@ -222,28 +221,36 @@ class ContactProfiler:
         except HttpError:
             return []
 
-        for stub in stubs:
-            try:
-                msg = service.users().messages().get(
-                    userId="me", id=stub["id"], format="full",
-                ).execute()
-                result.append(self._parse_message(msg))
-                time.sleep(0.05)
-            except HttpError:
-                continue
+        if not stubs:
+            return []
 
-        return result
+        # One batch HTTP request instead of up to _MAX_EMAILS sequential
+        # messages().get() calls — cuts round-trips ~50x per contact.
+        parsed: dict[str, dict] = {}
+
+        def _on_message(request_id, response, exception):
+            if exception is None and response is not None:
+                parsed[request_id] = self._parse_message(response)
+
+        batch = service.new_batch_http_request(callback=_on_message)
+        for stub in stubs:
+            batch.add(
+                service.users().messages().get(userId="me", id=stub["id"], format="full"),
+                request_id=stub["id"],
+            )
+        try:
+            batch.execute()
+        except HttpError:
+            pass
+
+        return [parsed[s["id"]] for s in stubs if s["id"] in parsed]
 
     def _parse_message(self, msg: dict) -> dict:
         payload  = msg.get("payload", {})
         headers  = payload.get("headers", [])
 
         def hdr(name: str) -> str:
-            nl = name.lower()
-            for h in headers:
-                if h.get("name", "").lower() == nl:
-                    return h.get("value", "")
-            return ""
+            return get_header(headers, name)
 
         from_raw   = hdr("From")
         from_name  = ""
