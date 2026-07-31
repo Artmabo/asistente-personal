@@ -380,17 +380,25 @@ class SmartSetup:
             if not stubs:
                 break
 
-            for stub in stubs:
-                try:
-                    msg = self.service.users().messages().get(
+            def _on_msg(_request_id, msg, exception):
+                if exception is None and msg is not None:
+                    self._ingest(msg, sent_threads, senders)
+
+            # Batch metadata fetches instead of one HTTP round-trip per message —
+            # analyze() paginates the whole inbox with no cap, so on a large
+            # mailbox this can be thousands of messages per run.
+            for i in range(0, len(stubs), 100):
+                batch = self.service.new_batch_http_request(callback=_on_msg)
+                for stub in stubs[i:i + 100]:
+                    batch.add(self.service.users().messages().get(
                         userId="me", id=stub["id"],
                         format="metadata", metadataHeaders=["From"],
-                    ).execute()
+                    ))
+                try:
+                    batch.execute()
                 except HttpError:
-                    fetched += 1
-                    continue
-                self._ingest(msg, sent_threads, senders)
-                fetched += 1
+                    pass
+            fetched += len(stubs)
 
             page += 1
             if progress_cb:

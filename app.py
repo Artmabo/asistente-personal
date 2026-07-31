@@ -344,7 +344,7 @@ def _cargar_audit(last: int, decision: str | None) -> list[dict]:
         while True:
             entries = [e for e in audit.recent(fetch_n) if e.get("decision") == decision]
             if len(entries) >= last or fetch_n >= MAX_ENTRIES:
-                return entries[-last:]
+                return entries[-last:] if last > 0 else []
             fetch_n = min(fetch_n * 4, MAX_ENTRIES)
     except Exception as exc:
         st.error(f"Error al cargar audit log: {exc}")

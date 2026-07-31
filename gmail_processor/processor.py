@@ -61,8 +61,9 @@ class GmailProcessor:
         logger.info(f"  Gmail Processor — mode={mode}  query='{query}'")
         logger.info(f"{'='*55}")
 
-        page_token = None
-        page = 0
+        page_token   = None
+        page         = 0
+        fatal_error  = False
         while True:
             page += 1
             try:
@@ -83,13 +84,26 @@ class GmailProcessor:
 
             logger.info(f"Page {page}: {len(messages)} messages")
             for stub in messages:
-                self._process_one(stub["id"])
+                try:
+                    self._process_one(stub["id"])
+                except HttpError as e:
+                    # Hard permission failure raised by GmailActions — every remaining
+                    # message would fail the same way, so stop instead of crashing.
+                    logger.error(f"Deteniendo: error de permisos irrecuperable ({e})")
+                    self.stats["errors"] += 1
+                    fatal_error = True
+                    break
+            if fatal_error:
+                break
 
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
 
         self._print_summary()
+
+        if fatal_error:
+            return self.stats
 
         if cleanup:
             cleaner = StorageCleaner(

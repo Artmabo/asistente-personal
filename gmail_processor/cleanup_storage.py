@@ -68,7 +68,15 @@ class StorageCleaner:
             self.engine.metrics.touch_run()
 
         for target in targets:
-            self._run_target(target, max_per)
+            try:
+                self._run_target(target, max_per)
+            except HttpError as e:
+                # Hard permission failure raised by GmailActions.trash() — every
+                # remaining target would fail the same way, so stop instead of
+                # crashing and losing the audit flush / summary below.
+                logger.error(f"Deteniendo cleanup: error de permisos irrecuperable ({e})")
+                self.stats["errors"] += 1
+                break
 
         if self.engine and self.learning_mode:
             changes = self.engine.update_rule_thresholds()

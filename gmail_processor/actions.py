@@ -1,7 +1,11 @@
 """
 Actions: executes Gmail API operations with retry logic.
 
-All public methods return True on success, False on failure.
+All public methods return True on success, False on failure — except for a hard
+permission failure (missing OAuth scope / revoked access), which raises HttpError
+so callers can abort the whole run instead of repeating the same failing call on
+every remaining message. Callers that loop over many messages must catch HttpError
+around the loop (see processor.py / cleanup_storage.py) to fail gracefully.
 In dry_run mode they log the intended action and return True without touching the API.
 """
 import json
