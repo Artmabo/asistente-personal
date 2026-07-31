@@ -291,7 +291,7 @@ def _menu_audit():
     else:
         entries = audit.recent(n)
 
-    entries = entries[-n:]
+    entries = entries[-n:] if n > 0 else []
 
     print()
     if not entries:
@@ -310,6 +310,16 @@ def _menu_audit():
         sc   = e.get("score", 0)
         rule = e.get("rule", "")
         print(f"  {ts:<20} {dec:<6} {sndr:<32} {sc:>+7.1f}  {rule:<20}  {mode}")
+
+    print()
+    if _confirm("¿Exportar estas entradas a un archivo CSV?"):
+        csv_path = _ask("Ruta del archivo CSV", "audit_export.csv")
+        try:
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                f.write(audit.entries_to_csv(entries))
+            print(f"\n  Exportado ({len(entries)} entradas) → {csv_path}")
+        except OSError as e:
+            print(f"\n  Error al exportar: {e}")
 
     _pause()
 
@@ -543,10 +553,9 @@ def _menu_smart_setup(get_svc: Callable):
     print("  Analiza tus últimos 12 meses de correo para detectar")
     print("  contactos importantes que deben estar protegidos.")
     print()
-    print(f"  Límites del análisis:")
-    print(f"    • Hasta 500 correos de bandeja de entrada")
-    print(f"    • Hasta 400 mensajes enviados (para detectar respuestas)")
-    print(f"    • Tiempo estimado: 3-6 minutos")
+    print(f"  El análisis recorre toda tu bandeja de entrada y enviados")
+    print(f"  del periodo elegido (sin límite de mensajes). El tiempo")
+    print(f"  depende del tamaño de tu correo — puede tardar varios minutos.")
     print()
     print("  Los resultados se muestran antes de modificar nada.")
     print("  Confirmarás cada cambio antes de que sea aplicado.")

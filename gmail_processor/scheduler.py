@@ -87,6 +87,16 @@ class CleanupScheduler:
 
         if enabled and self._scheduler and self._scheduler.running:
             self._reschedule()
+        elif not enabled and self._job:
+            # Without this, calling configure(enabled=False) would leave the
+            # previously scheduled job running despite config saying disabled.
+            try:
+                self._job.remove()
+            except Exception:
+                pass
+            self._job = None
+            self.config["next_run"] = None
+            self._save()
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""

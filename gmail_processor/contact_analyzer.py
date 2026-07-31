@@ -203,27 +203,16 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
-            for stub in stubs:
-                if scanned >= batch_size:
-                    break
-                scanned += 1
-                try:
-                    msg = self.svc.users().messages().get(
-                        userId="me",
-                        id=stub["id"],
-                        format="metadata",
-                        metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
-                    ).execute()
-                except HttpError:
-                    continue
-
-                headers        = msg.get("payload", {}).get("headers", [])
-                addr, name     = _parse_from(get_header(headers, "From"))
+            def _on_inbox_msg(_request_id, msg, exception):
+                if exception is not None or msg is None:
+                    return
+                headers    = msg.get("payload", {}).get("headers", [])
+                addr, name = _parse_from(get_header(headers, "From"))
                 if not addr:
-                    continue
+                    return
 
                 if addr in reviewed or addr in pending_set:
-                    continue
+                    return
 
                 subject   = get_header(headers, "Subject")
                 date_hdr  = get_header(headers, "Date")
@@ -246,6 +235,23 @@ class ContactAnalyzer:
                     w["dates"].append(date_hdr)
                 w["has_unsub"] = w["has_unsub"] or has_unsub
                 w["count"]    += 1
+
+            # Batch metadata fetches instead of one HTTP round-trip per message —
+            # `maxResults=min(remaining, 500)` above already caps `stubs` to batch_size.
+            for i in range(0, len(stubs), 100):
+                batch = self.svc.new_batch_http_request(callback=_on_inbox_msg)
+                for stub in stubs[i:i + 100]:
+                    batch.add(self.svc.users().messages().get(
+                        userId="me",
+                        id=stub["id"],
+                        format="metadata",
+                        metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
+                    ))
+                try:
+                    batch.execute()
+                except HttpError:
+                    pass
+            scanned += len(stubs)
 
             # Persist running count so scan is resumable
             self.state["stats"]["total_scanned"] = (
@@ -603,24 +609,31 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
-            for stub in stubs:
-                if fetched >= _MAX_SENT_INDEXED:
-                    break
-                try:
-                    msg = self.svc.users().messages().get(
+            def _on_sent_msg(_request_id, msg, exception):
+                if exception is not None or msg is None:
+                    return
+                headers = msg.get("payload", {}).get("headers", [])
+                for hname in ("To", "Cc"):
+                    raw = get_header(headers, hname)
+                    if raw:
+                        for _, a in email.utils.getaddresses([raw]):
+                            if a:
+                                addrs.add(a.strip().lower())
+
+            # Batch metadata fetches instead of one HTTP round-trip per message —
+            # maxResults already caps `stubs` to `remaining`, so no extra cap needed here.
+            for i in range(0, len(stubs), 100):
+                batch = self.svc.new_batch_http_request(callback=_on_sent_msg)
+                for stub in stubs[i:i + 100]:
+                    batch.add(self.svc.users().messages().get(
                         userId="me", id=stub["id"],
                         format="metadata", metadataHeaders=["To", "Cc"],
-                    ).execute()
-                    headers = msg.get("payload", {}).get("headers", [])
-                    for hname in ("To", "Cc"):
-                        raw = get_header(headers, hname)
-                        if raw:
-                            for _, a in email.utils.getaddresses([raw]):
-                                if a:
-                                    addrs.add(a.strip().lower())
+                    ))
+                try:
+                    batch.execute()
                 except HttpError:
                     pass
-                fetched += 1
+            fetched += len(stubs)
 
             if progress_cb:
                 progress_cb(
