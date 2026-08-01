@@ -5,6 +5,7 @@ All public methods return True on success, False on failure.
 In dry_run mode they log the intended action and return True without touching the API.
 """
 import json
+import socket
 import time
 import logging
 from googleapiclient.errors import HttpError
@@ -20,13 +21,18 @@ class GmailActions:
         self.service  = service
         self.dry_run  = dry_run
         self._labels: dict[str, str] = {}   # label name → label id cache
+        self._labels_loaded = False
 
     # ── Label management ──────────────────────────────────────────────────────
 
+    def _ensure_labels_loaded(self):
+        if not self._labels_loaded:
+            self._load_labels()
+            self._labels_loaded = True
+
     def ensure_label(self, name: str) -> str:
         """Returns the label ID for `name`, creating it in Gmail if needed."""
-        if not self._labels:
-            self._load_labels()
+        self._ensure_labels_loaded()
 
         if name in self._labels:
             return self._labels[name]
@@ -70,8 +76,7 @@ class GmailActions:
         return self._modify(msg_id, add=[label_id])
 
     def remove_label(self, msg_id: str, label_name: str) -> bool:
-        if not self._labels:
-            self._load_labels()
+        self._ensure_labels_loaded()
         label_id = self._labels.get(label_name)
         if not label_id:
             return True  # Label doesn't exist — nothing to remove
@@ -121,7 +126,8 @@ class GmailActions:
         return result is not None
 
     def _call(self, method, **kwargs):
-        """Executes a Gmail API call with exponential-backoff retry on rate limits."""
+        """Executes a Gmail API call with exponential-backoff retry on rate limits
+        and on transient network errors (connection drops, timeouts)."""
         delay = _BASE_DELAY
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
@@ -140,6 +146,16 @@ class GmailActions:
                     delay *= 2
                     continue
                 logger.error(f"API error {status} on attempt {attempt}: {e}")
+                return None
+            except (OSError, socket.timeout, TimeoutError) as e:
+                # Network-level failure (connection drop, DNS blip, timeout) —
+                # not an HttpError, but just as transient. Retry the same way.
+                if attempt < _MAX_RETRIES:
+                    logger.warning(f"Network error ({e}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                logger.error(f"Network error on final attempt {attempt}: {e}")
                 return None
         return None
 

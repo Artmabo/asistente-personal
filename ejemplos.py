@@ -41,7 +41,9 @@ def ejemplo_4_contar_no_leidos():
     service = get_gmail_service()
     try:
         results = service.users().messages().list(userId="me", q="is:unread").execute()
-        count = len(results.get("messages", []))
+        # messages.list only returns one page (~100 items) — use Gmail's own
+        # estimate instead of len(messages), which silently caps at that page size.
+        count = results.get("resultSizeEstimate", len(results.get("messages", [])))
         print(f"Correos no leídos: {count}\n")
     except Exception as e:
         print(f"Error: {e}\n")

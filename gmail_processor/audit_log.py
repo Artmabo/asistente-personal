@@ -68,9 +68,15 @@ class AuditLogger:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
-            for entry in combined:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                for entry in combined:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            tmp.replace(self.path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 
@@ -113,8 +119,8 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                return self._parse_lines(f)
+        except OSError:
             return []
 
     def _load_tail(self, n: int) -> list[dict]:
@@ -127,6 +133,21 @@ class AuditLogger:
                     (ln for ln in f if ln.strip()),
                     maxlen=n,
                 )
-            return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+        except OSError:
             return []
+        return self._parse_lines(tail)
+
+    @staticmethod
+    def _parse_lines(lines) -> list[dict]:
+        """Parses JSONL lines, skipping (not discarding the whole file for) any
+        single corrupted line — a partial/interrupted write shouldn't erase
+        every entry that came before it."""
+        entries = []
+        for ln in lines:
+            if not ln.strip():
+                continue
+            try:
+                entries.append(json.loads(ln))
+            except json.JSONDecodeError:
+                logger.warning("Skipping corrupt audit log line")
+        return entries

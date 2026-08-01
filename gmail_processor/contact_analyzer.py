@@ -679,7 +679,10 @@ class ContactAnalyzer:
             import importlib
             import gmail_processor.rules as rules_mod
 
-            if email_addr in rules_mod.CONTACT_RULES:
+            domain = email_addr.split("@")[-1] if "@" in email_addr else ""
+            if email_addr in rules_mod.CONTACT_RULES or (
+                domain and f"@{domain}" in rules_mod.CONTACT_RULES
+            ):
                 return {"already_protected": True}
 
             label      = _derive_label(email_addr, name)

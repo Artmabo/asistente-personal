@@ -5,7 +5,11 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://mail.google.com/"]
+# gmail.modify covers everything this app does (read, label, archive, trash) —
+# it stops short of the full-mailbox scope (settings, filters, permanent
+# delete) that "https://mail.google.com/" would grant, limiting the blast
+# radius if token.json or credentials.json is ever compromised.
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 def get_service(
@@ -38,5 +42,9 @@ def get_service(
         fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w") as f:
             f.write(creds.to_json())
+        # os.open's mode only applies when the file is newly created — if
+        # token_path already existed with looser permissions (e.g. copied from
+        # another machine), O_TRUNC alone wouldn't tighten them back up.
+        os.chmod(token_path, stat.S_IRUSR | stat.S_IWUSR)
 
     return build("gmail", "v1", credentials=creds)
