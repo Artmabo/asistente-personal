@@ -24,7 +24,14 @@ _CLAUDE_BASE_DELAY  = 2.0
 PROFILES_PATH = Path("contact_profiles.json")
 _MAX_EMAILS   = 50
 _MAX_BODY     = 500
-_MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+_DEFAULT_MODEL = "claude-sonnet-5"
+
+
+def _get_model() -> str:
+    # Read lazily (not at import time) so a CLAUDE_MODEL set only in .env —
+    # loaded by get_api_key(), which runs after this module is imported — is
+    # actually picked up instead of always falling back to the default.
+    return os.getenv("CLAUDE_MODEL", _DEFAULT_MODEL)
 
 
 def _empty_profiles() -> dict:
@@ -57,11 +64,16 @@ class ContactProfiler:
         except ImportError:
             return {"error": "anthropic_not_installed"}
 
-        total  = len(important_contacts)
-        built  = 0
+        # Skip contacts whose profile is already fresh (built <7 days ago) —
+        # otherwise every "refresh" re-runs a Claude call + ~50 Gmail message
+        # fetches per contact even when nothing about them has changed.
+        to_build = [addr for addr in important_contacts if self.needs_rebuild(addr)]
+        skipped  = len(important_contacts) - len(to_build)
+        total    = len(to_build)
+        built    = 0
         errors: list[str] = []
 
-        for i, addr in enumerate(important_contacts):
+        for i, addr in enumerate(to_build):
             if progress_cb:
                 progress_cb(i + 1, total, addr)
             try:
@@ -74,7 +86,7 @@ class ContactProfiler:
             except Exception as exc:
                 errors.append(f"{addr}: {exc}")
 
-        return {"built": built, "total": total, "errors": errors}
+        return {"built": built, "total": total, "skipped": skipped, "errors": errors}
 
     def get_profiles(self) -> dict:
         return self.data.get("profiles", {})
@@ -376,7 +388,7 @@ class ContactProfiler:
         for attempt in range(1, _CLAUDE_MAX_RETRIES + 1):
             try:
                 response = client.messages.create(
-                    model=_MODEL,
+                    model=_get_model(),
                     max_tokens=1000,
                     system=(
                         "Eres un asistente que analiza correos electrónicos para ayudar "
@@ -388,12 +400,21 @@ class ContactProfiler:
                 )
             except Exception as exc:
                 last_exc = exc
+                import anthropic
                 status = getattr(exc, "status_code", None)
-                is_retryable = isinstance(status, int) and status in (429, 500, 503)
+                # Network-level errors (timeouts, connection drops) carry no
+                # status_code, so duck-typing on it alone missed exactly the
+                # transient failures this retry loop exists to handle.
+                is_retryable = isinstance(exc, (
+                    anthropic.RateLimitError,
+                    anthropic.InternalServerError,
+                    anthropic.APIConnectionError,
+                    anthropic.APITimeoutError,
+                )) or (isinstance(status, int) and status in (429, 500, 503))
                 if is_retryable and attempt < _CLAUDE_MAX_RETRIES:
                     logger.warning(
-                        f"Claude API error ({status}), retry {attempt}/{_CLAUDE_MAX_RETRIES} "
-                        f"in {delay:.0f}s"
+                        f"Claude API error ({status or type(exc).__name__}), "
+                        f"retry {attempt}/{_CLAUDE_MAX_RETRIES} in {delay:.0f}s"
                     )
                     time.sleep(delay)
                     delay *= 2

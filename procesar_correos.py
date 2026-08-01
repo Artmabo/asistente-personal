@@ -219,7 +219,7 @@ def _cmd_audit(argv: list[str]):
     else:
         entries = audit.recent(args.last)
 
-    entries = entries[-args.last:]
+    entries = entries[-args.last:] if args.last > 0 else []
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")

@@ -143,12 +143,17 @@ def _ejecutar_limpieza(categorias: list[str]) -> dict | None:
         from limpiar_correos import limpiar_bandeja
         return limpiar_bandeja(st.session_state.service, categorias=categorias)
     except Exception as exc:
-        st.error(f"Error durante la limpieza: {exc}")
-        return None
+        # Returned (not shown via st.error here) because the call site does
+        # st.rerun() right after storing this result, which would discard
+        # any message rendered during this script run before the user sees it.
+        return {"error": str(exc)}
 
 
 def _mostrar_resultado_cat(r: dict | None, nombre: str):
     if r is None:
+        return
+    if r.get("error"):
+        st.error(f"Error durante la limpieza de {nombre}: {r['error']}")
         return
     movidos     = r.get("exitos",     0)
     encontrados = r.get("procesados", 0)
@@ -168,11 +173,11 @@ def _mostrar_resultado_cat(r: dict | None, nombre: str):
 def _ejecutar_procesador(dry_run: bool) -> dict:
     try:
         import logging
-        import gmail_processor.rules as cfg
         from gmail_processor import GmailProcessor, setup_logging
-        cfg.DRY_RUN = dry_run
         setup_logging(level=logging.INFO)
-        processor = GmailProcessor(service=st.session_state.service)
+        # dry_run is passed explicitly (not via the shared rules.DRY_RUN global)
+        # so concurrent Streamlit sessions can't race and flip each other's mode.
+        processor = GmailProcessor(service=st.session_state.service, dry_run=dry_run)
         return processor.run()
     except Exception as exc:
         return {"error": str(exc)}
@@ -282,8 +287,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -423,15 +429,19 @@ def _ejecutar_smart_setup(scan_days: int | None, status_ph) -> dict:
 
 def _ejecutar_debug() -> tuple[dict, str]:
     import logging
-    import gmail_processor.rules as cfg
+    import threading
     from gmail_processor import GmailProcessor
 
-    cfg.DRY_RUN   = True
     log_lines: list[str] = []
+    _this_thread = threading.get_ident()
 
     class _BufHandler(logging.Handler):
         def emit(self, record):
-            log_lines.append(self.format(record))
+            # Streamlit runs each session in its own thread within the same
+            # process — filter by thread so a concurrent session's run
+            # doesn't leak its emails/senders into this buffer.
+            if record.thread == _this_thread:
+                log_lines.append(self.format(record))
 
     handler = _BufHandler(logging.DEBUG)
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-8s] %(message)s"))
@@ -440,7 +450,9 @@ def _ejecutar_debug() -> tuple[dict, str]:
     root.setLevel(logging.DEBUG)
     root.addHandler(handler)
     try:
-        processor = GmailProcessor(service=st.session_state.service)
+        # dry_run is forced explicitly (not via the shared rules.DRY_RUN global)
+        # so concurrent Streamlit sessions can't race and flip each other's mode.
+        processor = GmailProcessor(service=st.session_state.service, dry_run=True)
         stats     = processor.run()
         return stats, "\n".join(log_lines)
     except Exception as exc:
@@ -734,7 +746,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(str(_rel_names.get(rel, rel)))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1241,9 +1253,14 @@ elif _current_page == "contactos":
             elif _prof_r.get("error"):
                 st.error(f"Error al construir perfiles: {_prof_r['error']}")
             elif "built" in _prof_r:
-                st.success(
-                    f"✓ {_prof_r['built']} de {_prof_r['total']} perfiles construidos."
-                )
+                _skipped = _prof_r.get("skipped", 0)
+                if _prof_r["total"] == 0:
+                    st.success(f"✓ Todos los perfiles ya estaban actualizados ({_skipped}).")
+                else:
+                    _skip_txt = f" ({_skipped} ya actualizados, sin cambios)" if _skipped else ""
+                    st.success(
+                        f"✓ {_prof_r['built']} de {_prof_r['total']} perfiles construidos.{_skip_txt}"
+                    )
                 _profiles = _load_profiles()
 
         if not _important_emails and not _profiles:
@@ -1334,7 +1351,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(str(_rel_names.get(_cprel, _cprel)))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
@@ -1504,8 +1521,9 @@ elif _current_page == "analizar":
                             st.session_state["ca_decisions"] = _decisions
                             st.rerun()
 
-            # Aplicar decisiones
-            _decided = len(_decisions)
+            # Aplicar decisiones (los que quedaron en "skip" siguen pendientes)
+            _real_decisions = {addr: dec for addr, dec in _decisions.items() if dec != "skip"}
+            _decided = len(_real_decisions)
             if _decided > 0:
                 st.markdown("")
                 st.info(
@@ -1519,7 +1537,7 @@ elif _current_page == "analizar":
                     use_container_width=True,
                 ):
                     with st.spinner("Aplicando decisiones…"):
-                        _apply_r = _ca_apply(_decisions)
+                        _apply_r = _ca_apply(_real_decisions)
                     st.session_state["ca_apply_result"] = _apply_r
                     st.session_state["ca_decisions"]    = {}
                     try:
@@ -1791,13 +1809,17 @@ elif _current_page == "limpiar":
                         st.rerun()
 
             if st.session_state["result_todo"] is not None:
-                _rtodo = st.session_state["result_todo"]
+                _rtodo  = st.session_state["result_todo"]
+                _rt_err = {k: r["error"] for k, r in _rtodo.items() if r.get("error")}
                 _rt_enc = sum(r.get("procesados", 0) for r in _rtodo.values())
                 _rt_mov = sum(r.get("exitos",     0) for r in _rtodo.values())
-                if _rt_enc == 0:
+                if _rt_enc == 0 and not _rt_err:
                     st.info("No se encontraron correos. Tu bandeja ya estaba limpia.")
-                else:
+                elif _rt_enc or _rt_mov:
                     st.success(f"✓ **{_rt_mov} de {_rt_enc}** correos movidos a la papelera.")
+                if _rt_err:
+                    for _tk, _terr in _rt_err.items():
+                        st.error(f"Error al limpiar {_TODO_NOMBRE.get(_tk, _tk)}: {_terr}")
 
         # ── Remitentes frecuentes ──────────────────────────────────────────────
         st.markdown("")

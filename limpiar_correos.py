@@ -1,9 +1,30 @@
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+_MAX_RETRIES = 3
+_BASE_DELAY  = 1.0   # seconds before first retry (doubles each attempt)
+_BATCH_SLEEP = 0.2   # seconds between list-pagination calls (rate-limit headroom)
+
+
+def _con_reintentos(fn, descripcion=""):
+    """Ejecuta fn() con reintentos y backoff exponencial ante rate limits/errores transitorios."""
+    delay = _BASE_DELAY
+    for intento in range(1, _MAX_RETRIES + 1):
+        try:
+            return fn()
+        except HttpError as e:
+            status = int(e.resp.status)
+            if status in (403, 429, 500, 503) and intento < _MAX_RETRIES:
+                print(f"  {descripcion}: error {status}, reintento {intento}/{_MAX_RETRIES} en {delay:.0f}s")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
 
 CATEGORIAS = {
     "spam":            "in:spam",
@@ -36,18 +57,57 @@ def mover_lote_a_papelera(service, ids: list) -> int:
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
         try:
-            service.users().messages().batchModify(
-                userId='me',
-                body={
-                    'ids': chunk,
-                    'addLabelIds': ['TRASH'],
-                    'removeLabelIds': ['INBOX'],
-                }
-            ).execute()
+            _con_reintentos(
+                lambda: service.users().messages().batchModify(
+                    userId='me',
+                    body={
+                        'ids': chunk,
+                        'addLabelIds': ['TRASH'],
+                        'removeLabelIds': ['INBOX'],
+                    }
+                ).execute(),
+                descripcion=f"lote de {len(chunk)} mensajes",
+            )
             total += len(chunk)
         except HttpError as e:
             print(f"  Error en lote ({len(chunk)} mensajes): {e}")
+        if i + 1000 < len(ids):
+            time.sleep(_BATCH_SLEEP)
     return total
+
+
+def _muestra_ejemplos(service, ids: list, n: int = 3) -> list:
+    """Obtiene De/Asunto de hasta n mensajes en una sola llamada batch — usado
+    en dry-run para que el usuario vea QUÉ se eliminaría, no solo cuántos."""
+    sample_ids = ids[:n]
+    if not sample_ids:
+        return []
+
+    ejemplos = []
+
+    def _cb(request_id, response, exception):
+        if exception is not None or response is None:
+            return
+        headers = {h["name"]: h["value"] for h in response.get("payload", {}).get("headers", [])}
+        ejemplos.append({
+            "de":      headers.get("From", "?"),
+            "asunto":  headers.get("Subject", "(sin asunto)"),
+        })
+
+    batch = service.new_batch_http_request(callback=_cb)
+    for mid in sample_ids:
+        batch.add(
+            service.users().messages().get(
+                userId="me", id=mid, format="metadata",
+                metadataHeaders=["From", "Subject"],
+            ),
+            request_id=mid,
+        )
+    try:
+        _con_reintentos(batch.execute, descripcion="obtener muestra")
+    except HttpError:
+        return []
+    return ejemplos
 
 
 def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
@@ -58,10 +118,12 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         service:      servicio Gmail autenticado
         query_custom: query Gmail directa (se ignora si se pasan categorias)
         categorias:   lista de claves de CATEGORIAS (spam, promociones, etc.)
-        dry_run:      si True, sólo cuenta mensajes sin moverlos
+        dry_run:      si True, sólo cuenta mensajes sin moverlos (muestra una
+                      pequeña muestra de remitente/asunto para verificar antes
+                      de ejecutar en modo real)
 
     Returns:
-        {'procesados': int, 'exitos': int, 'errores': int}
+        {'procesados': int, 'exitos': int, 'errores': int, 'muestra': list}
     """
     if categorias:
         queries = {cat: CATEGORIAS[cat] for cat in categorias if cat in CATEGORIAS}
@@ -76,6 +138,8 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
 
     total_procesados = 0
     total_exitos = 0
+    incompleto = False
+    muestra = []
 
     for nombre, query in queries.items():
         print(f"\n  Buscando: {query}")
@@ -86,15 +150,22 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
 
         while True:
             page_num += 1
+            if page_num > 1:
+                time.sleep(_BATCH_SLEEP)
             try:
-                result = service.users().messages().list(
-                    userId='me',
-                    q=query,
-                    maxResults=500,
-                    pageToken=page_token,
-                ).execute()
+                result = _con_reintentos(
+                    lambda: service.users().messages().list(
+                        userId='me',
+                        q=query,
+                        maxResults=500,
+                        pageToken=page_token,
+                    ).execute(),
+                    descripcion=f"listar página {page_num}",
+                )
             except HttpError as e:
                 print(f"  Error al listar página {page_num}: {e}")
+                print(f"  ⚠ Puede haber más correos sin procesar para '{nombre}' — quedó incompleto.")
+                incompleto = True
                 break
 
             messages = result.get('messages', [])
@@ -106,6 +177,11 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
             ids = [m['id'] for m in messages]
             if dry_run:
                 print(f"  Página {page_num}: {len(ids)} correos encontrados (no se mueven).")
+                if page_num == 1:
+                    ejemplos = _muestra_ejemplos(service, ids)
+                    muestra.extend(ejemplos)
+                    for ej in ejemplos:
+                        print(f"    · {ej['de']} — {ej['asunto']}")
                 exitos = len(ids)
             else:
                 print(f"  Página {page_num}: {len(ids)} correos → enviando a papelera...", end="", flush=True)
@@ -127,9 +203,11 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         total_exitos += cat_exitos
 
     return {
-        "procesados": total_procesados,
-        "exitos":     total_exitos,
-        "errores":    total_procesados - total_exitos,
+        "procesados":  total_procesados,
+        "exitos":      total_exitos,
+        "errores":     total_procesados - total_exitos,
+        "incompleto":  incompleto,
+        "muestra":     muestra,
     }
 
 
@@ -139,6 +217,7 @@ def limpiar_todo_basura(service) -> dict:
     total_p = 0
     total_e = 0
 
+    incompleto = False
     for cat in CATEGORIAS:
         print(f"\n  {'─'*44}")
         print(f"  {_NOMBRES_ES[cat].upper()}")
@@ -146,18 +225,22 @@ def limpiar_todo_basura(service) -> dict:
         resultados[cat] = r
         total_p += r['procesados']
         total_e += r['exitos']
+        incompleto = incompleto or r.get('incompleto', False)
 
     print(f"\n  {'═'*44}")
     print("  RESUMEN FINAL")
     print(f"  {'═'*44}")
     for cat, r in resultados.items():
         barra = f"{r['exitos']}/{r['procesados']}"
-        print(f"  {_NOMBRES_ES[cat]:<18} {barra:>12}  enviados a papelera")
+        marca = "  ⚠ incompleto" if r.get('incompleto') else ""
+        print(f"  {_NOMBRES_ES[cat]:<18} {barra:>12}  enviados a papelera{marca}")
     print(f"  {'─'*44}")
     total_barra = f"{total_e}/{total_p}"
     print(f"  {'TOTAL':<18} {total_barra:>12}")
+    if incompleto:
+        print("  ⚠ Uno o más targets quedaron incompletos por errores de red/API.")
 
-    return {"procesados": total_p, "exitos": total_e}
+    return {"procesados": total_p, "exitos": total_e, "incompleto": incompleto}
 
 
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
@@ -197,3 +280,5 @@ if __name__ == '__main__':
     if resultado:
         accion = "encontrados" if args.dry_run else "enviados a papelera"
         print(f"\nTotal {accion}: {resultado['exitos']} / {resultado['procesados']}")
+        if resultado.get('incompleto'):
+            print("⚠ El proceso quedó incompleto por errores de red/API — vuelve a ejecutarlo.")

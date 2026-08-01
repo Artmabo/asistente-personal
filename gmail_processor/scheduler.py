@@ -87,6 +87,12 @@ class CleanupScheduler:
 
         if enabled and self._scheduler and self._scheduler.running:
             self._reschedule()
+        elif not enabled and self._job:
+            try:
+                self._job.remove()
+            except Exception:
+                pass
+            self._job = None
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""
@@ -201,9 +207,15 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
-            json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = self.config_path.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(self.config_path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def format_next_run(iso: str | None) -> str:
@@ -212,7 +224,7 @@ def format_next_run(iso: str | None) -> str:
         return "No programada"
     try:
         dt    = datetime.fromisoformat(iso)
-        now   = datetime.now()
+        now   = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
         delta = dt - now
         if delta.total_seconds() < 0:
             return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"

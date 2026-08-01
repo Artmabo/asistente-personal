@@ -54,7 +54,7 @@ class StorageCleaner:
     def run(self) -> dict:
         targets = cfg.CLEANUP_RULES.get("targets", [])
         max_per = cfg.CLEANUP_RULES.get("max_per_query", 200)
-        mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode    = "DRY RUN" if self.actions.dry_run else "LIVE"
         scoring = "activo" if self.engine else "inactivo"
 
         logger.info(f"\n{'─'*55}")
@@ -67,20 +67,25 @@ class StorageCleaner:
         if self.engine:
             self.engine.metrics.touch_run()
 
-        for target in targets:
-            self._run_target(target, max_per)
+        try:
+            for target in targets:
+                self._run_target(target, max_per)
+        finally:
+            # Always persist what happened so far, even if a target aborted
+            # partway through — real trash() calls may have already run and
+            # must not lose their audit trail / learning-state updates.
+            if self.engine and self.learning_mode:
+                changes = self.engine.update_rule_thresholds()
+                if not changes:
+                    logger.info("Sin ajustes de threshold necesarios.")
+                self.engine.persist()
 
-        if self.engine and self.learning_mode:
-            changes = self.engine.update_rule_thresholds()
-            if not changes:
-                logger.info("Sin ajustes de threshold necesarios.")
-            self.engine.persist()
+            if self.audit:
+                self.audit.flush()
 
-        if self.audit:
-            self.audit.flush()
+            self._print_summary()
+            self._write_summary()
 
-        self._print_summary()
-        self._write_summary()
         return self.stats
 
     # ── Target loop ───────────────────────────────────────────────────────────
@@ -116,7 +121,11 @@ class StorageCleaner:
                 if count >= cap:
                     logger.warning(f"  Cap ({cap}) alcanzado — deteniendo este target.")
                     break
-                self._evaluate(stub["id"], reason, rule_name)
+                try:
+                    self._evaluate(stub["id"], reason, rule_name)
+                except Exception:
+                    logger.exception(f"  Unexpected error evaluating {stub['id']}")
+                    self.stats["errors"] += 1
                 count += 1
 
             page_token = result.get("nextPageToken")
@@ -218,7 +227,7 @@ class StorageCleaner:
                 return
 
         # 3. Trash
-        mode       = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode       = "DRY RUN" if self.actions.dry_run else "LIVE"
         score_line = ""
         if scored:
             factors_str = " | ".join(scored.factors) if scored.factors else "sin señales"
@@ -287,15 +296,18 @@ class StorageCleaner:
         """Persists a cleanup summary to cleanup_summary.json for the UI."""
         summary = {
             "ts":      datetime.now().isoformat(timespec="seconds"),
-            "dry_run": cfg.DRY_RUN,
+            "dry_run": self.actions.dry_run,
             **self.stats,
         }
+        tmp = _SUMMARY_PATH.with_suffix(".tmp")
         try:
-            _SUMMARY_PATH.write_text(
+            tmp.write_text(
                 json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            tmp.replace(_SUMMARY_PATH)
         except OSError as e:
             logger.warning(f"Could not write cleanup summary: {e}")
+            tmp.unlink(missing_ok=True)
 
     def _print_summary(self):
         s = self.stats

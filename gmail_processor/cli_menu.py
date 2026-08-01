@@ -17,6 +17,17 @@ _SEP  = "─" * _W
 _SEP2 = "═" * _W
 
 
+def _safe_reload(module) -> bool:
+    """Reloads `module`, reporting (instead of crashing on) a corrupted rules.py."""
+    try:
+        importlib.reload(module)
+        return True
+    except Exception as exc:
+        print(f"  ⚠ No se pudo recargar rules.py (¿sintaxis inválida?): {exc}")
+        print(f"  Revisa manualmente {Path(module.__file__)}")
+        return False
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def run_menu():
@@ -291,7 +302,7 @@ def _menu_audit():
     else:
         entries = audit.recent(n)
 
-    entries = entries[-n:]
+    entries = entries[-n:] if n > 0 else []
 
     print()
     if not entries:
@@ -462,8 +473,7 @@ def _add_contact_interactive(cfg):
     important = _confirm("¿Marcar como importante?")
 
     ok = _patch_rules_add_contact(email, label, important)
-    if ok:
-        importlib.reload(cfg)
+    if ok and _safe_reload(cfg):
         print(f"\n  Contacto agregado: {email}  label={label}  importante={'Sí' if important else 'No'}")
     else:
         print("  No se pudo modificar rules.py automáticamente.")
@@ -488,8 +498,7 @@ def _remove_contact_interactive(cfg):
     if not _confirm(f"¿Eliminar protección para {email}?"):
         return
     ok = _patch_rules_remove_contact(email)
-    if ok:
-        importlib.reload(cfg)
+    if ok and _safe_reload(cfg):
         print(f"  {email} eliminado de contactos protegidos.")
     else:
         print("  No se pudo modificar rules.py automáticamente.")
@@ -529,8 +538,7 @@ def _menu_debug(get_svc: Callable):
 
     from .processor import GmailProcessor, setup_logging
     setup_logging(level=logging.DEBUG)
-    cfg.DRY_RUN = True
-    proc = GmailProcessor(service=svc)
+    proc = GmailProcessor(service=svc, dry_run=True)
     proc.run(cleanup=True, learning=False)
     _pause()
 
@@ -663,7 +671,7 @@ def _present_contacts(contacts, domains, DOMAIN_LABELS):
 
         if added_contacts:
             from . import rules as cfg
-            importlib.reload(cfg)
+            _safe_reload(cfg)
 
     # ── Show domain suggestions ────────────────────────────────────────────────
     domains_added = 0
@@ -744,7 +752,7 @@ def _present_domains(domains) -> int:
             print(f"  ! {d.domain} ya existe o no se pudo escribir")
 
     if added:
-        importlib.reload(cfg)
+        _safe_reload(cfg)
 
     return added
 
@@ -775,11 +783,11 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         return False
 
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email in line and not line.strip().startswith("#"):
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f'    {email!r}: {{"label": {label!r}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -799,7 +807,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email in line and not line.strip().startswith("#"):
             removed = True
             continue
         new_lines.append(line)
@@ -848,14 +856,14 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if domain in block_text:
         return False
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{domain!r}],\n'
+        f'        "label": {label!r},\n'
+        f'        "action": {action!r},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)

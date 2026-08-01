@@ -33,12 +33,20 @@ def setup_logging(
 
 
 class GmailProcessor:
-    def __init__(self, service=None):
+    def __init__(self, service=None, dry_run: bool = None):
+        """
+        dry_run defaults to cfg.DRY_RUN, but callers that need an explicit,
+        request-scoped value (e.g. a web UI serving concurrent sessions) should
+        pass it directly instead of mutating the shared `rules.DRY_RUN` global.
+        """
+        if dry_run is None:
+            dry_run = cfg.DRY_RUN
         self.service    = service or get_service()
         self.classifier = EmailClassifier()
-        self.actions    = GmailActions(self.service, dry_run=cfg.DRY_RUN)
+        self.actions    = GmailActions(self.service, dry_run=dry_run)
         self.engine     = LearningEngine()
-        self.audit      = AuditLogger(dry_run=cfg.DRY_RUN)
+        self.audit      = AuditLogger(dry_run=dry_run)
+        self.dry_run    = dry_run
         self.stats      = {
             "processed": 0,
             "labeled":   0,
@@ -56,53 +64,62 @@ class GmailProcessor:
         learning=True → enables writing to learning_state.json and threshold adjustments.
         """
         query = query or cfg.QUERY_FILTER
-        mode  = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode  = "DRY RUN" if self.dry_run else "LIVE"
         logger.info(f"{'='*55}")
         logger.info(f"  Gmail Processor — mode={mode}  query='{query}'")
         logger.info(f"{'='*55}")
 
-        page_token = None
-        page = 0
-        while True:
-            page += 1
-            try:
-                result = self.service.users().messages().list(
-                    userId="me",
-                    q=query,
-                    maxResults=cfg.MAX_RESULTS_PER_PAGE,
-                    pageToken=page_token,
-                ).execute()
-            except HttpError as e:
-                logger.error(f"Failed to list messages (page {page}): {e}")
-                break
+        try:
+            page_token = None
+            page = 0
+            while True:
+                page += 1
+                try:
+                    result = self.service.users().messages().list(
+                        userId="me",
+                        q=query,
+                        maxResults=cfg.MAX_RESULTS_PER_PAGE,
+                        pageToken=page_token,
+                    ).execute()
+                except HttpError as e:
+                    logger.error(f"Failed to list messages (page {page}): {e}")
+                    break
 
-            messages = result.get("messages", [])
-            if not messages:
-                logger.info("No more messages found.")
-                break
+                messages = result.get("messages", [])
+                if not messages:
+                    logger.info("No more messages found.")
+                    break
 
-            logger.info(f"Page {page}: {len(messages)} messages")
-            for stub in messages:
-                self._process_one(stub["id"])
+                logger.info(f"Page {page}: {len(messages)} messages")
+                for stub in messages:
+                    try:
+                        self._process_one(stub["id"])
+                    except Exception:
+                        logger.exception(f"Unexpected error processing {stub['id']}")
+                        self.stats["errors"] += 1
 
-            page_token = result.get("nextPageToken")
-            if not page_token:
-                break
+                page_token = result.get("nextPageToken")
+                if not page_token:
+                    break
 
-        self._print_summary()
+            self._print_summary()
 
-        if cleanup:
-            cleaner = StorageCleaner(
-                self.service,
-                self.actions,
-                engine=self.engine,
-                audit=self.audit,
-                learning_mode=learning,
-            )
-            self.stats["cleanup"] = cleaner.run()
+            if cleanup:
+                cleaner = StorageCleaner(
+                    self.service,
+                    self.actions,
+                    engine=self.engine,
+                    audit=self.audit,
+                    learning_mode=learning,
+                )
+                self.stats["cleanup"] = cleaner.run()
 
-        elif learning:
-            logger.warning("--learning requiere --cleanup para actualizar el estado.")
+            elif learning:
+                logger.warning("--learning requiere --cleanup para actualizar el estado.")
+        finally:
+            # Persist whatever was logged so far even if the run above raised —
+            # classification decisions must not vanish along with the exception.
+            self.audit.flush()
 
         return self.stats
 

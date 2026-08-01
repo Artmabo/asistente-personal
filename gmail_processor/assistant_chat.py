@@ -15,7 +15,14 @@ logger = logging.getLogger("gmail_processor.chat")
 
 CHAT_HISTORY_PATH = Path("chat_history.json")
 _MAX_HISTORY = 20   # máximo de pares usuario/asistente
-_MODEL       = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+_DEFAULT_MODEL = "claude-sonnet-5"
+
+
+def _get_model() -> str:
+    # Read lazily (not at import time) so a CLAUDE_MODEL set only in .env —
+    # loaded by get_api_key(), which runs after this module is imported — is
+    # actually picked up instead of always falling back to the default.
+    return os.getenv("CLAUDE_MODEL", _DEFAULT_MODEL)
 
 
 class AssistantChat:
@@ -72,7 +79,7 @@ class AssistantChat:
 
         try:
             resp   = client.messages.create(
-                model=_MODEL, max_tokens=1000,
+                model=_get_model(), max_tokens=1000,
                 system=system_prompt, messages=api_messages,
             )
             answer = resp.content[0].text.strip()
