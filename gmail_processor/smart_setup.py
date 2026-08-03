@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, extract_display_name
 
 logger = logging.getLogger("gmail_processor.smart_setup")
 
@@ -573,7 +573,4 @@ def _is_definitely_automated(email: str) -> bool:
 # ── Header helpers ────────────────────────────────────────────────────────────
 
 def _extract_name(headers: list[dict]) -> str:
-    raw = get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[0].strip().strip('"').strip("'")
-    return ""
+    return extract_display_name(get_header(headers, "From"))

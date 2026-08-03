@@ -96,31 +96,40 @@ CATEGORY_RULES: dict[str, dict] = {
 # Los correos que coincidan serán enviados a papelera SI no están protegidos.
 # Protecciones automáticas: CONTACT_RULES, dominios mark_important, IMPORTANT, STARRED.
 CLEANUP_RULES: dict = {
+    # "category" matches the keys the UI exposes in app.py's _CAT_OPTIONS /
+    # the scheduler's "categories" selector (StorageCleaner.run(categories=...)
+    # filters targets by this field). Targets with category=None are only run
+    # when no category filter is passed (e.g. manual "cleanup everything" runs).
     "targets": [
         {
             "query": "category:promotions older_than:60d",
             "reason": "Promoción con más de 60 días",
             "rule": "promotions_60d",
+            "category": "promociones",
         },
         {
             "query": "category:social older_than:90d",
             "reason": "Red social / notificación con más de 90 días",
             "rule": "social_90d",
+            "category": "social",
         },
         {
             "query": "category:updates older_than:90d",
             "reason": "Actualización automática con más de 90 días",
             "rule": "updates_90d",
+            "category": "actualizaciones",
         },
         {
             "query": "category:forums older_than:90d",
             "reason": "Foro o lista de correo con más de 90 días",
             "rule": "forums_90d",
+            "category": "foros",
         },
         {
             "query": "is:unread older_than:180d -is:important -is:starred",
             "reason": "No leído por más de 6 meses sin interacción",
             "rule": "unread_180d",
+            "category": None,
         },
     ],
     # Dominios adicionales a proteger (además de los mark_important en DOMAIN_RULES)

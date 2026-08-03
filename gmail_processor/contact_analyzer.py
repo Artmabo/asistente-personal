@@ -17,7 +17,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header
+from .utils import get_header, derive_contact_label
 
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
@@ -124,6 +124,25 @@ def _parse_date(date_str: str) -> datetime | None:
         return None
 
 
+def _parse_unsubscribe_link(header_value: str) -> str:
+    """Extracts the best actionable link from a List-Unsubscribe header.
+
+    The header format is a comma-separated list of angle-bracketed URIs, e.g.
+    'List-Unsubscribe: <https://example.com/unsub?id=1>, <mailto:u@example.com>'.
+    Prefers an http(s):// one-click link over a mailto: link since it doesn't
+    require sending an email; falls back to whatever URI is present.
+    """
+    if not header_value:
+        return ""
+    uris = re.findall(r"<([^>]+)>", header_value)
+    if not uris:
+        return header_value.strip()
+    for uri in uris:
+        if uri.lower().startswith(("http://", "https://")):
+            return uri
+    return uris[0]
+
+
 def _default_weights() -> dict[str, float]:
     return {k: 1.0 for k in _SIGNAL_BASE}
 
@@ -225,17 +244,19 @@ class ContactAnalyzer:
                 if addr in reviewed or addr in pending_set:
                     continue
 
-                subject   = get_header(headers, "Subject")
-                date_hdr  = get_header(headers, "Date")
-                has_unsub = bool(get_header(headers, "List-Unsubscribe"))
+                subject    = get_header(headers, "Subject")
+                date_hdr   = get_header(headers, "Date")
+                unsub_hdr  = get_header(headers, "List-Unsubscribe")
+                has_unsub  = bool(unsub_hdr)
 
                 if addr not in _working:
                     _working[addr] = {
-                        "name":      name or "",
-                        "subjects":  [],
-                        "dates":     [],
-                        "has_unsub": False,
-                        "count":     0,
+                        "name":       name or "",
+                        "subjects":   [],
+                        "dates":      [],
+                        "has_unsub":  False,
+                        "unsub_link": "",
+                        "count":      0,
                     }
                 w = _working[addr]
                 if name and not w["name"]:
@@ -245,6 +266,8 @@ class ContactAnalyzer:
                 if date_hdr:
                     w["dates"].append(date_hdr)
                 w["has_unsub"] = w["has_unsub"] or has_unsub
+                if unsub_hdr and not w["unsub_link"]:
+                    w["unsub_link"] = _parse_unsubscribe_link(unsub_hdr)
                 w["count"]    += 1
 
             # Persist running count so scan is resumable
@@ -284,7 +307,10 @@ class ContactAnalyzer:
             first_seen  = min(dates_valid).strftime("%Y-%m-%d") if dates_valid else ""
             last_seen   = max(dates_valid).strftime("%Y-%m-%d") if dates_valid else ""
 
-            entry_base = {"name": w["name"], "score": score, "signals": signals}
+            entry_base = {
+                "name": w["name"], "score": score, "signals": signals,
+                "unsub_link": w.get("unsub_link", ""),
+            }
 
             if auto_dir == "personal" or (score >= SCORE_AUTO_PERSONAL and auto_dir != "spam"):
                 reviewed[addr] = {**entry_base, "decision": "personal", "auto": True, "decided_at": now}
@@ -436,6 +462,10 @@ class ContactAnalyzer:
         - Not yet reviewed as personal
         - Not yet trashed (still in pending or auto-spam)
 
+        Each candidate includes "unsubscribe_link" — the actionable https:// or
+        mailto: link parsed from the sender's List-Unsubscribe header, when
+        available, so the caller can render a one-click unsubscribe button.
+
         Results are sorted by email frequency (count) descending so the
         highest-volume candidates appear first.
         """
@@ -449,12 +479,13 @@ class ContactAnalyzer:
             score   = meta.get("score",   50)
             if "has_unsubscribe" in signals and score < 50:
                 candidates.append({
-                    "email":           addr,
-                    "name":            meta.get("name", ""),
-                    "score":           score,
-                    "count":           meta.get("count", 0),
-                    "sample_subjects": meta.get("sample_subjects", []),
-                    "last_seen":       meta.get("last_seen", ""),
+                    "email":            addr,
+                    "name":             meta.get("name", ""),
+                    "score":            score,
+                    "count":            meta.get("count", 0),
+                    "sample_subjects":  meta.get("sample_subjects", []),
+                    "last_seen":        meta.get("last_seen", ""),
+                    "unsubscribe_link": meta.get("unsub_link", ""),
                 })
 
         # Also include auto-spam senders with unsubscribe links that are still deliverable
@@ -464,12 +495,13 @@ class ContactAnalyzer:
             signals = entry.get("signals", [])
             if "has_unsubscribe" in signals:
                 candidates.append({
-                    "email":           addr,
-                    "name":            entry.get("name", ""),
-                    "score":           entry.get("score", 0),
-                    "count":           0,
-                    "sample_subjects": [],
-                    "last_seen":       "",
+                    "email":            addr,
+                    "name":             entry.get("name", ""),
+                    "score":            entry.get("score", 0),
+                    "count":            0,
+                    "sample_subjects":  [],
+                    "last_seen":        "",
+                    "unsubscribe_link": entry.get("unsub_link", ""),
                 })
 
         candidates.sort(key=lambda x: x["count"], reverse=True)
@@ -682,7 +714,7 @@ class ContactAnalyzer:
             if email_addr in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
-            label      = _derive_label(email_addr, name)
+            label      = derive_contact_label(email_addr, name)
             rules_path = Path(__file__).parent / "rules.py"
             content    = rules_path.read_text(encoding="utf-8")
             lines      = content.split("\n")
@@ -757,21 +789,5 @@ def _atomic_write(path: Path, data: dict) -> None:
         raise
 
 
-def _derive_label(email_addr: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email_addr.split("@")[-1] if "@" in email_addr else ""
-    local  = email_addr.split("@")[0]  if "@" in email_addr else email_addr
-    if domain in _FREE_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
+# NOTE: label derivation lives in gmail_processor.utils.derive_contact_label
+# (shared with app.py's contact-protection flow) — see import above.

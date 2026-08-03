@@ -51,8 +51,18 @@ class StorageCleaner:
             "errors":   0,
         }
 
-    def run(self) -> dict:
+    def run(self, categories: list[str] | None = None) -> dict:
+        """
+        Runs the cleanup pipeline.
+        categories=None (default) → run every target in CLEANUP_RULES (unchanged
+            behavior for manual/CLI runs).
+        categories=[...]  → only run targets whose "category" is in the list
+            (used by the scheduler to honor the user's category selection).
+        """
         targets = cfg.CLEANUP_RULES.get("targets", [])
+        if categories is not None:
+            allowed = set(categories)
+            targets = [t for t in targets if t.get("category") in allowed]
         max_per = cfg.CLEANUP_RULES.get("max_per_query", 200)
         mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
         scoring = "activo" if self.engine else "inactivo"
@@ -287,7 +297,12 @@ class StorageCleaner:
         """Persists a cleanup summary to cleanup_summary.json for the UI."""
         summary = {
             "ts":      datetime.now().isoformat(timespec="seconds"),
-            "dry_run": cfg.DRY_RUN,
+            # Use the dry_run mode this run's actions actually executed with
+            # (self.actions.dry_run), not the module-level cfg.DRY_RUN — the
+            # latter is process-global and can be mutated by a concurrent
+            # request (e.g. another browser tab) between the start of this
+            # run and this write, which would mislabel the summary.
+            "dry_run": self.actions.dry_run,
             **self.stats,
         }
         try:
