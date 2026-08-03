@@ -237,31 +237,11 @@ def _limpiar_remitente(email: str) -> dict | None:
         return None
 
 
-_FREE_EMAIL_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
-
-
 def _derivar_label(email: str, name: str) -> str:
-    words = name.strip().split()
-    if words:
-        clean = "".join(c for c in words[0] if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email.split("@")[-1] if "@" in email else ""
-    local  = email.split("@")[0]  if "@" in email else email
-    if domain in _FREE_EMAIL_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
+    """Thin wrapper kept for call-site compatibility; logic lives in
+    gmail_processor.utils.derive_contact_label (shared with contact_analyzer.py)."""
+    from gmail_processor.utils import derive_contact_label
+    return derive_contact_label(email, name)
 
 
 def _proteger_remitente(email: str, name: str) -> dict:
@@ -282,8 +262,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -523,6 +504,16 @@ def _ca_learning_summary() -> dict:
     return a.get_learning_stats()
 
 
+def _ca_unsubscribe_candidates(max_results: int = 20) -> list[dict]:
+    """Senders with a List-Unsubscribe link that lean commercial/spam,
+    surfaced from the ContactAnalyzer state built by 'Analizar correos'."""
+    try:
+        from gmail_processor.contact_analyzer import ContactAnalyzer
+        return ContactAnalyzer(st.session_state.service).get_unsubscribe_candidates(max_results)
+    except Exception:
+        return []
+
+
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
 
 def _cargar_storage_summary() -> dict:
@@ -734,7 +725,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_rel_names.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1334,7 +1325,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_rel_names.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
@@ -1893,6 +1884,42 @@ elif _current_page == "limpiar":
                         elif _ps_res.get("error"):
                             st.error(f"Error: {_ps_res['error']}")
                     st.markdown("---")
+
+        # ── Sugerencias para darte de baja ──────────────────────────────────────
+        st.markdown("")
+        with st.expander("📭 Sugerencias para darte de baja"):
+            st.caption(
+                "Remitentes con enlace de baja (List-Unsubscribe) que probablemente no te "
+                "interesan, según el análisis de 'Analizar correos'. Un clic abre el enlace "
+                "oficial de baja del remitente — no borra ni mueve nada por ti."
+            )
+            _unsub = _ca_unsubscribe_candidates()
+            if not _unsub:
+                st.info(
+                    "No hay sugerencias todavía. Ejecuta un análisis en "
+                    "'Analizar correos' para encontrar remitentes con opción de baja."
+                )
+            else:
+                for _ui, _uc in enumerate(_unsub):
+                    _u_label = f"{_uc['name']} <{_uc['email']}>" if _uc.get("name") else _uc["email"]
+                    _u_link  = _uc.get("unsubscribe_link", "")
+                    _u1, _u2, _u3 = st.columns([5, 1, 2])
+                    with _u1:
+                        st.markdown(f"**{_u_label}**")
+                        _u_subj = _uc.get("sample_subjects") or []
+                        if _u_subj:
+                            st.caption(f'"{_u_subj[0][:60]}"')
+                    with _u2:
+                        if _uc.get("count"):
+                            st.caption(f"{_uc['count']} correos")
+                    with _u3:
+                        if _u_link:
+                            st.link_button(
+                                "Darse de baja ↗", _u_link,
+                                use_container_width=True, key=f"unsub_btn_{_ui}",
+                            )
+                        else:
+                            st.caption("Sin enlace directo")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PÁGINA: LIMPIEZA AUTOMÁTICA
