@@ -677,17 +677,23 @@ def _migrate_to_v3(old: dict) -> dict:
         entry["last_accepted"]      = src.get("last_feedback", src.get("last_accepted", ""))
         return entry
 
-    # v1 used sender_scores/domain_scores; v2 used same names
+    # v1 used sender_scores/domain_scores; v2 used sender_model/domain_model.
+    # Check both possible legacy key names on each side, so a pre-v3 state
+    # persisted under either naming doesn't silently lose its sender/domain
+    # adjustments during migration.
     for old_key, new_key in [
         ("sender_scores", "sender_model"),
         ("domain_model",  "domain_model"),
     ]:
         for k, v in old.get(old_key, {}).items():
             new[new_key][k] = _to_v3_entry(v)
-    # v2 already has domain_model
-    for k, v in old.get("domain_scores", {}).items():
-        if k not in new["domain_model"]:
-            new["domain_model"][k] = _to_v3_entry(v)
+    for old_key, new_key in [
+        ("sender_model",  "sender_model"),
+        ("domain_scores", "domain_model"),
+    ]:
+        for k, v in old.get(old_key, {}).items():
+            if k not in new[new_key]:
+                new[new_key][k] = _to_v3_entry(v)
 
     new["rule_stats"]       = copy.deepcopy(old.get("rule_stats", {}))
     new["pending_feedback"] = copy.deepcopy(old.get("pending_feedback", {}))

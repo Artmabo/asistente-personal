@@ -35,7 +35,12 @@ def get_service(
                 )
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
             creds = flow.run_local_server(port=0)
+        # `mode` in os.open() only applies to newly-created files, so a
+        # pre-existing token.json (e.g. left over from an older version, or
+        # created with a permissive umask) would otherwise keep its old
+        # permissions even after this refresh. Enforce owner-only explicitly.
         fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+        os.chmod(token_path, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w") as f:
             f.write(creds.to_json())
 
