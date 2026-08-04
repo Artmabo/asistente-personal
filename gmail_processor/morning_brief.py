@@ -72,6 +72,24 @@ class MorningBrief:
                 f"(más de 7 días sin actualizar). Ve a Mis Contactos → Actualizar perfiles."
             )
 
+        # Feedback de aprendizaje pendiente de confirmar hace demasiado tiempo
+        learning_state   = self._read_json("learning_state.json", {})
+        pending_feedback = learning_state.get("pending_feedback", {})
+        stale_feedback   = 0
+        for entry in pending_feedback.values():
+            try:
+                first_seen = datetime.strptime(entry.get("first_seen", ""), "%Y-%m-%d")
+                if (today - first_seen).days > 7:
+                    stale_feedback += 1
+            except Exception:
+                stale_feedback += 1
+        if stale_feedback:
+            alerts.append(
+                f"{stale_feedback} feedback{'s' if stale_feedback > 1 else ''} pendiente"
+                f"{'s' if stale_feedback > 1 else ''} de confirmar hace más de 7 días. "
+                f"Ve a Opciones avanzadas → Feedback para revisarlos."
+            )
+
         # Correos nuevos de contactos importantes: leemos reviewed con fecha reciente
         new_from_important: list[dict] = []
         reviewed = state.get("reviewed", {})
