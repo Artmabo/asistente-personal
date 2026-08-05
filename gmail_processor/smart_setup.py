@@ -52,6 +52,7 @@ MIN_SCORE     = 35    # must clear this threshold to appear as suggestion
 MIN_MESSAGES  = 2     # min emails received from sender
 
 _BATCH_SLEEP  = 0.2   # seconds between list-pagination calls (rate-limit headroom)
+_HTTP_BATCH_CHUNK = 100   # Gmail caps ~100 calls/batch
 
 # ── Scoring weights ───────────────────────────────────────────────────────────
 W_REPLY           = 25    # per thread where user replied
@@ -179,6 +180,37 @@ _DEFINITELY_AUTOMATED_LOCALS = frozenset([
     "noreply", "no-reply", "donotreply", "do-not-reply",
     "mailer-daemon", "postmaster", "bounce", "bounces",
 ])
+
+
+def _batch_get_metadata(service, ids: list[str], headers: list[str]) -> dict[str, dict]:
+    """
+    Fetches metadata for several messages via Gmail batch HTTP requests instead
+    of one round-trip per message. Returns {id: message}; ids that failed or
+    were rejected are simply absent from the result.
+    """
+    results: dict[str, dict] = {}
+    if not ids:
+        return results
+
+    def _on_response(request_id, response, exception):
+        if exception is None and response is not None:
+            results[request_id] = response
+
+    for i in range(0, len(ids), _HTTP_BATCH_CHUNK):
+        batch = service.new_batch_http_request(callback=_on_response)
+        for mid in ids[i:i + _HTTP_BATCH_CHUNK]:
+            batch.add(
+                service.users().messages().get(
+                    userId="me", id=mid, format="metadata", metadataHeaders=headers,
+                ),
+                request_id=mid,
+            )
+        try:
+            batch.execute()
+        except HttpError:
+            pass
+
+    return results
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -380,16 +412,12 @@ class SmartSetup:
             if not stubs:
                 break
 
-            for stub in stubs:
-                try:
-                    msg = self.service.users().messages().get(
-                        userId="me", id=stub["id"],
-                        format="metadata", metadataHeaders=["From"],
-                    ).execute()
-                except HttpError:
-                    fetched += 1
-                    continue
-                self._ingest(msg, sent_threads, senders)
+            ids  = [stub["id"] for stub in stubs]
+            msgs = _batch_get_metadata(self.service, ids, ["From"])
+            for mid in ids:
+                msg = msgs.get(mid)
+                if msg is not None:
+                    self._ingest(msg, sent_threads, senders)
                 fetched += 1
 
             page += 1

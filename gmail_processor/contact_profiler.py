@@ -31,6 +31,38 @@ def _empty_profiles() -> dict:
     return {"profiles": {}, "last_build": None, "total_profiles": 0}
 
 
+_HTTP_BATCH_CHUNK = 50   # Gmail caps ~100 calls/batch; matches _MAX_EMAILS
+
+
+def _batch_get_full(service, ids: list[str]) -> dict[str, dict]:
+    """
+    Fetches full messages via Gmail batch HTTP requests instead of one
+    round-trip per message. Returns {id: message}; ids that failed or were
+    rejected are simply absent from the result.
+    """
+    results: dict[str, dict] = {}
+    if not ids:
+        return results
+
+    def _on_response(request_id, response, exception):
+        if exception is None and response is not None:
+            results[request_id] = response
+
+    for i in range(0, len(ids), _HTTP_BATCH_CHUNK):
+        batch = service.new_batch_http_request(callback=_on_response)
+        for mid in ids[i:i + _HTTP_BATCH_CHUNK]:
+            batch.add(
+                service.users().messages().get(userId="me", id=mid, format="full"),
+                request_id=mid,
+            )
+        try:
+            batch.execute()
+        except HttpError:
+            pass
+
+    return results
+
+
 class ContactProfiler:
     def __init__(self):
         self.data = self._load()
@@ -213,7 +245,6 @@ class ContactProfiler:
     # ── Obtener correos ───────────────────────────────────────────────────────
 
     def _fetch_emails(self, service, addr: str) -> list[dict]:
-        result = []
         try:
             resp = service.users().messages().list(
                 userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
@@ -222,17 +253,10 @@ class ContactProfiler:
         except HttpError:
             return []
 
-        for stub in stubs:
-            try:
-                msg = service.users().messages().get(
-                    userId="me", id=stub["id"], format="full",
-                ).execute()
-                result.append(self._parse_message(msg))
-                time.sleep(0.05)
-            except HttpError:
-                continue
-
-        return result
+        ids = [stub["id"] for stub in stubs]
+        msgs = _batch_get_full(service, ids)
+        # Preserve original (most-recent-first) order from the list response.
+        return [self._parse_message(msgs[mid]) for mid in ids if mid in msgs]
 
     def _parse_message(self, msg: dict) -> dict:
         payload  = msg.get("payload", {})
