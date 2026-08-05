@@ -150,6 +150,40 @@ def _empty_patterns() -> dict:
     }
 
 
+_HTTP_BATCH_CHUNK = 100   # Gmail caps ~100 calls/batch
+
+
+def _batch_get_metadata(svc, ids: list[str], headers: list[str]) -> dict[str, dict]:
+    """
+    Fetches metadata for several messages via Gmail batch HTTP requests instead
+    of one round-trip per message. Returns {id: message}; ids that failed or
+    were rejected are simply absent from the result.
+    """
+    results: dict[str, dict] = {}
+    if not ids:
+        return results
+
+    def _on_response(request_id, response, exception):
+        if exception is None and response is not None:
+            results[request_id] = response
+
+    for i in range(0, len(ids), _HTTP_BATCH_CHUNK):
+        batch = svc.new_batch_http_request(callback=_on_response)
+        for mid in ids[i:i + _HTTP_BATCH_CHUNK]:
+            batch.add(
+                svc.users().messages().get(
+                    userId="me", id=mid, format="metadata", metadataHeaders=headers,
+                ),
+                request_id=mid,
+            )
+        try:
+            batch.execute()
+        except HttpError:
+            pass
+
+    return results
+
+
 # ── Core class ────────────────────────────────────────────────────────────────
 
 class ContactAnalyzer:
@@ -203,18 +237,14 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
-            for stub in stubs:
-                if scanned >= batch_size:
-                    break
+            page_ids = [stub["id"] for stub in stubs][:batch_size - scanned]
+            page_msgs = _batch_get_metadata(
+                self.svc, page_ids, ["From", "Subject", "Date", "List-Unsubscribe"]
+            )
+            for mid in page_ids:
                 scanned += 1
-                try:
-                    msg = self.svc.users().messages().get(
-                        userId="me",
-                        id=stub["id"],
-                        format="metadata",
-                        metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
-                    ).execute()
-                except HttpError:
+                msg = page_msgs.get(mid)
+                if msg is None:
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
@@ -603,14 +633,11 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
-            for stub in stubs:
-                if fetched >= _MAX_SENT_INDEXED:
-                    break
-                try:
-                    msg = self.svc.users().messages().get(
-                        userId="me", id=stub["id"],
-                        format="metadata", metadataHeaders=["To", "Cc"],
-                    ).execute()
+            page_ids = [stub["id"] for stub in stubs][:_MAX_SENT_INDEXED - fetched]
+            page_msgs = _batch_get_metadata(self.svc, page_ids, ["To", "Cc"])
+            for mid in page_ids:
+                msg = page_msgs.get(mid)
+                if msg is not None:
                     headers = msg.get("payload", {}).get("headers", [])
                     for hname in ("To", "Cc"):
                         raw = get_header(headers, hname)
@@ -618,8 +645,6 @@ class ContactAnalyzer:
                             for _, a in email.utils.getaddresses([raw]):
                                 if a:
                                     addrs.add(a.strip().lower())
-                except HttpError:
-                    pass
                 fetched += 1
 
             if progress_cb:

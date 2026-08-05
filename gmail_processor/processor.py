@@ -139,6 +139,8 @@ class GmailProcessor:
         for label in c.labels:
             if self.actions.add_label(msg_id, label):
                 self.stats["labeled"] += 1
+            else:
+                self.stats["errors"] += 1
 
         # Execute primary action
         match c.action:
@@ -148,14 +150,20 @@ class GmailProcessor:
                     self.stats["skipped"] += 1
                 elif self.actions.trash(msg_id):
                     self.stats["trashed"] += 1
+                else:
+                    self.stats["errors"] += 1
 
             case "archive":
                 if self.actions.archive(msg_id):
                     self.stats["archived"] += 1
+                else:
+                    self.stats["errors"] += 1
 
             case "mark_important":
                 if self.actions.mark_important(msg_id):
                     self.stats["important"] += 1
+                else:
+                    self.stats["errors"] += 1
 
             case _:  # "label_only" or "unknown"
                 self.stats["skipped"] += 1

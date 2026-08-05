@@ -15,7 +15,7 @@ from .utils import get_header, extract_email_address
 
 @dataclass
 class Classification:
-    email_type: str              # personal | important | spam | promotion | social | unknown
+    email_type: str              # personal | important | spam | promotions | social | updates | forums | unknown
     action: str                  # mark_important | archive | trash | label_only
     labels: list[str] = field(default_factory=list)
     protected: bool = False      # If True, trash action is blocked regardless of rule

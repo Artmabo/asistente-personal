@@ -202,6 +202,9 @@ def _cmd_audit(argv: list[str]):
                         help="Write the selected entries as CSV to PATH instead of printing a table")
     args = parser.parse_args(argv)
 
+    if args.last <= 0:
+        parser.error("--last debe ser un entero positivo")
+
     setup_logging(level=logging.WARNING)
 
     from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
