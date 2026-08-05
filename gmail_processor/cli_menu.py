@@ -751,6 +751,15 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _py_str_escape(s: str) -> str:
+    """Escapes backslashes and double quotes so a value can be safely embedded
+    in a double-quoted Python string literal written into rules.py. Without
+    this, a crafted email/label (e.g. from a spoofed From header suggested by
+    Smart Setup) could break out of the literal and inject code that runs on
+    the next importlib.reload."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
@@ -779,7 +788,9 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    safe_email = _py_str_escape(email)
+    safe_label = _py_str_escape(label)
+    new_entry = f'    "{safe_email}": {{"label": "{safe_label}", "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -851,11 +862,14 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
     if f'"{domain}"' in block_text:
         return False
 
+    safe_domain = _py_str_escape(domain)
+    safe_label  = _py_str_escape(label)
+    safe_action = _py_str_escape(action)
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": ["{safe_domain}"],\n'
+        f'        "label": "{safe_label}",\n'
+        f'        "action": "{safe_action}",\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
