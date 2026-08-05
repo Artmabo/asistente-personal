@@ -111,6 +111,11 @@ _RELATION_BADGE_COLORS = {
     "otro":     ("#f1f5f9", "#475569"),
 }
 
+_RELATION_NAMES = {
+    "familiar": "Familiar", "trabajo": "Trabajo",
+    "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro",
+}
+
 _MONTHS_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -282,8 +287,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -721,8 +727,6 @@ try:
         last  = pdata.get("last_contact", "")
         bidir = pdata.get("bidirectional", False)
         _bg, _fg = _RELATION_BADGE_COLORS.get(rel, ("#f1f5f9", "#475569"))
-        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
 
         c1, c2 = st.columns([1, 4])
         with c1:
@@ -734,7 +738,10 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                # rel comes from LLM-classified contact data — escape before
+                # injecting into raw HTML in case the model ever emits an
+                # unexpected value.
+                f'{html.escape(_RELATION_NAMES.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1320,8 +1327,6 @@ elif _current_page == "contactos":
                         _cpbidir = _cpdata.get("bidirectional", False)
                         _cptopics = _cpdata.get("key_topics", [])
                         _cpbg, _cpfg = _RELATION_BADGE_COLORS.get(_cprel, ("#f1f5f9", "#475569"))
-                        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
 
                         with _gcol:
                             with st.container(border=True):
@@ -1334,7 +1339,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_RELATION_NAMES.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")

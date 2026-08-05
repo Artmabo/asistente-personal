@@ -1,9 +1,12 @@
+import logging
 import os
 import stat
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+
+logger = logging.getLogger("gmail_processor.auth")
 
 SCOPES = ["https://mail.google.com/"]
 
@@ -16,14 +19,19 @@ def get_service(
     creds = None
 
     if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        except (ValueError, OSError) as e:
+            logger.warning(f"Archivo de token inválido o corrupto ({e}); se solicitará nueva autenticación.")
+            creds = None
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-            except Exception:
+            except Exception as e:
                 # Refresh token revoked or network failure — force full re-auth
+                logger.warning(f"No se pudo refrescar el token ({e}); se solicitará nueva autenticación.")
                 creds = None
         if not creds or not creds.valid:
             if not os.path.exists(creds_path):

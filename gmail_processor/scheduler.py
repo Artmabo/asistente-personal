@@ -75,7 +75,7 @@ class CleanupScheduler:
         day_of_week: str = "sunday",
         enabled:     bool = True,
     ) -> None:
-        """Guarda configuración y reprograma si el scheduler está corriendo."""
+        """Guarda configuración y reprograma (o desactiva) si el scheduler está corriendo."""
         self.config.update({
             "frequency":   frequency,
             "categories":  categories,
@@ -85,8 +85,11 @@ class CleanupScheduler:
         })
         self._save()
 
-        if enabled and self._scheduler and self._scheduler.running:
-            self._reschedule()
+        if self._scheduler and self._scheduler.running:
+            if enabled:
+                self._reschedule()
+            elif self._job:
+                self.stop()
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""
