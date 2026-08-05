@@ -12,6 +12,7 @@ Decision pipeline per message:
 """
 import json
 import logging
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -26,6 +27,8 @@ from .utils import get_header, extract_email_address
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
+
+_TOP_SENDERS_LIMIT = 10
 
 
 class StorageCleaner:
@@ -43,6 +46,7 @@ class StorageCleaner:
         self.audit         = audit
         self.learning_mode = learning_mode
         self._protected_domains = _build_protected_domains()
+        self._trashed_senders: Counter[str] = Counter()
         self.stats = {
             "examined": 0,
             "trashed":  0,
@@ -239,6 +243,7 @@ class StorageCleaner:
 
         if self.actions.trash(msg_id):
             self.stats["trashed"] += 1
+            self._trashed_senders[email] += 1
             if self.engine:
                 self.engine.metrics.record_trash(rule_name)
                 self.engine.update_category_stats(label_ids, "trash")
@@ -283,11 +288,24 @@ class StorageCleaner:
 
     # ── Summary ───────────────────────────────────────────────────────────────
 
+    def _top_senders(self) -> list[dict]:
+        """Senders responsible for the most trashed messages this run.
+
+        Surfacing repeat offenders makes it easy to spot a sender worth
+        adding as a permanent keyword/domain rule instead of relying on
+        cleanup to catch them every time.
+        """
+        return [
+            {"sender": sender, "count": count}
+            for sender, count in self._trashed_senders.most_common(_TOP_SENDERS_LIMIT)
+        ]
+
     def _write_summary(self):
         """Persists a cleanup summary to cleanup_summary.json for the UI."""
         summary = {
-            "ts":      datetime.now().isoformat(timespec="seconds"),
-            "dry_run": cfg.DRY_RUN,
+            "ts":          datetime.now().isoformat(timespec="seconds"),
+            "dry_run":     cfg.DRY_RUN,
+            "top_senders": self._top_senders(),
             **self.stats,
         }
         try:
@@ -309,6 +327,14 @@ class StorageCleaner:
             f"  Errores    : {s['errors']}\n"
             f"{'='*55}"
         )
+
+        top = self._top_senders()
+        if top:
+            lines = "\n".join(f"    {t['count']:>3}x  {t['sender']}" for t in top[:5])
+            logger.info(
+                f"  Remitentes más frecuentes en papelera "
+                f"(candidatos a regla permanente):\n{lines}"
+            )
 
 
 # ── Module helpers ────────────────────────────────────────────────────────────
