@@ -113,9 +113,10 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                lines = list(f)
+        except OSError:
             return []
+        return self._parse_lines(lines)
 
     def _load_tail(self, n: int) -> list[dict]:
         """Reads only the last n lines using a deque to avoid loading the whole file."""
@@ -123,10 +124,21 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                tail = deque(
-                    (ln for ln in f if ln.strip()),
-                    maxlen=n,
-                )
-            return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+                tail = deque((ln for ln in f if ln.strip()), maxlen=n)
+        except OSError:
             return []
+        return self._parse_lines(tail)
+
+    @staticmethod
+    def _parse_lines(lines) -> list[dict]:
+        """Parses JSONL lines, skipping (and logging) individual corrupt lines
+        instead of discarding the whole file when one line is malformed."""
+        entries = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                logger.warning(f"Audit: skipping corrupt log line: {line[:80]!r}")
+        return entries
