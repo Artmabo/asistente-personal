@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -29,6 +29,18 @@ _MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 def _empty_profiles() -> dict:
     return {"profiles": {}, "last_build": None, "total_profiles": 0}
+
+
+def _parse_email_date(date_str: str) -> datetime | None:
+    """Parse an RFC 2822 email Date header into a naive UTC datetime.
+
+    Normalizing to UTC (instead of just stripping tzinfo) keeps ordering
+    correct when comparing timestamps from senders in different timezones.
+    """
+    dt = email.utils.parsedate_to_datetime(date_str)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
+    return dt.replace(tzinfo=None)
 
 
 class ContactProfiler:
@@ -253,7 +265,7 @@ class ContactProfiler:
         date_str    = hdr("Date")
         date_parsed = None
         try:
-            date_parsed = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
+            date_parsed = _parse_email_date(date_str)
         except Exception:
             pass
 
@@ -301,8 +313,7 @@ class ContactProfiler:
 
                 date_short = ""
                 try:
-                    d = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
-                    date_short = d.strftime("%Y-%m-%d")
+                    date_short = _parse_email_date(date_str).strftime("%Y-%m-%d")
                 except Exception:
                     pass
 

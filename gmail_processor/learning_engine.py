@@ -467,6 +467,11 @@ class LearningEngine:
                 current = stats.get("threshold_days") or base
                 new_val = current + THRESHOLD_INCREASE_DAYS
                 stats["threshold_days"] = new_val
+                # Start a fresh observation window after adjusting — otherwise these
+                # counters are cumulative for the file's lifetime and the same stale
+                # error rate keeps re-triggering an increase on every future run.
+                stats["trashed"]   = 0
+                stats["incorrect"] = 0
                 self._dirty = True
                 changes.append(
                     f"  {rule_name}: {current}d → {new_val}d  "

@@ -11,7 +11,7 @@ import logging
 import re
 import time
 import email.utils
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -119,7 +119,12 @@ def _date_filter(days: int | None) -> str:
 
 def _parse_date(date_str: str) -> datetime | None:
     try:
-        return email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
+        dt = email.utils.parsedate_to_datetime(date_str)
+        # Normalize to UTC before dropping tzinfo so senders in different
+        # timezones compare correctly instead of by local wall-clock time.
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=None)
     except Exception:
         return None
 
