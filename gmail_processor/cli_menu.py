@@ -751,6 +751,12 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _escape_py_str(value: str) -> str:
+    """Escapes backslashes and double quotes so a value can be safely embedded
+    in a double-quoted Python string literal written to rules.py."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
@@ -779,7 +785,9 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    safe_email = _escape_py_str(email)
+    safe_label = _escape_py_str(label)
+    new_entry = f'    "{safe_email}": {{"label": "{safe_label}", "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -853,9 +861,9 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": ["{_escape_py_str(domain)}"],\n'
+        f'        "label": "{_escape_py_str(label)}",\n'
+        f'        "action": "{_escape_py_str(action)}",\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
