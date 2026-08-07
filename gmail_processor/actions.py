@@ -50,6 +50,15 @@ class GmailActions:
             self._labels[name] = result["id"]
             logger.info(f"Created Gmail label '{name}' (id={result['id']})")
             return result["id"]
+
+        # The create call may fail with a "label already exists" conflict when
+        # another concurrent run created it first (e.g. scheduler + manual run
+        # racing with independently-empty label caches). Re-check the live list
+        # before giving up, so this run doesn't drop the label for its whole duration.
+        self._load_labels()
+        if name in self._labels:
+            logger.info(f"Label '{name}' already existed (created concurrently), reusing id={self._labels[name]}")
+            return self._labels[name]
         return ""
 
     def _load_labels(self):

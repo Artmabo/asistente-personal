@@ -258,28 +258,7 @@ class StorageCleaner:
     # ── Hard protection check ─────────────────────────────────────────────────
 
     def _protection_reason(self, message: dict) -> str | None:
-        label_ids = message.get("labelIds", [])
-
-        if "STARRED" in label_ids:
-            return "marcado con estrella (STARRED)"
-        if "IMPORTANT" in label_ids:
-            return "marcado como importante (IMPORTANT)"
-
-        email  = _sender_email(message)
-        domain = email.split("@")[-1] if "@" in email else ""
-
-        if email in cfg.CONTACT_RULES:
-            return f"contacto protegido ({email})"
-        if domain and f"@{domain}" in cfg.CONTACT_RULES:
-            return f"dominio protegido por contacto ({domain})"
-        if domain in self._protected_domains:
-            return f"dominio protegido ({domain})"
-
-        extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
-        if domain in extra:
-            return f"dominio seguro adicional ({domain})"
-
-        return None
+        return protection_reason(message, self._protected_domains)
 
     # ── Summary ───────────────────────────────────────────────────────────────
 
@@ -312,6 +291,33 @@ class StorageCleaner:
 
 
 # ── Module helpers ────────────────────────────────────────────────────────────
+
+def protection_reason(message: dict, protected_domains: frozenset[str]) -> str | None:
+    """Hard protection check shared by StorageCleaner and other bulk-delete paths
+    (e.g. limpiar_correos.py) so they can't diverge in what counts as safe to trash."""
+    label_ids = message.get("labelIds", [])
+
+    if "STARRED" in label_ids:
+        return "marcado con estrella (STARRED)"
+    if "IMPORTANT" in label_ids:
+        return "marcado como importante (IMPORTANT)"
+
+    email  = _sender_email(message)
+    domain = email.split("@")[-1] if "@" in email else ""
+
+    if email in cfg.CONTACT_RULES:
+        return f"contacto protegido ({email})"
+    if domain and f"@{domain}" in cfg.CONTACT_RULES:
+        return f"dominio protegido por contacto ({domain})"
+    if domain in protected_domains:
+        return f"dominio protegido ({domain})"
+
+    extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
+    if domain in extra:
+        return f"dominio seguro adicional ({domain})"
+
+    return None
+
 
 def _build_protected_domains() -> frozenset[str]:
     protected: set[str] = set()

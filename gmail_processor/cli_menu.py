@@ -920,12 +920,18 @@ def _menu_limpiar_todo(get_svc: Callable):
     print()
     if not _confirm("¿Continuar?"):
         return
-    if not _confirm("  Confirmar: limpiar todas las categorías"):
-        return
     svc = get_svc()
     if svc is None:
         return
     from limpiar_correos import limpiar_todo_basura
+    print("\n  Contando mensajes que coinciden (sin mover nada todavía)...")
+    preview = limpiar_todo_basura(svc, dry_run=True)
+    print(f"\n  Se encontraron {preview['procesados']} correos en total.")
+    if preview["procesados"] == 0:
+        _pause()
+        return
+    if not _confirm(f"  Confirmar: mover {preview['procesados']} correos a la papelera"):
+        return
     limpiar_todo_basura(svc)
     _pause()
 

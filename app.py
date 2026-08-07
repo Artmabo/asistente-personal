@@ -168,11 +168,9 @@ def _mostrar_resultado_cat(r: dict | None, nombre: str):
 def _ejecutar_procesador(dry_run: bool) -> dict:
     try:
         import logging
-        import gmail_processor.rules as cfg
         from gmail_processor import GmailProcessor, setup_logging
-        cfg.DRY_RUN = dry_run
         setup_logging(level=logging.INFO)
-        processor = GmailProcessor(service=st.session_state.service)
+        processor = GmailProcessor(service=st.session_state.service, dry_run=dry_run)
         return processor.run()
     except Exception as exc:
         return {"error": str(exc)}
@@ -423,24 +421,28 @@ def _ejecutar_smart_setup(scan_days: int | None, status_ph) -> dict:
 
 def _ejecutar_debug() -> tuple[dict, str]:
     import logging
-    import gmail_processor.rules as cfg
+    import threading
     from gmail_processor import GmailProcessor
 
-    cfg.DRY_RUN   = True
     log_lines: list[str] = []
+    this_thread = threading.get_ident()
 
     class _BufHandler(logging.Handler):
         def emit(self, record):
             log_lines.append(self.format(record))
 
+    # Streamlit runs each session's script in its own thread, so filtering by
+    # thread id keeps this run's buffer from picking up log lines emitted by
+    # another session's concurrent run on the same shared "gmail_processor" logger.
     handler = _BufHandler(logging.DEBUG)
+    handler.addFilter(lambda record: record.thread == this_thread)
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-8s] %(message)s"))
     root       = logging.getLogger("gmail_processor")
     prev_level = root.level
     root.setLevel(logging.DEBUG)
     root.addHandler(handler)
     try:
-        processor = GmailProcessor(service=st.session_state.service)
+        processor = GmailProcessor(service=st.session_state.service, dry_run=True)
         stats     = processor.run()
         return stats, "\n".join(log_lines)
     except Exception as exc:
@@ -561,7 +563,7 @@ def _time_ago(date_str: str) -> str:
         return ""
     try:
         d    = datetime.strptime(date_str, "%Y-%m-%d")
-        days = (datetime.now() - d).days
+        days = max((datetime.now() - d).days, 0)
         if days == 0:
             return "hoy"
         elif days == 1:
@@ -602,26 +604,38 @@ def _get_chat():
     return AssistantChat()
 
 
+@st.cache_data
+def _get_important_contacts_cached(_mtime: float) -> list[str]:
+    from gmail_processor.contact_analyzer import STATE_PATH
+    _state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    return [
+        _e for _e, _v in _state.get("reviewed", {}).items()
+        if _v.get("decision") == "personal"
+    ]
+
+
 def _get_important_contacts() -> list[str]:
     try:
         from gmail_processor.contact_analyzer import STATE_PATH
         if not STATE_PATH.exists():
             return []
-        _state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        return [
-            _e for _e, _v in _state.get("reviewed", {}).items()
-            if _v.get("decision") == "personal"
-        ]
+        return _get_important_contacts_cached(STATE_PATH.stat().st_mtime)
     except Exception:
         return []
 
 
+@st.cache_data
+def _load_profiles_cached(_mtime: float) -> dict:
+    from gmail_processor.contact_profiler import ContactProfiler
+    return ContactProfiler().get_profiles()
+
+
 def _load_profiles() -> dict:
     try:
-        from gmail_processor.contact_profiler import ContactProfiler, PROFILES_PATH
+        from gmail_processor.contact_profiler import PROFILES_PATH
         if not PROFILES_PATH.exists():
             return {}
-        return ContactProfiler().get_profiles()
+        return _load_profiles_cached(PROFILES_PATH.stat().st_mtime)
     except Exception:
         return {}
 
@@ -1084,7 +1098,7 @@ with st.sidebar:
     # Mini barra de almacenamiento
     _sd_side = st.session_state.get("storage_data") or {}
     if _sd_side and not _sd_side.get("error") and _sd_side.get("percent_used") is not None:
-        _pct = (_sd_side["percent_used"] or 0) / 100
+        _pct = min(max((_sd_side["percent_used"] or 0) / 100, 0.0), 1.0)
         st.progress(_pct, text=f"{_sd_side.get('used_gb', 0)} GB usados")
     elif connected:
         st.caption("💾 Almacenamiento: —")
@@ -1667,7 +1681,7 @@ elif _current_page == "limpiar":
                 _s_msgs  = _sd.get("messages_total", 0)
                 if _s_used is not None and _s_total:
                     st.progress(
-                        (_s_pct or 0) / 100,
+                        min(max((_s_pct or 0) / 100, 0.0), 1.0),
                         text=f"Usando **{_s_used} GB** de {_s_total:.0f} GB ({_s_pct}%) · {_s_msgs:,} mensajes",
                     )
                 else:

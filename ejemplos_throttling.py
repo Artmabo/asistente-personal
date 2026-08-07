@@ -1,7 +1,12 @@
 #!/usr/bin/env python
 """
-Ejemplos de uso avanzado del sistema de throttling adaptativo.
-Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
+Ejemplos de uso de limpiar_correos().
+
+NOTA: los parámetros REQUEST_DELAY, BATCH_SIZE, PAGE_DELAY y el "circuit
+breaker" mencionados abajo son ilustrativos/aspiracionales — no existen como
+opciones configurables en este código. La API actual solo respeta los límites
+por defecto de la Gmail API. Estos ejemplos muestran patrones de uso seguro
+(dry-run, ver `--dry-run`), no un sistema de throttling real.
 """
 
 from limpiar_correos import limpiar_correos
@@ -21,7 +26,6 @@ def ejemplo_1_modo_conservador():
     resultado = limpiar_correos(
         meses=6,
         solo_no_leidos=True,
-        aggressive=False  # Conservative mode
     )
     
     print(f"\n✓ Resultado: {resultado['exitos']} correos eliminados")
@@ -63,7 +67,6 @@ def ejemplo_3_limpieza_personalizada():
     resultado = limpiar_correos(
         meses=12,           # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
     )
     
     print(f"\n✓ Se eliminaron {resultado['exitos']} correos")
@@ -102,9 +105,8 @@ def ejemplo_6_errores_comunes():
             "causa": "Cuota de usuario excedida o permisos insuficientes",
             "solucion": [
                 "1. Esperar 24h (se resetea la cuota diaria)",
-                "2. Aumentar PAGE_DELAY y REQUEST_DELAY",
-                "3. Reducir BATCH_SIZE",
-                "4. Usar aggressive=False"
+                "2. Ejecutar con --dry-run primero para verificar el volumen",
+                "3. Procesar una categoría a la vez en vez de --categoria (todas)"
             ]
         },
         "429 Too Many Requests": {
