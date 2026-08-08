@@ -751,6 +751,24 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _atomic_write_text(path: Path, content: str) -> bool:
+    """Writes `content` to `path` via a temp-file-then-replace so a crash or
+    interrupt mid-write never leaves rules.py truncated/unimportable."""
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)
+        return True
+    except OSError:
+        return False
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
@@ -778,15 +796,12 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         if f'"{email}"' in line and not line.strip().startswith("#"):
             return False  # already exists
 
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # repr() safely escapes quotes/backslashes so a label like `Mamá "querida"`
+    # can't corrupt rules.py (which is imported/reloaded as live Python code).
+    new_entry = f'    {repr(email)}: {{"label": {repr(label)}, "mark_important": {important!r}}},'
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _atomic_write_text(rules_path, "\n".join(lines) + "\n")
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
@@ -807,11 +822,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     if not removed:
         return False
 
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _atomic_write_text(rules_path, "\n".join(new_lines) + "\n")
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
@@ -853,18 +864,14 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{domain!r}],\n'
+        f'        "label": {label!r},\n'
+        f'        "action": {action!r},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _atomic_write_text(rules_path, "\n".join(lines) + "\n")
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────

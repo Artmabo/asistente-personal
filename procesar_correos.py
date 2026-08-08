@@ -17,6 +17,7 @@ Entry point for the Gmail rule-based processor.
                                       [--time-to-action SEC]
   stats [--section learning|metrics|categories|all]
   audit [--last N] [--decision TRASH|KEEP|SKIP] [--csv PATH]
+  undo [--run-id RUN_ID] [--yes]
 
 ── Ejemplos ─────────────────────────────────────────────────────────────────
   python procesar_correos.py feedback newsletter@spam.com correct
@@ -24,14 +25,17 @@ Entry point for the Gmail rule-based processor.
   python procesar_correos.py stats --section metrics
   python procesar_correos.py audit --last 50 --decision TRASH
   python procesar_correos.py audit --last 500 --csv audit_export.csv
+  python procesar_correos.py undo                    # restore the last cleanup run
+  python procesar_correos.py undo --run-id 2026-08-08T03:00:00-a1b2c3d4
 """
 import sys
 import argparse
+import json
 import logging
 import gmail_processor.rules as cfg
 from gmail_processor import GmailProcessor, setup_logging
 
-_SUBCOMMANDS = {"feedback", "stats", "audit"}
+_SUBCOMMANDS = {"feedback", "stats", "audit", "undo"}
 
 
 def main():
@@ -50,6 +54,8 @@ def main():
             _cmd_stats(sys.argv[2:])
         elif cmd == "audit":
             _cmd_audit(sys.argv[2:])
+        elif cmd == "undo":
+            _cmd_undo(sys.argv[2:])
         return
 
     parser = argparse.ArgumentParser(
@@ -219,7 +225,7 @@ def _cmd_audit(argv: list[str]):
     else:
         entries = audit.recent(args.last)
 
-    entries = entries[-args.last:]
+    entries = entries[-args.last:] if args.last > 0 else []
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")
@@ -244,6 +250,59 @@ def _cmd_audit(argv: list[str]):
             f"{e.get('rule',''):<20}  "
             f"{mode}"
         )
+
+
+# ── undo ──────────────────────────────────────────────────────────────────────
+
+def _cmd_undo(argv: list[str]):
+    parser = argparse.ArgumentParser(
+        prog="procesar_correos.py undo",
+        description="Restore the messages a --cleanup run sent to Trash",
+    )
+    parser.add_argument("--run-id", default=None, dest="run_id",
+                        help="Specific run to undo (default: the last recorded cleanup run, "
+                             "from cleanup_summary.json)")
+    parser.add_argument("--yes", action="store_true",
+                        help="Skip the confirmation prompt")
+    args = parser.parse_args(argv)
+
+    setup_logging(level=logging.INFO)
+
+    run_id = args.run_id
+    if not run_id:
+        try:
+            with open("cleanup_summary.json", encoding="utf-8") as f:
+                run_id = json.load(f).get("run_id")
+        except (OSError, json.JSONDecodeError):
+            run_id = None
+        if not run_id:
+            print("No hay un run_id de limpieza registrado. Usa --run-id para especificar uno.")
+            return
+
+    from gmail_processor.audit_log import AuditLogger
+    audit   = AuditLogger()
+    pending = audit.trashed_in_run(run_id)
+    if not pending:
+        print(f"No hay mensajes en papelera para el run_id '{run_id}' (ya restaurados o era DRY RUN).")
+        return
+
+    print(f"\nSe restaurarán {len(pending)} mensajes del run '{run_id}':")
+    for e in pending[:10]:
+        print(f"  {e.get('sender','?'):<40} {e.get('reason','')}")
+    if len(pending) > 10:
+        print(f"  ... y {len(pending) - 10} más")
+
+    if not args.yes:
+        confirm = input("\n¿Confirmar restauración? (s/N): ").strip().lower()
+        if confirm != "s":
+            print("Cancelado.")
+            return
+
+    from gmail_processor.auth import get_service
+    from gmail_processor.cleanup_storage import undo_run
+    service = get_service()
+    result  = undo_run(service, audit, run_id)
+    print(f"\nRestaurados: {result['restored']}  Errores: {result['errors']}")
 
 
 if __name__ == "__main__":

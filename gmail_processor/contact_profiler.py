@@ -7,6 +7,7 @@ import email.utils
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,6 +30,23 @@ _MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 def _empty_profiles() -> dict:
     return {"profiles": {}, "last_build": None, "total_profiles": 0}
+
+
+def _b64url_decode(data: str) -> bytes:
+    """Decodes Gmail's unpadded base64url body data (any length, not just the common case)."""
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(html: str) -> str:
+    """Best-effort plain-text extraction from an HTML-only email body."""
+    text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = (text.replace("&nbsp;", " ").replace("&amp;", "&")
+                .replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"'))
+    return re.sub(r"\s+", " ", text).strip()
 
 
 class ContactProfiler:
@@ -156,8 +174,8 @@ class ContactProfiler:
                 userId="me", q=f"in:sent to:{addr}", maxResults=1,
             ).execute()
             bidirectional = bool(sent.get("messages"))
-        except Exception:
-            pass
+        except HttpError as exc:
+            logger.warning(f"Could not check sent mail for {addr}: {exc}")
 
         for em in emails_data:
             if em.get("from_name") and not name:
@@ -267,18 +285,29 @@ class ContactProfiler:
         }
 
     def _extract_body(self, payload: dict) -> str:
-        if payload.get("mimeType") == "text/plain":
+        mime_type = payload.get("mimeType", "")
+        if mime_type in ("text/plain", "text/html"):
             data = payload.get("body", {}).get("data", "")
             if data:
                 try:
-                    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")[:_MAX_BODY].strip()
+                    text = _b64url_decode(data).decode("utf-8", errors="replace")
+                    if mime_type == "text/html":
+                        text = _strip_html(text)
+                    text = text[:_MAX_BODY].strip()
+                    if text:
+                        return text
                 except Exception:
                     pass
+        # Prefer a text/plain part over text/html if both exist among siblings.
+        html_fallback = ""
         for part in payload.get("parts", []):
             text = self._extract_body(part)
-            if text:
+            if not text:
+                continue
+            if part.get("mimeType") == "text/plain":
                 return text
-        return ""
+            html_fallback = html_fallback or text
+        return html_fallback
 
     def _extract_attachments(self, payload: dict, date_str: str) -> list[dict]:
         result: list[dict] = []
@@ -409,14 +438,17 @@ class ContactProfiler:
                     text = text.split("```")[1].split("```")[0].strip()
                 return json.loads(text)
             except (json.JSONDecodeError, IndexError, AttributeError) as exc:
-                raw_snippet = ""
+                # Don't log the raw response text: the prompt embeds real
+                # subjects/body snippets from the contact's emails, so a
+                # malformed reply can echo private content into the logs.
+                raw_len = 0
                 try:
-                    raw_snippet = repr(response.content[0].text[:100])
+                    raw_len = len(response.content[0].text)
                 except Exception:
                     pass
                 logger.warning(
-                    f"Claude returned non-JSON for {data.get('email', '?')}: {exc}. "
-                    f"Raw start: {raw_snippet}"
+                    f"Claude returned non-JSON for {data.get('email', '?')}: {exc} "
+                    f"(response length: {raw_len} chars)"
                 )
                 last_exc = exc
                 break

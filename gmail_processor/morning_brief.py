@@ -27,8 +27,10 @@ class MorningBrief:
 
     def force_refresh(self) -> dict:
         """Elimina la caché y regenera el resumen inmediatamente."""
-        if _CACHE_PATH.exists():
-            _CACHE_PATH.unlink()
+        try:
+            _CACHE_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
         return self.generate()
 
     # ── Construcción ─────────────────────────────────────────────────────────
@@ -134,6 +136,13 @@ class MorningBrief:
             "new_from_important":   new_from_important[:5],
             "pending_decisions":    pending_count,
             "alerts":               alerts[:5],
+            # Reserved but not populated: MorningBrief is intentionally local-only
+            # (no Gmail/Drive calls, see module docstring), and StorageAnalyzer's
+            # percent_used needs a live Drive-scoped API call. Wiring this in
+            # would mean either breaking that "instant, local-only" guarantee or
+            # having some other Gmail-connected step (e.g. the scheduler's
+            # cleanup run) drop a small storage_summary.json snapshot for this
+            # to read — worth a follow-up, not done here.
             "storage_percent":      None,
             "personal_count":       personal,
             "spam_count":           spam,
@@ -157,9 +166,12 @@ class MorningBrief:
         return None
 
     def _save_cache(self, brief: dict):
-        _CACHE_PATH.write_text(
-            json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        try:
+            _CACHE_PATH.write_text(
+                json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass  # Caching is a nice-to-have — the freshly-computed brief is still returned.
 
     def _read_json(self, path: str, default: dict) -> dict:
         p = Path(path)

@@ -12,6 +12,7 @@ Decision pipeline per message:
 """
 import json
 import logging
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -42,6 +43,7 @@ class StorageCleaner:
         self.engine        = engine
         self.audit         = audit
         self.learning_mode = learning_mode
+        self.run_id        = ""
         self._protected_domains = _build_protected_domains()
         self.stats = {
             "examined": 0,
@@ -57,6 +59,10 @@ class StorageCleaner:
         mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
         scoring = "activo" if self.engine else "inactivo"
 
+        # Tags every audit entry from this run so a live run's trashed
+        # messages can be found and restored later via undo_run().
+        self.run_id = f"{datetime.now().isoformat(timespec='seconds')}-{uuid.uuid4().hex[:8]}"
+
         logger.info(f"\n{'─'*55}")
         logger.info(
             f"  CLEANUP — mode={mode}  targets={len(targets)}"
@@ -67,20 +73,24 @@ class StorageCleaner:
         if self.engine:
             self.engine.metrics.touch_run()
 
-        for target in targets:
-            self._run_target(target, max_per)
+        try:
+            for target in targets:
+                self._run_target(target, max_per)
 
-        if self.engine and self.learning_mode:
-            changes = self.engine.update_rule_thresholds()
-            if not changes:
-                logger.info("Sin ajustes de threshold necesarios.")
-            self.engine.persist()
+            if self.engine and self.learning_mode:
+                changes = self.engine.update_rule_thresholds()
+                if not changes:
+                    logger.info("Sin ajustes de threshold necesarios.")
+                self.engine.persist()
+        finally:
+            # Always persist whatever was decided/trashed so far — a crash
+            # mid-run (malformed target, unexpected API error) must not
+            # silently drop the audit trail for messages already acted on.
+            if self.audit:
+                self.audit.flush()
+            self._print_summary()
+            self._write_summary()
 
-        if self.audit:
-            self.audit.flush()
-
-        self._print_summary()
-        self._write_summary()
         return self.stats
 
     # ── Target loop ───────────────────────────────────────────────────────────
@@ -177,6 +187,7 @@ class StorageCleaner:
                     msg_id=msg_id, sender=email, domain=domain,
                     score=0.0, decision="SKIP", action="skip",
                     rule=rule_name, reason=f"hard_protection:{block}", protected=True,
+                    run_id=self.run_id,
                 )
             return
 
@@ -213,7 +224,7 @@ class StorageCleaner:
                         msg_id=msg_id, sender=email, domain=domain,
                         score=scored.score, decision="KEEP", action="keep",
                         rule=rule_name, reason="score_above_floor",
-                        learned=scored.learned,
+                        learned=scored.learned, run_id=self.run_id,
                     )
                 return
 
@@ -251,6 +262,7 @@ class StorageCleaner:
                     decision="TRASH", action="trash",
                     rule=rule_name, reason=reason,
                     learned=scored.learned if scored else False,
+                    run_id=self.run_id,
                 )
         else:
             self.stats["errors"] += 1
@@ -288,6 +300,7 @@ class StorageCleaner:
         summary = {
             "ts":      datetime.now().isoformat(timespec="seconds"),
             "dry_run": cfg.DRY_RUN,
+            "run_id":  self.run_id,
             **self.stats,
         }
         try:
@@ -309,6 +322,35 @@ class StorageCleaner:
             f"  Errores    : {s['errors']}\n"
             f"{'='*55}"
         )
+
+
+def undo_run(service, audit: AuditLogger, run_id: str) -> dict:
+    """Restores every message a specific cleanup run trashed.
+
+    Reads the run's TRASH entries from the audit log and moves each message
+    back to the inbox (removes TRASH, restores INBOX). Safe to call again —
+    messages already out of Trash are simply skipped by Gmail.
+    """
+    entries = audit.trashed_in_run(run_id)
+    if not entries:
+        return {"restored": 0, "errors": 0, "message": "No hay mensajes en papelera para este run_id."}
+
+    ids = [e["msg_id"] for e in entries]
+    restored, errors = 0, 0
+    for i in range(0, len(ids), 1000):
+        chunk = ids[i : i + 1000]
+        try:
+            service.users().messages().batchModify(
+                userId="me",
+                body={"ids": chunk, "addLabelIds": ["INBOX"], "removeLabelIds": ["TRASH"]},
+            ).execute()
+            restored += len(chunk)
+        except HttpError as e:
+            logger.error(f"undo_run: batchModify failed for {len(chunk)} msgs: {e}")
+            errors += len(chunk)
+
+    logger.info(f"undo_run({run_id}): {restored} restaurados, {errors} errores")
+    return {"restored": restored, "errors": errors}
 
 
 # ── Module helpers ────────────────────────────────────────────────────────────

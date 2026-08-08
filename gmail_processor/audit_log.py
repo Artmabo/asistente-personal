@@ -46,6 +46,7 @@ class AuditLogger:
         reason:    str,
         learned:   bool = False,
         protected: bool = False,
+        run_id:    str = "",   # groups entries from the same cleanup run, enables undo
     ):
         self._buf.append({
             "ts":        datetime.now().isoformat(timespec="seconds"),
@@ -60,6 +61,7 @@ class AuditLogger:
             "learned":   learned,
             "protected": protected,
             "dry_run":   self.dry_run,
+            "run_id":    run_id,
         })
 
     def flush(self):
@@ -81,6 +83,19 @@ class AuditLogger:
             return buf_entries
         persisted = self._load_tail(n - len(buf_entries))
         return (persisted + self._buf)[-n:]
+
+    def trashed_in_run(self, run_id: str) -> list[dict]:
+        """Returns the persisted TRASH entries (live, not dry-run) for a given run_id.
+
+        Used to undo a cleanup run: each entry's msg_id can be passed to
+        Gmail's untrash/batchModify to restore what that run trashed.
+        """
+        if not run_id:
+            return []
+        return [
+            e for e in (self._load() + self._buf)
+            if e.get("run_id") == run_id and e.get("decision") == "TRASH" and not e.get("dry_run")
+        ]
 
     def stats_summary(self) -> dict:
         """Counts decisions from the persisted log."""

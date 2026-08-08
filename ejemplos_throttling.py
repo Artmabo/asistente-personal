@@ -21,7 +21,6 @@ def ejemplo_1_modo_conservador():
     resultado = limpiar_correos(
         meses=6,
         solo_no_leidos=True,
-        aggressive=False  # Conservative mode
     )
     
     print(f"\n✓ Resultado: {resultado['exitos']} correos eliminados")
@@ -63,7 +62,6 @@ def ejemplo_3_limpieza_personalizada():
     resultado = limpiar_correos(
         meses=12,           # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
     )
     
     print(f"\n✓ Se eliminaron {resultado['exitos']} correos")

@@ -18,6 +18,7 @@ from typing import Callable
 from googleapiclient.errors import HttpError
 
 from .utils import get_header
+from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
@@ -657,14 +658,21 @@ class ContactAnalyzer:
                 break
 
             ids = [m["id"] for m in msgs]
-            try:
-                self.svc.users().messages().batchModify(
-                    userId="me",
-                    body={"ids": ids, "addLabelIds": ["TRASH"], "removeLabelIds": ["INBOX"]},
-                ).execute()
+            if cfg.DRY_RUN:
+                # Respect the global simulate-only default — the rest of the
+                # app never trashes real mail while DRY_RUN is on, and this
+                # batch path used to be the one exception to that rule.
+                logger.info(f"[DRY RUN] would trash {len(ids)} msgs from {addr}")
                 total += len(ids)
-            except HttpError as e:
-                logger.warning(f"batchModify failed for {len(ids)} msgs from {addr}: {e}")
+            else:
+                try:
+                    self.svc.users().messages().batchModify(
+                        userId="me",
+                        body={"ids": ids, "addLabelIds": ["TRASH"], "removeLabelIds": ["INBOX"]},
+                    ).execute()
+                    total += len(ids)
+                except HttpError as e:
+                    logger.warning(f"batchModify failed for {len(ids)} msgs from {addr}: {e}")
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -702,11 +710,15 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            # repr() safely escapes quotes/backslashes in both fields
+            new_line = f'    {repr(email_addr)}: {{"label": {repr(label)}, "mark_important": True}},'
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+
+            # Write via temp-file-then-replace so a crash mid-write can't
+            # leave rules.py truncated/unimportable for the whole app.
+            tmp_path = rules_path.with_suffix(".py.tmp")
+            tmp_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path.replace(rules_path)
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:
