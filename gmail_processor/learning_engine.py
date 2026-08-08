@@ -271,7 +271,7 @@ class LearningEngine:
                     score -= 5;  factors.append(f"-5  dominio servicios ({domain})")
                 break
 
-        if email in cfg.CONTACT_RULES:
+        if email in cfg.CONTACT_RULES or (domain and f"@{domain}" in cfg.CONTACT_RULES):
             score += 50; factors.append(f"+50 contacto protegido ({email})")
 
         # ── Sender model (decay_lambda = DECAY_LAMBDA_SENDER) ─────────────────
@@ -586,7 +586,7 @@ class LearningEngine:
                     logger.info(f"Estado migrado v{v} → v3")
                 logger.debug(f"Estado cargado desde {self.path}")
                 return data
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 logger.warning(f"Estado corrupto en {self.path}, reiniciando.")
         return copy.deepcopy(_EMPTY_STATE_V3)
 
@@ -677,13 +677,15 @@ def _migrate_to_v3(old: dict) -> dict:
         entry["last_accepted"]      = src.get("last_feedback", src.get("last_accepted", ""))
         return entry
 
-    # v1 used sender_scores/domain_scores; v2 used same names
+    # v1 used sender_scores/domain_scores; v2 already used sender_model/domain_model
     for old_key, new_key in [
         ("sender_scores", "sender_model"),
+        ("sender_model",  "sender_model"),
         ("domain_model",  "domain_model"),
     ]:
         for k, v in old.get(old_key, {}).items():
-            new[new_key][k] = _to_v3_entry(v)
+            if k not in new[new_key]:
+                new[new_key][k] = _to_v3_entry(v)
     # v2 already has domain_model
     for k, v in old.get("domain_scores", {}).items():
         if k not in new["domain_model"]:

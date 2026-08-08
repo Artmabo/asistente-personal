@@ -24,6 +24,15 @@ _DAYS_ES = {
     "sunday":    "domingo",
 }
 
+# APScheduler's CronTrigger only accepts abbreviated weekday names ("mon".."sun")
+# or 0-6 — it rejects full names like "sunday" with an exception. The UI (and
+# _empty_config's default) work in full English day names, so every value must
+# be translated before reaching CronTrigger.
+_DOW_TO_CRON = {
+    "monday": "mon", "tuesday": "tue", "wednesday": "wed", "thursday": "thu",
+    "friday": "fri", "saturday": "sat", "sunday": "sun",
+}
+
 
 def _empty_config() -> dict:
     return {
@@ -85,8 +94,18 @@ class CleanupScheduler:
         })
         self._save()
 
-        if enabled and self._scheduler and self._scheduler.running:
-            self._reschedule()
+        if not enabled:
+            # A previously-running job must be cancelled here too, otherwise
+            # it keeps firing on its old schedule even though enabled=False
+            # was just persisted to disk.
+            self.stop()
+            return
+
+        if self._scheduler and self._scheduler.running:
+            try:
+                self._reschedule()
+            except Exception as exc:
+                logger.error(f"Error al reprogramar limpieza: {exc}")
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""
@@ -139,9 +158,13 @@ class CleanupScheduler:
             from .cleanup_storage import StorageCleaner
             from .learning_engine import LearningEngine
             from .audit_log import AuditLogger
+            from . import rules as cfg
 
             service = get_service()
-            actions = GmailActions(service, dry_run=False)
+            # Respect the global DRY_RUN safety switch — a scheduled run must
+            # never trash real mail just because the user forgot to flip it
+            # from the app's simulate-only default.
+            actions = GmailActions(service, dry_run=cfg.DRY_RUN)
             engine  = LearningEngine()
             audit   = AuditLogger()
             cleaner = StorageCleaner(service, actions, engine=engine, audit=audit)
@@ -170,6 +193,7 @@ class CleanupScheduler:
         freq = self.config.get("frequency", "weekly")
         hour = int(self.config.get("hour", 3))
         dow  = self.config.get("day_of_week", "sunday")
+        dow  = _DOW_TO_CRON.get(dow, dow)
 
         if freq == "daily":
             trigger = CronTrigger(hour=hour)
@@ -212,7 +236,10 @@ def format_next_run(iso: str | None) -> str:
         return "No programada"
     try:
         dt    = datetime.fromisoformat(iso)
-        now   = datetime.now()
+        # APScheduler's next_run_time is timezone-aware (tzlocal by default);
+        # datetime.now() is naive, and subtracting the two used to raise
+        # TypeError, silently falling back to the raw ISO string below.
+        now   = datetime.now(dt.tzinfo)
         delta = dt - now
         if delta.total_seconds() < 0:
             return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"

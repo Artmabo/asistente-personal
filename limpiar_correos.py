@@ -5,6 +5,9 @@ from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from gmail_processor import rules as _cfg
+from gmail_processor.utils import get_header, extract_email_address
+
 CATEGORIAS = {
     "spam":            "in:spam",
     "promociones":     "category:promotions",
@@ -26,6 +29,64 @@ def obtener_servicio(creds_path="config/credentials.json", token_path="token.jso
     """Builds an authenticated Gmail service. Delegates to gmail_processor.auth."""
     from gmail_processor.auth import get_service
     return get_service(creds_path=creds_path, token_path=token_path)
+
+
+def _es_protegido(message: dict) -> bool:
+    """Mirrors gmail_processor.cleanup_storage's hard-protection rules: never
+    trash starred/important mail, protected contacts, or mark_important domains."""
+    label_ids = message.get("labelIds", [])
+    if "STARRED" in label_ids or "IMPORTANT" in label_ids:
+        return True
+
+    headers = message.get("payload", {}).get("headers", [])
+    sender  = extract_email_address(get_header(headers, "From"))
+    domain  = sender.split("@")[-1] if "@" in sender else ""
+
+    if sender in _cfg.CONTACT_RULES or (domain and f"@{domain}" in _cfg.CONTACT_RULES):
+        return True
+    for rule in _cfg.DOMAIN_RULES:
+        if rule.get("action") == "mark_important" and domain in rule.get("domains", []):
+            return True
+    if domain in set(_cfg.CLEANUP_RULES.get("safe_domains", [])):
+        return True
+    return False
+
+
+def _filtrar_protegidos(service, ids: list) -> tuple:
+    """Fetches metadata for `ids` and drops the ones that are hard-protected.
+
+    Errs on the side of caution: any id whose metadata couldn't be confirmed
+    (batch/API failure) is treated as protected and left out of the trash list.
+    Returns (ids_seguros, cantidad_protegidos).
+    """
+    if not ids:
+        return [], 0
+
+    messages: dict = {}
+
+    def _on_response(request_id, response, exception):
+        if exception is None and response is not None:
+            messages[request_id] = response
+
+    for i in range(0, len(ids), 100):
+        chunk = ids[i:i + 100]
+        batch = service.new_batch_http_request(callback=_on_response)
+        for msg_id in chunk:
+            batch.add(
+                service.users().messages().get(
+                    userId="me", id=msg_id, format="metadata",
+                    metadataHeaders=["From"],
+                ),
+                request_id=msg_id,
+            )
+        try:
+            batch.execute()
+        except HttpError as e:
+            print(f"  Error al verificar protección de {len(chunk)} mensajes: {e}")
+
+    seguros    = [mid for mid in ids if mid in messages and not _es_protegido(messages[mid])]
+    protegidos = len(ids) - len(seguros)
+    return seguros, protegidos
 
 
 def mover_lote_a_papelera(service, ids: list) -> int:
@@ -104,14 +165,18 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
                 break
 
             ids = [m['id'] for m in messages]
+            ids_seguros, protegidos = _filtrar_protegidos(service, ids)
+            if protegidos:
+                print(f"  Página {page_num}: {protegidos} protegidos (destacado/importante/contacto) — se conservan.")
+
             if dry_run:
-                print(f"  Página {page_num}: {len(ids)} correos encontrados (no se mueven).")
-                exitos = len(ids)
+                print(f"  Página {page_num}: {len(ids_seguros)} correos encontrados (no se mueven).")
+                exitos = len(ids_seguros)
             else:
-                print(f"  Página {page_num}: {len(ids)} correos → enviando a papelera...", end="", flush=True)
-                exitos = mover_lote_a_papelera(service, ids)
+                print(f"  Página {page_num}: {len(ids_seguros)} correos → enviando a papelera...", end="", flush=True)
+                exitos = mover_lote_a_papelera(service, ids_seguros)
                 print(f" {exitos} movidos.")
-            cat_total += len(ids)
+            cat_total += len(ids_seguros)
             cat_exitos += exitos
 
             page_token = result.get('nextPageToken')
@@ -162,7 +227,7 @@ def limpiar_todo_basura(service) -> dict:
 
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
 
-def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False):
+def limpiar_correos(service=None, meses=6, solo_no_leidos=True):
     if service is None:
         service = obtener_servicio()
     fecha = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")
