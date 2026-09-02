@@ -111,6 +111,14 @@ _RELATION_BADGE_COLORS = {
     "otro":     ("#f1f5f9", "#475569"),
 }
 
+_RELATION_NAMES = {
+    "familiar": "Familiar",
+    "trabajo":  "Trabajo",
+    "servicio": "Servicio",
+    "gobierno": "Gobierno",
+    "otro":     "Otro",
+}
+
 _MONTHS_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -168,11 +176,9 @@ def _mostrar_resultado_cat(r: dict | None, nombre: str):
 def _ejecutar_procesador(dry_run: bool) -> dict:
     try:
         import logging
-        import gmail_processor.rules as cfg
         from gmail_processor import GmailProcessor, setup_logging
-        cfg.DRY_RUN = dry_run
         setup_logging(level=logging.INFO)
-        processor = GmailProcessor(service=st.session_state.service)
+        processor = GmailProcessor(service=st.session_state.service, dry_run=dry_run)
         return processor.run()
     except Exception as exc:
         return {"error": str(exc)}
@@ -423,10 +429,8 @@ def _ejecutar_smart_setup(scan_days: int | None, status_ph) -> dict:
 
 def _ejecutar_debug() -> tuple[dict, str]:
     import logging
-    import gmail_processor.rules as cfg
     from gmail_processor import GmailProcessor
 
-    cfg.DRY_RUN   = True
     log_lines: list[str] = []
 
     class _BufHandler(logging.Handler):
@@ -440,7 +444,7 @@ def _ejecutar_debug() -> tuple[dict, str]:
     root.setLevel(logging.DEBUG)
     root.addHandler(handler)
     try:
-        processor = GmailProcessor(service=st.session_state.service)
+        processor = GmailProcessor(service=st.session_state.service, dry_run=True)
         stats     = processor.run()
         return stats, "\n".join(log_lines)
     except Exception as exc:
@@ -721,8 +725,6 @@ try:
         last  = pdata.get("last_contact", "")
         bidir = pdata.get("bidirectional", False)
         _bg, _fg = _RELATION_BADGE_COLORS.get(rel, ("#f1f5f9", "#475569"))
-        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
 
         c1, c2 = st.columns([1, 4])
         with c1:
@@ -734,7 +736,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_RELATION_NAMES.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -762,7 +764,7 @@ def _send_chat_message(msg_text: str, chat_msgs: list):
         try:
             _chat_obj = _get_chat()
             _chat_obj.refresh_context()
-            _api_hist = [{"role": m["role"], "content": m["content"]} for m in chat_msgs[:-1]]
+            _api_hist = [{"role": m["role"], "content": m["content"]} for m in chat_msgs[-21:-1]]
             _resp = _chat_obj.send_message(msg_text, _api_hist)
         except Exception as _ce:
             _resp = f"Hubo un problema: {_ce}"
@@ -1320,8 +1322,6 @@ elif _current_page == "contactos":
                         _cpbidir = _cpdata.get("bidirectional", False)
                         _cptopics = _cpdata.get("key_topics", [])
                         _cpbg, _cpfg = _RELATION_BADGE_COLORS.get(_cprel, ("#f1f5f9", "#475569"))
-                        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
 
                         with _gcol:
                             with st.container(border=True):
@@ -1334,7 +1334,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_RELATION_NAMES.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
@@ -1926,22 +1926,22 @@ elif _current_page == "automatica":
                 st.markdown("")
                 _sf1, _sf2, _sf3 = st.columns(3)
                 with _sf1:
+                    _freq_opts = ["daily", "weekly", "monthly"]
+                    _freq_val  = _sch_status.get("frequency", "weekly")
                     _sched_freq = st.selectbox(
                         "Frecuencia",
-                        options=["daily", "weekly", "monthly"],
-                        index=["daily", "weekly", "monthly"].index(
-                            _sch_status.get("frequency", "weekly")
-                        ),
+                        options=_freq_opts,
+                        index=_freq_opts.index(_freq_val) if _freq_val in _freq_opts else 1,
                         format_func=lambda x: {"daily": "Diaria", "weekly": "Semanal", "monthly": "Mensual"}[x],
                         key="sched_freq",
                     )
                 with _sf2:
+                    _dow_opts = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+                    _dow_val  = _sch_status.get("day_of_week", "sunday")
                     _sched_dow = st.selectbox(
                         "Día de la semana",
-                        options=["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
-                        index=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"].index(
-                            _sch_status.get("day_of_week", "sunday")
-                        ),
+                        options=_dow_opts,
+                        index=_dow_opts.index(_dow_val) if _dow_val in _dow_opts else 6,
                         format_func=lambda x: {
                             "monday": "Lunes", "tuesday": "Martes", "wednesday": "Miércoles",
                             "thursday": "Jueves", "friday": "Viernes",

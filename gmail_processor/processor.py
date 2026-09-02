@@ -10,7 +10,7 @@ from .actions import GmailActions
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
-from .utils import get_header
+from .utils import get_header, sanitize_for_log
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
@@ -33,12 +33,17 @@ def setup_logging(
 
 
 class GmailProcessor:
-    def __init__(self, service=None):
+    def __init__(self, service=None, dry_run: bool | None = None):
+        """`dry_run` overrides cfg.DRY_RUN for this instance only — pass it
+        explicitly (rather than mutating the shared cfg.DRY_RUN module global)
+        when multiple GmailProcessor instances may be constructed concurrently
+        (e.g. separate Streamlit sessions in the same process)."""
+        self.dry_run    = cfg.DRY_RUN if dry_run is None else dry_run
         self.service    = service or get_service()
         self.classifier = EmailClassifier()
-        self.actions    = GmailActions(self.service, dry_run=cfg.DRY_RUN)
+        self.actions    = GmailActions(self.service, dry_run=self.dry_run)
         self.engine     = LearningEngine()
-        self.audit      = AuditLogger(dry_run=cfg.DRY_RUN)
+        self.audit      = AuditLogger(dry_run=self.dry_run)
         self.stats      = {
             "processed": 0,
             "labeled":   0,
@@ -56,7 +61,7 @@ class GmailProcessor:
         learning=True → enables writing to learning_state.json and threshold adjustments.
         """
         query = query or cfg.QUERY_FILTER
-        mode  = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode  = "DRY RUN" if self.dry_run else "LIVE"
         logger.info(f"{'='*55}")
         logger.info(f"  Gmail Processor — mode={mode}  query='{query}'")
         logger.info(f"{'='*55}")
@@ -83,7 +88,11 @@ class GmailProcessor:
 
             logger.info(f"Page {page}: {len(messages)} messages")
             for stub in messages:
-                self._process_one(stub["id"])
+                try:
+                    self._process_one(stub["id"])
+                except Exception as e:
+                    logger.error(f"Unhandled error processing {stub['id']}: {e}")
+                    self.stats["errors"] += 1
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -127,8 +136,8 @@ class GmailProcessor:
 
     def _apply(self, msg_id: str, message: dict, c: Classification):
         headers = message.get("payload", {}).get("headers", [])
-        sender  = get_header(headers, "From")  or "?"
-        subject = get_header(headers, "Subject") or "(sin asunto)"
+        sender  = sanitize_for_log(get_header(headers, "From"))  or "?"
+        subject = sanitize_for_log(get_header(headers, "Subject")) or "(sin asunto)"
 
         logger.info(
             f"[{c.email_type.upper():<12}] {_short(sender, 40)} | {_short(subject, 50)}"

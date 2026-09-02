@@ -74,6 +74,8 @@ class StorageCleaner:
             changes = self.engine.update_rule_thresholds()
             if not changes:
                 logger.info("Sin ajustes de threshold necesarios.")
+
+        if self.engine:
             self.engine.persist()
 
         if self.audit:

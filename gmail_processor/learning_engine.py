@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, get_domain
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -127,33 +127,48 @@ def _empty_cat() -> dict:
 class Metrics:
     """Persistent quality metrics backed by the state dict."""
 
-    def __init__(self, data: dict):
-        self._d = data
+    def __init__(self, data: dict, engine: "LearningEngine | None" = None):
+        self._d      = data
+        self._engine = engine
+
+    def _touch(self):
+        # Marks the owning LearningEngine dirty so persist() actually writes
+        # these updates — without this, a cleanup run outside learning_mode
+        # (which never hits update_from_feedback/update_rule_thresholds)
+        # would silently lose all metrics for that run.
+        if self._engine is not None:
+            self._engine._dirty = True
 
     def record_processed(self):
         self._d["total_processed"] += 1
+        self._touch()
 
     def record_keep(self, category: str = ""):
         self._d["total_keep"] += 1
         if category:
             self._d["by_category"].setdefault(category, _empty_cat())["kept"] += 1
+        self._touch()
 
     def record_trash(self, rule_name: str = ""):
         self._d["total_trash"] += 1
         if rule_name:
             self._d["by_category"].setdefault(rule_name, _empty_cat())["trashed"] += 1
+        self._touch()
 
     def record_false_positive(self, rule_name: str = ""):
         self._d["false_positives"] += 1
         if rule_name:
             self._d["by_category"].setdefault(rule_name, _empty_cat())["false_positives"] += 1
+        self._touch()
 
     def record_manual_override(self):
         self._d["manual_overrides"] += 1
+        self._touch()
 
     def touch_run(self):
         self._d["last_run"]    = datetime.now().isoformat(timespec="seconds")
         self._d["runs_total"] += 1
+        self._touch()
 
     def accuracy_estimate(self) -> dict[str, float]:
         result: dict[str, float] = {}
@@ -229,8 +244,8 @@ class LearningEngine:
     def __init__(self, state_path: str = "learning_state.json"):
         self.path    = Path(state_path)
         self.state   = self._load()
-        self.metrics = Metrics(self.state.setdefault("metrics", _new_metrics()))
         self._dirty  = False
+        self.metrics = Metrics(self.state.setdefault("metrics", _new_metrics()), engine=self)
 
     # ── Score calculation ─────────────────────────────────────────────────────
 
@@ -243,7 +258,7 @@ class LearningEngine:
         label_ids = message.get("labelIds", [])
         headers   = message.get("payload", {}).get("headers", [])
         email     = extract_email_address(get_header(headers, "From"))
-        domain    = email.split("@")[-1] if "@" in email else ""
+        domain    = get_domain(email)
 
         score:   float     = 0.0
         factors: list[str] = []
