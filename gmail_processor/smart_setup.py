@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, extract_display_name
 
 logger = logging.getLogger("gmail_processor.smart_setup")
 
@@ -51,7 +51,8 @@ TOP_DOMAINS   = 8     # max domain suggestions
 MIN_SCORE     = 35    # must clear this threshold to appear as suggestion
 MIN_MESSAGES  = 2     # min emails received from sender
 
-_BATCH_SLEEP  = 0.2   # seconds between list-pagination calls (rate-limit headroom)
+_BATCH_SLEEP   = 0.2   # seconds between list-pagination calls (rate-limit headroom)
+_REQUEST_SLEEP = 0.03  # seconds between per-message .get() calls, to avoid 429 bursts
 
 # ── Scoring weights ───────────────────────────────────────────────────────────
 W_REPLY           = 25    # per thread where user replied
@@ -389,6 +390,8 @@ class SmartSetup:
                 except HttpError:
                     fetched += 1
                     continue
+                finally:
+                    time.sleep(_REQUEST_SLEEP)
                 self._ingest(msg, sent_threads, senders)
                 fetched += 1
 
@@ -573,7 +576,4 @@ def _is_definitely_automated(email: str) -> bool:
 # ── Header helpers ────────────────────────────────────────────────────────────
 
 def _extract_name(headers: list[dict]) -> str:
-    raw = get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[0].strip().strip('"').strip("'")
-    return ""
+    return extract_display_name(get_header(headers, "From"))

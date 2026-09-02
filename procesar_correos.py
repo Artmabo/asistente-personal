@@ -17,6 +17,7 @@ Entry point for the Gmail rule-based processor.
                                       [--time-to-action SEC]
   stats [--section learning|metrics|categories|all]
   audit [--last N] [--decision TRASH|KEEP|SKIP] [--csv PATH]
+  dedupe [--query QUERY] [--max N] [--live]
 
 ── Ejemplos ─────────────────────────────────────────────────────────────────
   python procesar_correos.py feedback newsletter@spam.com correct
@@ -24,6 +25,7 @@ Entry point for the Gmail rule-based processor.
   python procesar_correos.py stats --section metrics
   python procesar_correos.py audit --last 50 --decision TRASH
   python procesar_correos.py audit --last 500 --csv audit_export.csv
+  python procesar_correos.py dedupe --live
 """
 import sys
 import argparse
@@ -31,7 +33,7 @@ import logging
 import gmail_processor.rules as cfg
 from gmail_processor import GmailProcessor, setup_logging
 
-_SUBCOMMANDS = {"feedback", "stats", "audit"}
+_SUBCOMMANDS = {"feedback", "stats", "audit", "dedupe"}
 
 
 def main():
@@ -50,6 +52,8 @@ def main():
             _cmd_stats(sys.argv[2:])
         elif cmd == "audit":
             _cmd_audit(sys.argv[2:])
+        elif cmd == "dedupe":
+            _cmd_dedupe(sys.argv[2:])
         return
 
     parser = argparse.ArgumentParser(
@@ -244,6 +248,44 @@ def _cmd_audit(argv: list[str]):
             f"{e.get('rule',''):<20}  "
             f"{mode}"
         )
+
+
+# ── dedupe ────────────────────────────────────────────────────────────────────
+
+def _cmd_dedupe(argv: list[str]):
+    parser = argparse.ArgumentParser(
+        prog="procesar_correos.py dedupe",
+        description="Find and trash exact duplicate emails (same Message-ID delivered more than once)",
+    )
+    parser.add_argument("--query", default="in:inbox",
+                        help="Gmail search query to scan (default: in:inbox)")
+    parser.add_argument("--max",   default=1000, type=int, dest="max_results",
+                        help="Maximum messages to examine (default: 1000)")
+    parser.add_argument("--live",  action="store_true",
+                        help="Disable dry_run and trash duplicates for real")
+    args = parser.parse_args(argv)
+
+    setup_logging(level=logging.INFO)
+
+    from gmail_processor.auth import get_service
+    from gmail_processor.actions import GmailActions
+    from gmail_processor.audit_log import AuditLogger
+    from gmail_processor.dedupe import find_duplicate_messages
+
+    service = get_service()
+    actions = GmailActions(service, dry_run=not args.live)
+    audit   = AuditLogger(dry_run=not args.live)
+
+    stats = find_duplicate_messages(
+        service, actions, query=args.query, max_results=args.max_results, audit=audit,
+    )
+
+    mode = "LIVE" if args.live else "DRY RUN"
+    print(f"\nDedupe ({mode}) — query='{args.query}'")
+    print(f"  Examinados         : {stats['examined']}")
+    print(f"  Grupos duplicados  : {stats['duplicate_groups']}")
+    print(f"  Enviados a papelera: {stats['trashed']}")
+    print(f"  Protegidos omitidos: {stats['skipped_protected']}")
 
 
 if __name__ == "__main__":

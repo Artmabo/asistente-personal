@@ -10,7 +10,7 @@ Priority order (first match wins):
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, get_domain
 
 
 @dataclass
@@ -31,9 +31,10 @@ class EmailClassifier:
         label_ids = message.get("labelIds", [])
 
         sender  = extract_email_address(get_header(headers, "From"))
-        domain  = sender.split("@")[-1] if "@" in sender else ""
+        domain  = get_domain(sender)
         subject = get_header(headers, "Subject")
-        search_text = f"{sender} {subject}"
+        search_text       = f"{sender} {subject}"
+        search_text_lower = search_text.lower()
 
         # 1. Contact rules (highest priority — always protected)
         # Supports exact email matches AND domain-prefix entries like "@anahuac.mx"
@@ -52,7 +53,7 @@ class EmailClassifier:
 
         # 2. Keyword rules
         for rule in cfg.KEYWORD_RULES:
-            if _matches_any(search_text, rule["keywords"], rule.get("case_sensitive", False)):
+            if _matches_any(search_text, search_text_lower, rule["keywords"], rule.get("case_sensitive", False)):
                 return Classification(
                     email_type="spam" if rule["action"] == "trash" else "important",
                     action=rule["action"],
@@ -86,6 +87,6 @@ class EmailClassifier:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _matches_any(text: str, keywords: list[str], case_sensitive: bool) -> bool:
-    haystack = text if case_sensitive else text.lower()
+def _matches_any(text: str, text_lower: str, keywords: list[str], case_sensitive: bool) -> bool:
+    haystack = text if case_sensitive else text_lower
     return any((kw if case_sensitive else kw.lower()) in haystack for kw in keywords)

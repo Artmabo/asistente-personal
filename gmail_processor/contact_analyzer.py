@@ -17,7 +17,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header
+from .utils import get_header, gmail_query_atom
 
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
@@ -26,6 +26,7 @@ logger = logging.getLogger("gmail_processor.contact_analyzer")
 STATE_PATH    = Path("analysis_state.json")
 PATTERNS_PATH = Path("user_patterns.json")
 _BATCH_SLEEP      = 0.2
+_REQUEST_SLEEP    = 0.03    # seconds between per-message .get() calls, to avoid 429 bursts
 _MAX_SENT_INDEXED = 2_000   # cap on sent messages fetched to build the "replied" index
 
 SCORE_AUTO_PERSONAL = 70
@@ -216,6 +217,8 @@ class ContactAnalyzer:
                     ).execute()
                 except HttpError:
                     continue
+                finally:
+                    time.sleep(_REQUEST_SLEEP)
 
                 headers        = msg.get("payload", {}).get("headers", [])
                 addr, name     = _parse_from(get_header(headers, "From"))
@@ -338,7 +341,10 @@ class ContactAnalyzer:
         pending_meta = self.state.get("pending_meta", {})
 
         for addr, decision in decisions.items():
-            meta    = pending_meta.get(addr, {})
+            meta = pending_meta.get(addr)
+            if meta is None:
+                logger.warning(f"apply_decisions: {addr} no está en pending_meta (decisión obsoleta/duplicada), se omite el aprendizaje")
+                meta = {}
             signals = meta.get("signals", [])
             score   = meta.get("score",   0)
             domain  = _domain(addr)
@@ -370,8 +376,10 @@ class ContactAnalyzer:
             pending_set.discard(addr)
             pending_meta.pop(addr, None)
 
-            # Aprender de esta decisión
-            self.learn_from_decision(addr, domain, decision, score, signals)
+            # Aprender de esta decisión (se omite si no había metadata real,
+            # para no contaminar signal_weights con una decisión obsoleta)
+            if signals or score:
+                self.learn_from_decision(addr, domain, decision, score, signals)
 
         self.state["pending"]      = list(pending_set)
         self.state["pending_meta"] = pending_meta
@@ -554,7 +562,7 @@ class ContactAnalyzer:
 
         score = 50
         for sig in active_signals:
-            base = _SIGNAL_BASE[sig]
+            base = _SIGNAL_BASE.get(sig, 0)
             w    = weights.get(sig, 1.0)
             score += int(base * w)
 
@@ -621,6 +629,7 @@ class ContactAnalyzer:
                 except HttpError:
                     pass
                 fetched += 1
+                time.sleep(_REQUEST_SLEEP)
 
             if progress_cb:
                 progress_cb(
@@ -640,7 +649,7 @@ class ContactAnalyzer:
     # ── Borrar correos de un remitente ────────────────────────────────────────
 
     def _trash_sender(self, addr: str) -> int:
-        query      = f"from:{addr}"
+        query      = f"from:{gmail_query_atom(addr)}"
         page_token = None
         total      = 0
 
@@ -702,9 +711,11 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            # repr() safely escapes quotes/backslashes in both email_addr and
+            # label (label is derived from an attacker-controlled From display
+            # name) so untrusted input can't break out of the string literal
+            # and inject arbitrary code into rules.py.
+            new_line = f"    {email_addr!r}: {{\"label\": {label!r}, \"mark_important\": True}},"
             lines.insert(insert_at, new_line)
             rules_path.write_text("\n".join(lines), encoding="utf-8")
             importlib.reload(rules_mod)

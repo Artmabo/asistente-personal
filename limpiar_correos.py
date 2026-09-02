@@ -1,7 +1,11 @@
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from googleapiclient.errors import HttpError
+
+_MAX_RETRIES = 3
+_BASE_DELAY  = 1.0   # seconds before first retry (doubles each attempt)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -35,18 +39,28 @@ def mover_lote_a_papelera(service, ids: list) -> int:
     total = 0
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
-        try:
-            service.users().messages().batchModify(
-                userId='me',
-                body={
-                    'ids': chunk,
-                    'addLabelIds': ['TRASH'],
-                    'removeLabelIds': ['INBOX'],
-                }
-            ).execute()
-            total += len(chunk)
-        except HttpError as e:
-            print(f"  Error en lote ({len(chunk)} mensajes): {e}")
+        delay = _BASE_DELAY
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                service.users().messages().batchModify(
+                    userId='me',
+                    body={
+                        'ids': chunk,
+                        'addLabelIds': ['TRASH'],
+                        'removeLabelIds': ['INBOX'],
+                    }
+                ).execute()
+                total += len(chunk)
+                break
+            except HttpError as e:
+                status = getattr(e.resp, "status", None)
+                if status in (429, 500, 503) and attempt < _MAX_RETRIES:
+                    print(f"  Error transitorio ({status}), reintento {attempt}/{_MAX_RETRIES} en {delay:.1f}s")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                print(f"  Error en lote ({len(chunk)} mensajes): {e}")
+                break
     return total
 
 

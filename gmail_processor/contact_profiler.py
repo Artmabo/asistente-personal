@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, get_header, extract_display_name, gmail_query_atom
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -216,7 +216,7 @@ class ContactProfiler:
         result = []
         try:
             resp = service.users().messages().list(
-                userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
+                userId="me", q=f"from:{gmail_query_atom(addr)}", maxResults=_MAX_EMAILS,
             ).execute()
             stubs = resp.get("messages", [])
         except HttpError:
@@ -239,16 +239,10 @@ class ContactProfiler:
         headers  = payload.get("headers", [])
 
         def hdr(name: str) -> str:
-            nl = name.lower()
-            for h in headers:
-                if h.get("name", "").lower() == nl:
-                    return h.get("value", "")
-            return ""
+            return get_header(headers, name)
 
         from_raw   = hdr("From")
-        from_name  = ""
-        if "<" in from_raw:
-            from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
+        from_name  = extract_display_name(from_raw)
 
         date_str    = hdr("Date")
         date_parsed = None

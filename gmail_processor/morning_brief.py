@@ -157,9 +157,9 @@ class MorningBrief:
         return None
 
     def _save_cache(self, brief: dict):
-        _CACHE_PATH.write_text(
-            json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = _CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_CACHE_PATH)
 
     def _read_json(self, path: str, default: dict) -> dict:
         p = Path(path)
