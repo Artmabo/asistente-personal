@@ -111,6 +111,17 @@ _RELATION_BADGE_COLORS = {
     "otro":     ("#f1f5f9", "#475569"),
 }
 
+# relation_type comes from Claude's JSON output (contact_profiler.py) and isn't
+# constrained to this enum, so any lookup miss must fall back to an escaped
+# value before going into unsafe_allow_html markup — never the raw string.
+_RELATION_NAMES = {
+    "familiar": "Familiar",
+    "trabajo":  "Trabajo",
+    "servicio": "Servicio",
+    "gobierno": "Gobierno",
+    "otro":     "Otro",
+}
+
 _MONTHS_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -282,8 +293,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -523,6 +535,13 @@ def _ca_learning_summary() -> dict:
     return a.get_learning_stats()
 
 
+def _ca_unsubscribe_candidates(max_results: int = 10) -> list[dict]:
+    try:
+        return _ca_get_analyzer().get_unsubscribe_candidates(max_results=max_results)
+    except Exception:
+        return []
+
+
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
 
 def _cargar_storage_summary() -> dict:
@@ -721,8 +740,6 @@ try:
         last  = pdata.get("last_contact", "")
         bidir = pdata.get("bidirectional", False)
         _bg, _fg = _RELATION_BADGE_COLORS.get(rel, ("#f1f5f9", "#475569"))
-        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
 
         c1, c2 = st.columns([1, 4])
         with c1:
@@ -734,7 +751,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_RELATION_NAMES.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1320,8 +1337,6 @@ elif _current_page == "contactos":
                         _cpbidir = _cpdata.get("bidirectional", False)
                         _cptopics = _cpdata.get("key_topics", [])
                         _cpbg, _cpfg = _RELATION_BADGE_COLORS.get(_cprel, ("#f1f5f9", "#475569"))
-                        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
 
                         with _gcol:
                             with st.container(border=True):
@@ -1334,7 +1349,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_RELATION_NAMES.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
@@ -1549,6 +1564,32 @@ elif _current_page == "analizar":
                     with st.expander(f"⚠️ {len(_apr_e)} errores"):
                         for _e in _apr_e:
                             st.caption(_e)
+
+        # ── Candidatos para darse de baja ─────────────────────────────────────
+        if _ca_prev:
+            _unsub_candidates = _ca_unsubscribe_candidates(max_results=10)
+            if _unsub_candidates:
+                with st.expander(
+                    f"📪 {len(_unsub_candidates)} remitentes con opción de darte de baja"
+                ):
+                    st.caption(
+                        "Estos remitentes envían boletines o promociones con un enlace de "
+                        "'cancelar suscripción'. Abre su correo más reciente y usa ese botón "
+                        "para dejar de recibirlos, en vez de solo borrar cada correo nuevo."
+                    )
+                    for _u in _unsub_candidates:
+                        _u_label = f"{_u['name']} <{_u['email']}>" if _u.get("name") else _u["email"]
+                        st.markdown(f"**{_u_label}**")
+                        _u_ctx = [f"score {_u.get('score', 0)}/100"]
+                        if _u.get("count"):
+                            _u_ctx.append(f"{_u['count']} correos")
+                        if _u.get("last_seen"):
+                            _u_ctx.append(f"último: {_time_ago(_u['last_seen'])}")
+                        st.caption("  ·  ".join(_u_ctx))
+                        if _u.get("sample_subjects"):
+                            st.caption(
+                                "  ·  ".join(f'"{s[:50]}"' for s in _u["sample_subjects"][:2])
+                            )
 
         # ── Configuración del análisis ────────────────────────────────────────
         st.markdown("")
