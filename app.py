@@ -523,6 +523,13 @@ def _ca_learning_summary() -> dict:
     return a.get_learning_stats()
 
 
+def _ca_unsubscribe_candidates(max_results: int = 10) -> list[dict]:
+    try:
+        return _ca_get_analyzer().get_unsubscribe_candidates(max_results=max_results)
+    except Exception:
+        return []
+
+
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
 
 def _cargar_storage_summary() -> dict:
@@ -1549,6 +1556,32 @@ elif _current_page == "analizar":
                     with st.expander(f"⚠️ {len(_apr_e)} errores"):
                         for _e in _apr_e:
                             st.caption(_e)
+
+        # ── Candidatos para darse de baja ─────────────────────────────────────
+        if _ca_prev:
+            _unsub_candidates = _ca_unsubscribe_candidates(max_results=10)
+            if _unsub_candidates:
+                with st.expander(
+                    f"📪 {len(_unsub_candidates)} remitentes con opción de darte de baja"
+                ):
+                    st.caption(
+                        "Estos remitentes envían boletines o promociones con un enlace de "
+                        "'cancelar suscripción'. Abre su correo más reciente y usa ese botón "
+                        "para dejar de recibirlos, en vez de solo borrar cada correo nuevo."
+                    )
+                    for _u in _unsub_candidates:
+                        _u_label = f"{_u['name']} <{_u['email']}>" if _u.get("name") else _u["email"]
+                        st.markdown(f"**{_u_label}**")
+                        _u_ctx = [f"score {_u.get('score', 0)}/100"]
+                        if _u.get("count"):
+                            _u_ctx.append(f"{_u['count']} correos")
+                        if _u.get("last_seen"):
+                            _u_ctx.append(f"último: {_time_ago(_u['last_seen'])}")
+                        st.caption("  ·  ".join(_u_ctx))
+                        if _u.get("sample_subjects"):
+                            st.caption(
+                                "  ·  ".join(f'"{s[:50]}"' for s in _u["sample_subjects"][:2])
+                            )
 
         # ── Configuración del análisis ────────────────────────────────────────
         st.markdown("")

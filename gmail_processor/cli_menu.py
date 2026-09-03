@@ -540,13 +540,13 @@ def _menu_debug(get_svc: Callable):
 def _menu_smart_setup(get_svc: Callable):
     _section("CONFIGURACIÓN INICIAL INTELIGENTE")
 
-    print("  Analiza tus últimos 12 meses de correo para detectar")
+    print("  Analiza los últimos 12 meses de correo para detectar")
     print("  contactos importantes que deben estar protegidos.")
     print()
-    print(f"  Límites del análisis:")
-    print(f"    • Hasta 500 correos de bandeja de entrada")
-    print(f"    • Hasta 400 mensajes enviados (para detectar respuestas)")
-    print(f"    • Tiempo estimado: 3-6 minutos")
+    print(f"  Alcance del análisis:")
+    print(f"    • Todos los correos de bandeja de entrada de los últimos 12 meses")
+    print(f"    • Todos los mensajes enviados en ese período (para detectar respuestas)")
+    print(f"    • Tiempo estimado: 3-6 minutos (más en cuentas con mucho volumen)")
     print()
     print("  Los resultados se muestran antes de modificar nada.")
     print("  Confirmarás cada cambio antes de que sea aplicado.")
