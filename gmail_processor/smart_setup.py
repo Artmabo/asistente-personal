@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, extract_display_name, batch_get_messages
 
 logger = logging.getLogger("gmail_processor.smart_setup")
 
@@ -380,16 +380,17 @@ class SmartSetup:
             if not stubs:
                 break
 
+            # Batch the per-message metadata fetches (one round trip per ~90
+            # messages instead of one HTTP call per message) — the same win
+            # already applied to app.py's frequent-senders loader.
+            fetched_msgs = batch_get_messages(
+                self.service, [s["id"] for s in stubs],
+                format="metadata", metadata_headers=["From"],
+            )
             for stub in stubs:
-                try:
-                    msg = self.service.users().messages().get(
-                        userId="me", id=stub["id"],
-                        format="metadata", metadataHeaders=["From"],
-                    ).execute()
-                except HttpError:
-                    fetched += 1
-                    continue
-                self._ingest(msg, sent_threads, senders)
+                msg = fetched_msgs.get(stub["id"])
+                if msg is not None:
+                    self._ingest(msg, sent_threads, senders)
                 fetched += 1
 
             page += 1
@@ -574,6 +575,4 @@ def _is_definitely_automated(email: str) -> bool:
 
 def _extract_name(headers: list[dict]) -> str:
     raw = get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[0].strip().strip('"').strip("'")
-    return ""
+    return extract_display_name(raw) if "<" in raw else ""

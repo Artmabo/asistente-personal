@@ -17,7 +17,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header
+from .utils import get_header, batch_get_messages
 
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
@@ -124,6 +124,25 @@ def _parse_date(date_str: str) -> datetime | None:
         return None
 
 
+def _extract_unsub_url(raw: str) -> str:
+    """Extracts the best actionable URL from a raw List-Unsubscribe header.
+
+    The header is a comma-separated list of <...> targets (RFC 2369), e.g.
+    '<https://x.com/unsub?id=1>, <mailto:unsub@x.com>'. Prefers an https
+    link (one-click, no email client needed) over a mailto: fallback.
+    """
+    if not raw:
+        return ""
+    urls = re.findall(r"<([^>]+)>", raw)
+    for u in urls:
+        if u.lower().startswith("http"):
+            return u
+    for u in urls:
+        if u.lower().startswith("mailto:"):
+            return u
+    return ""
+
+
 def _default_weights() -> dict[str, float]:
     return {k: 1.0 for k in _SIGNAL_BASE}
 
@@ -203,18 +222,20 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
+            # Batch the per-message metadata fetches instead of one HTTP round
+            # trip per message (up to 500 sequential calls per page → a
+            # handful of batched requests).
+            fetched_msgs = batch_get_messages(
+                self.svc, [s["id"] for s in stubs],
+                format="metadata",
+                metadata_headers=["From", "Subject", "Date", "List-Unsubscribe"],
+            )
             for stub in stubs:
                 if scanned >= batch_size:
                     break
                 scanned += 1
-                try:
-                    msg = self.svc.users().messages().get(
-                        userId="me",
-                        id=stub["id"],
-                        format="metadata",
-                        metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
-                    ).execute()
-                except HttpError:
+                msg = fetched_msgs.get(stub["id"])
+                if msg is None:
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
@@ -225,9 +246,10 @@ class ContactAnalyzer:
                 if addr in reviewed or addr in pending_set:
                     continue
 
-                subject   = get_header(headers, "Subject")
-                date_hdr  = get_header(headers, "Date")
-                has_unsub = bool(get_header(headers, "List-Unsubscribe"))
+                subject    = get_header(headers, "Subject")
+                date_hdr   = get_header(headers, "Date")
+                unsub_raw  = get_header(headers, "List-Unsubscribe")
+                has_unsub  = bool(unsub_raw)
 
                 if addr not in _working:
                     _working[addr] = {
@@ -235,6 +257,7 @@ class ContactAnalyzer:
                         "subjects":  [],
                         "dates":     [],
                         "has_unsub": False,
+                        "unsub_url": "",
                         "count":     0,
                     }
                 w = _working[addr]
@@ -245,6 +268,8 @@ class ContactAnalyzer:
                 if date_hdr:
                     w["dates"].append(date_hdr)
                 w["has_unsub"] = w["has_unsub"] or has_unsub
+                if unsub_raw and not w["unsub_url"]:
+                    w["unsub_url"] = _extract_unsub_url(unsub_raw)
                 w["count"]    += 1
 
             # Persist running count so scan is resumable
@@ -284,7 +309,10 @@ class ContactAnalyzer:
             first_seen  = min(dates_valid).strftime("%Y-%m-%d") if dates_valid else ""
             last_seen   = max(dates_valid).strftime("%Y-%m-%d") if dates_valid else ""
 
-            entry_base = {"name": w["name"], "score": score, "signals": signals}
+            entry_base = {
+                "name": w["name"], "score": score, "signals": signals,
+                "unsub_url": w.get("unsub_url", ""),
+            }
 
             if auto_dir == "personal" or (score >= SCORE_AUTO_PERSONAL and auto_dir != "spam"):
                 reviewed[addr] = {**entry_base, "decision": "personal", "auto": True, "decided_at": now}
@@ -449,12 +477,13 @@ class ContactAnalyzer:
             score   = meta.get("score",   50)
             if "has_unsubscribe" in signals and score < 50:
                 candidates.append({
-                    "email":           addr,
-                    "name":            meta.get("name", ""),
-                    "score":           score,
-                    "count":           meta.get("count", 0),
-                    "sample_subjects": meta.get("sample_subjects", []),
-                    "last_seen":       meta.get("last_seen", ""),
+                    "email":            addr,
+                    "name":             meta.get("name", ""),
+                    "score":            score,
+                    "count":            meta.get("count", 0),
+                    "sample_subjects":  meta.get("sample_subjects", []),
+                    "last_seen":        meta.get("last_seen", ""),
+                    "unsubscribe_url":  meta.get("unsub_url", ""),
                 })
 
         # Also include auto-spam senders with unsubscribe links that are still deliverable
@@ -464,12 +493,13 @@ class ContactAnalyzer:
             signals = entry.get("signals", [])
             if "has_unsubscribe" in signals:
                 candidates.append({
-                    "email":           addr,
-                    "name":            entry.get("name", ""),
-                    "score":           entry.get("score", 0),
-                    "count":           0,
-                    "sample_subjects": [],
-                    "last_seen":       "",
+                    "email":            addr,
+                    "name":             entry.get("name", ""),
+                    "score":            entry.get("score", 0),
+                    "count":            0,
+                    "sample_subjects":  [],
+                    "last_seen":        "",
+                    "unsubscribe_url":  entry.get("unsub_url", ""),
                 })
 
         candidates.sort(key=lambda x: x["count"], reverse=True)
@@ -603,14 +633,14 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
-            for stub in stubs:
-                if fetched >= _MAX_SENT_INDEXED:
-                    break
-                try:
-                    msg = self.svc.users().messages().get(
-                        userId="me", id=stub["id"],
-                        format="metadata", metadataHeaders=["To", "Cc"],
-                    ).execute()
+            # `maxResults` above already caps `stubs` to _MAX_SENT_INDEXED - fetched.
+            stub_ids     = [s["id"] for s in stubs]
+            fetched_msgs = batch_get_messages(
+                self.svc, stub_ids, format="metadata", metadata_headers=["To", "Cc"],
+            )
+            for stub_id in stub_ids:
+                msg = fetched_msgs.get(stub_id)
+                if msg is not None:
                     headers = msg.get("payload", {}).get("headers", [])
                     for hname in ("To", "Cc"):
                         raw = get_header(headers, hname)
@@ -618,8 +648,6 @@ class ContactAnalyzer:
                             for _, a in email.utils.getaddresses([raw]):
                                 if a:
                                     addrs.add(a.strip().lower())
-                except HttpError:
-                    pass
                 fetched += 1
 
             if progress_cb:

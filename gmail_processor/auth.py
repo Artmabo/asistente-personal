@@ -5,7 +5,11 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://mail.google.com/"]
+# gmail.modify covers everything this app does (list/get, label/star/mark-important,
+# trash, batchModify) without the full https://mail.google.com/ scope's ability to
+# permanently delete messages or send mail on the user's behalf — neither of which
+# is used anywhere in the codebase (see actions.py / contact_analyzer.py).
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 def get_service(

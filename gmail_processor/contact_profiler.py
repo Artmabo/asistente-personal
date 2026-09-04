@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, extract_display_name, batch_get_messages
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -222,15 +222,14 @@ class ContactProfiler:
         except HttpError:
             return []
 
+        # Batch the per-message fetches (up to _MAX_EMAILS=50 sequential calls
+        # per contact, times every contact in the profiling run) into a
+        # handful of HTTP round trips instead of one call each.
+        fetched = batch_get_messages(service, [s["id"] for s in stubs], format="full")
         for stub in stubs:
-            try:
-                msg = service.users().messages().get(
-                    userId="me", id=stub["id"], format="full",
-                ).execute()
+            msg = fetched.get(stub["id"])
+            if msg is not None:
                 result.append(self._parse_message(msg))
-                time.sleep(0.05)
-            except HttpError:
-                continue
 
         return result
 
@@ -245,10 +244,8 @@ class ContactProfiler:
                     return h.get("value", "")
             return ""
 
-        from_raw   = hdr("From")
-        from_name  = ""
-        if "<" in from_raw:
-            from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
+        from_raw  = hdr("From")
+        from_name = extract_display_name(from_raw) if "<" in from_raw else ""
 
         date_str    = hdr("Date")
         date_parsed = None

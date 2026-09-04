@@ -734,7 +734,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_rel_names.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1334,7 +1334,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_rel_names.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
