@@ -16,6 +16,7 @@ contact_profiles.json
 chat_history.json
 morning_brief_cache.json
 cleanup_schedule.json
+cleanup_summary.json
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log

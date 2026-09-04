@@ -37,3 +37,56 @@ def extract_email_address(raw: str) -> str:
         if end > start:
             return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
+
+
+def extract_display_name(raw: str) -> str:
+    """Extracts the display name from a raw From/To header value.
+
+    Uses rfind (mirroring extract_email_address) so a display name that
+    itself contains angle brackets isn't truncated early, e.g.:
+    '"Bob <VIP>" <bob@example.com>' → 'Bob <VIP>' (not just 'Bob ').
+    """
+    if not raw:
+        return ""
+    if "<" not in raw:
+        return raw.strip()
+    return raw[: raw.rfind("<")].strip().strip('"').strip("'")
+
+
+def batch_get_messages(
+    service,
+    msg_ids: list[str],
+    *,
+    format: str = "metadata",
+    metadata_headers: list[str] | None = None,
+    chunk_size: int = 90,
+) -> dict[str, dict]:
+    """Fetches multiple Gmail messages via the batch HTTP API.
+
+    Replaces a sequential get() call per message with a handful of batched
+    HTTP requests (chunked to stay under Gmail's ~100-request batch cap).
+    Returns {msg_id: message_dict} — ids that failed or errored are omitted,
+    mirroring the try/except-continue behavior of a sequential fetch loop.
+    """
+    results: dict[str, dict] = {}
+    if not msg_ids:
+        return results
+
+    def _on_response(request_id, response, exception):
+        if exception is None and response is not None:
+            results[request_id] = response
+
+    for i in range(0, len(msg_ids), chunk_size):
+        chunk = msg_ids[i : i + chunk_size]
+        batch = service.new_batch_http_request(callback=_on_response)
+        for mid in chunk:
+            kwargs = {"userId": "me", "id": mid, "format": format}
+            if metadata_headers:
+                kwargs["metadataHeaders"] = metadata_headers
+            batch.add(service.users().messages().get(**kwargs), request_id=mid)
+        try:
+            batch.execute()
+        except Exception:
+            pass  # partial/total batch failure — ids simply stay absent from results
+
+    return results
