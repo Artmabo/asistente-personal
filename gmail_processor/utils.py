@@ -53,6 +53,40 @@ def extract_display_name(raw: str) -> str:
     return raw[: raw.rfind("<")].strip().strip('"').strip("'")
 
 
+def get_protection_reason(email_addr: str, domain: str, label_ids: list[str]) -> str | None:
+    """Returns a human-readable reason if a sender/message must never be trashed,
+    or None if it's safe to clean up.
+
+    Mirrors gmail_processor.rules: an exact CONTACT_RULES email, a CONTACT_RULES
+    "@domain" wildcard, a DOMAIN_RULES entry with action "mark_important", or a
+    STARRED/IMPORTANT label. This is the same "hard protection" check
+    cleanup_storage.StorageCleaner applies before trashing anything — any other
+    code path that moves messages to trash (e.g. limpiar_correos.limpiar_bandeja)
+    should run it too, so "protect this sender" actually holds everywhere.
+    """
+    from . import rules as cfg
+
+    if "STARRED" in label_ids:
+        return "marcado con estrella (STARRED)"
+    if "IMPORTANT" in label_ids:
+        return "marcado como importante (IMPORTANT)"
+    if email_addr in cfg.CONTACT_RULES:
+        return f"contacto protegido ({email_addr})"
+    if domain and f"@{domain}" in cfg.CONTACT_RULES:
+        return f"dominio protegido por contacto ({domain})"
+    protected_domains = {
+        d
+        for rule in cfg.DOMAIN_RULES
+        if rule.get("action") == "mark_important"
+        for d in rule.get("domains", [])
+    }
+    if domain in protected_domains:
+        return f"dominio protegido ({domain})"
+    if domain in set(cfg.CLEANUP_RULES.get("safe_domains", [])):
+        return f"dominio seguro adicional ({domain})"
+    return None
+
+
 def batch_get_messages(
     service,
     msg_ids: list[str],

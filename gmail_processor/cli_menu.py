@@ -1000,6 +1000,8 @@ def _resumen_limpieza(r: dict):
     print(f"  {'─'*36}")
     print(f"  Correos encontrados : {r['procesados']}")
     print(f"  Movidos a papelera  : {r['exitos']}")
+    if r.get('protegidos'):
+        print(f"  Protegidos (omitidos): {r['protegidos']}")
     if r.get('errores'):
         print(f"  Con error           : {r['errores']}")
     print(f"  {'─'*36}")

@@ -140,12 +140,24 @@ class CleanupScheduler:
             from .learning_engine import LearningEngine
             from .audit_log import AuditLogger
 
+            from . import rules as cfg
+
             service = get_service()
             actions = GmailActions(service, dry_run=False)
             engine  = LearningEngine()
             audit   = AuditLogger()
             cleaner = StorageCleaner(service, actions, engine=engine, audit=audit)
-            result  = cleaner.run()
+
+            # Only run the targets matching the categories the user selected —
+            # previously this ran every CLEANUP_RULES target unconditionally,
+            # ignoring self.config["categories"] entirely.
+            selected   = self.config.get("categories", [])
+            only_rules = {
+                cfg.CATEGORY_RULE_MAP[cat]
+                for cat in selected
+                if cat in cfg.CATEGORY_RULE_MAP
+            }
+            result = cleaner.run(only_rules=only_rules)
         except Exception as exc:
             result = {"error": str(exc)}
             logger.error(f"Error en limpieza automática: {exc}")
