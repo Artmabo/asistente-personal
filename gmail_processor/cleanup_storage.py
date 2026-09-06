@@ -51,10 +51,19 @@ class StorageCleaner:
             "errors":   0,
         }
 
-    def run(self) -> dict:
+    def run(self, only_rules: set[str] | None = None) -> dict:
+        """Runs the cleanup pipeline over CLEANUP_RULES targets.
+
+        only_rules, when given, restricts the run to targets whose "rule" name
+        is in the set (see rules.CATEGORY_RULE_MAP) — used by the scheduler so
+        automatic cleanup only touches the categories the user actually opted
+        into, instead of always running every configured target.
+        """
         targets = cfg.CLEANUP_RULES.get("targets", [])
+        if only_rules is not None:
+            targets = [t for t in targets if t["rule"] in only_rules]
         max_per = cfg.CLEANUP_RULES.get("max_per_query", 200)
-        mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode    = "DRY RUN" if self.actions.dry_run else "LIVE"
         scoring = "activo" if self.engine else "inactivo"
 
         logger.info(f"\n{'─'*55}")
@@ -218,7 +227,7 @@ class StorageCleaner:
                 return
 
         # 3. Trash
-        mode       = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode       = "DRY RUN" if self.actions.dry_run else "LIVE"
         score_line = ""
         if scored:
             factors_str = " | ".join(scored.factors) if scored.factors else "sin señales"
@@ -287,7 +296,12 @@ class StorageCleaner:
         """Persists a cleanup summary to cleanup_summary.json for the UI."""
         summary = {
             "ts":      datetime.now().isoformat(timespec="seconds"),
-            "dry_run": cfg.DRY_RUN,
+            # self.actions.dry_run is the actual mode this run executed in — cfg.DRY_RUN
+            # is only the default GmailActions is constructed with elsewhere (e.g. the
+            # scheduler builds GmailActions(service, dry_run=False) without ever touching
+            # cfg.DRY_RUN), so reading the global here could report "dry_run": true for a
+            # run that trashed real mail.
+            "dry_run": self.actions.dry_run,
             **self.stats,
         }
         try:

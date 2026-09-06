@@ -153,12 +153,15 @@ def _mostrar_resultado_cat(r: dict | None, nombre: str):
     movidos     = r.get("exitos",     0)
     encontrados = r.get("procesados", 0)
     errores     = r.get("errores",    0)
+    protegidos  = r.get("protegidos", 0)
     if encontrados == 0:
         st.info(f"No se encontraron correos en **{nombre}**. La categoría ya estaba vacía.")
     else:
         st.success(
             f"✓ Se movieron a la papelera **{movidos} de {encontrados}** correos de {nombre}."
         )
+        if protegidos:
+            st.info(f"{protegidos} correos se omitieron por estar protegidos (contacto, destacado o importante).")
         if errores:
             st.warning(f"No se pudieron mover {errores} correos. Puedes intentarlo de nuevo más tarde.")
 
@@ -734,7 +737,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_rel_names.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1334,7 +1337,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_rel_names.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")

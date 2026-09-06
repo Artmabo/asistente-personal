@@ -59,6 +59,7 @@ def run_menu():
             elif choice == "9":  _menu_limpiar_spam(_get_service)
             elif choice == "10": _menu_limpiar_promo(_get_service)
             elif choice == "11": _menu_limpiar_todo(_get_service)
+            elif choice == "12": _menu_unsubscribe()
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -86,6 +87,7 @@ def _main_menu() -> str:
         ("9",  "Limpiar spam          vaciar carpeta de spam"),
         ("10", "Limpiar promociones   vaciar categoría promociones"),
         ("11", "Limpiar todo          spam + promos + social + foros"),
+        ("12", "Sugerencias de baja   candidatos para darte de baja"),
         ("0",  "Salir"),
     ]
     for key, label in items:
@@ -779,7 +781,15 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # Escape characters that would break the Python string literal — both `email`
+    # and `label` come from freeform user input (_ask) or sender-derived text, and
+    # rules.py is executed as code on every import/reload.
+    def _escape(s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+
+    safe_email = _escape(email)
+    safe_label = _escape(label)
+    new_entry = f'    "{safe_email}": {{"label": "{safe_label}", "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -930,6 +940,47 @@ def _menu_limpiar_todo(get_svc: Callable):
     _pause()
 
 
+# ── 12. Sugerencias de baja (unsubscribe) ─────────────────────────────────────
+
+def _menu_unsubscribe():
+    """Surfaces commercial senders with a detected unsubscribe link, ranked
+    by volume, so the user can unsubscribe manually instead of just trashing
+    each new email forever. Reads only local state from a previous 'Analizar
+    correos' run (app.py) — no Gmail connection needed."""
+    _section("SUGERENCIAS PARA DARTE DE BAJA")
+
+    from .contact_analyzer import ContactAnalyzer
+
+    analyzer   = ContactAnalyzer(None)
+    candidates = analyzer.get_unsubscribe_candidates(max_results=20)
+
+    if not candidates:
+        print("  No hay candidatos todavía.")
+        print("  Ve a la sección 'Analizar correos' de la app web (streamlit run app.py)")
+        print("  para detectar remitentes comerciales con opción de baja.")
+        _pause()
+        return
+
+    print(f"  {len(candidates)} remitente(s) comercial(es) con opción de baja detectada:\n")
+    for i, c in enumerate(candidates, 1):
+        label = f'{c["name"]} <{c["email"]}>' if c["name"] else c["email"]
+        print(f"  [{i:>2}] {label}")
+        info = f"score={c['score']}"
+        if c.get("count"):
+            info += f"  |  {c['count']} correos"
+        if c.get("last_seen"):
+            info += f"  |  último: {c['last_seen']}"
+        print(f"        {info}")
+        if c.get("sample_subjects"):
+            print(f"        Asunto: \"{c['sample_subjects'][0][:60]}\"")
+        link = c.get("unsubscribe_url", "")
+        print(f"        Baja  : {link or '(sin enlace — busca «unsubscribe» en el correo)'}")
+        print()
+
+    print("  Abre el enlace de baja manualmente en tu navegador o cliente de correo.")
+    _pause()
+
+
 def _preview_then_run_live(svc, limpiar_bandeja: Callable, categorias: list) -> Optional[dict]:
     """Counts matching messages with dry_run=True, shows the count, then asks a
     second confirmation before actually trashing them. Returns the live result
@@ -949,6 +1000,8 @@ def _resumen_limpieza(r: dict):
     print(f"  {'─'*36}")
     print(f"  Correos encontrados : {r['procesados']}")
     print(f"  Movidos a papelera  : {r['exitos']}")
+    if r.get('protegidos'):
+        print(f"  Protegidos (omitidos): {r['protegidos']}")
     if r.get('errores'):
         print(f"  Con error           : {r['errores']}")
     print(f"  {'─'*36}")

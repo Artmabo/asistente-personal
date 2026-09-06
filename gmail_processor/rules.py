@@ -129,6 +129,19 @@ CLEANUP_RULES: dict = {
     "max_per_query": 200,
 }
 
+# Mapea las categorías que el usuario elige en la UI del scheduler (app.py
+# _CAT_OPTIONS / limpiar_correos.CATEGORIAS) al nombre de "rule" del target
+# de CLEANUP_RULES correspondiente, para que StorageCleaner.run(only_rules=…)
+# pueda limitarse a lo que el usuario realmente seleccionó.
+# "spam" no tiene target aquí — Gmail ya vacía spam automáticamente a los 30
+# días; la limpieza manual de spam usa limpiar_correos.py, no StorageCleaner.
+CATEGORY_RULE_MAP: dict[str, str] = {
+    "promociones":     "promotions_60d",
+    "social":          "social_90d",
+    "actualizaciones": "updates_90d",
+    "foros":           "forums_90d",
+}
+
 # ── Configuración general ─────────────────────────────────────────────────────
 MAX_RESULTS_PER_PAGE = 100   # Correos por página al listar (máx 500)
 QUERY_FILTER = "is:inbox"    # Query Gmail para filtrar qué correos procesar

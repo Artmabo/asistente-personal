@@ -5,6 +5,8 @@ from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from gmail_processor.utils import batch_get_messages, extract_email_address, get_header, get_protection_reason
+
 CATEGORIAS = {
     "spam":            "in:spam",
     "promociones":     "category:promotions",
@@ -60,8 +62,14 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         categorias:   lista de claves de CATEGORIAS (spam, promociones, etc.)
         dry_run:      si True, sólo cuenta mensajes sin moverlos
 
+    Antes de mover cualquier correo a la papelera se descartan los remitentes
+    con protección dura (STARRED, IMPORTANT, o protegidos en CONTACT_RULES /
+    DOMAIN_RULES) — la misma verificación que aplica cleanup_storage.py, para
+    que "proteger este remitente" valga también aquí y no sólo en la limpieza
+    programada.
+
     Returns:
-        {'procesados': int, 'exitos': int, 'errores': int}
+        {'procesados': int, 'exitos': int, 'errores': int, 'protegidos': int}
     """
     if categorias:
         queries = {cat: CATEGORIAS[cat] for cat in categorias if cat in CATEGORIAS}
@@ -75,14 +83,16 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         print("  [DRY RUN] Solo contando mensajes, no se moverá nada.")
 
     total_procesados = 0
-    total_exitos = 0
+    total_exitos     = 0
+    total_protegidos = 0
 
     for nombre, query in queries.items():
         print(f"\n  Buscando: {query}")
-        page_token = None
-        page_num = 0
-        cat_total = 0
-        cat_exitos = 0
+        page_token     = None
+        page_num       = 0
+        cat_total      = 0
+        cat_exitos     = 0
+        cat_protegidos = 0
 
         while True:
             page_num += 1
@@ -104,15 +114,20 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
                 break
 
             ids = [m['id'] for m in messages]
+            safe_ids, protegidos = _filtrar_protegidos(service, ids)
+
             if dry_run:
-                print(f"  Página {page_num}: {len(ids)} correos encontrados (no se mueven).")
-                exitos = len(ids)
+                extra = f" ({protegidos} protegidos)" if protegidos else ""
+                print(f"  Página {page_num}: {len(ids)} correos encontrados{extra} (no se mueven).")
+                exitos = len(safe_ids)
             else:
-                print(f"  Página {page_num}: {len(ids)} correos → enviando a papelera...", end="", flush=True)
-                exitos = mover_lote_a_papelera(service, ids)
+                extra = f" ({protegidos} protegidos se omiten)" if protegidos else ""
+                print(f"  Página {page_num}: {len(ids)} correos{extra} → enviando a papelera...", end="", flush=True)
+                exitos = mover_lote_a_papelera(service, safe_ids)
                 print(f" {exitos} movidos.")
-            cat_total += len(ids)
-            cat_exitos += exitos
+            cat_total      += len(ids)
+            cat_exitos     += exitos
+            cat_protegidos += protegidos
 
             page_token = result.get('nextPageToken')
             if not page_token:
@@ -124,13 +139,36 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
             print(f"  [{nombre_es}] {cat_exitos}/{cat_total} {label}")
 
         total_procesados += cat_total
-        total_exitos += cat_exitos
+        total_exitos     += cat_exitos
+        total_protegidos += cat_protegidos
 
     return {
         "procesados": total_procesados,
         "exitos":     total_exitos,
-        "errores":    total_procesados - total_exitos,
+        "protegidos": total_protegidos,
+        "errores":    total_procesados - total_exitos - total_protegidos,
     }
+
+
+def _filtrar_protegidos(service, ids: list) -> tuple[list, int]:
+    """Separa `ids` en los que son seguros de mover a papelera y cuenta los
+    protegidos. Un id cuyo metadata no se pudo obtener se trata como no-seguro
+    (no se mueve) en vez de asumir que es seguro."""
+    fetched  = batch_get_messages(service, ids, format="metadata", metadata_headers=["From"])
+    safe_ids = []
+    protegidos = 0
+    for mid in ids:
+        msg = fetched.get(mid)
+        if msg is None:
+            continue
+        label_ids = msg.get("labelIds", [])
+        addr      = extract_email_address(get_header(msg.get("payload", {}).get("headers", []), "From"))
+        domain    = addr.split("@")[-1] if "@" in addr else ""
+        if get_protection_reason(addr, domain, label_ids):
+            protegidos += 1
+        else:
+            safe_ids.append(mid)
+    return safe_ids, protegidos
 
 
 def limpiar_todo_basura(service) -> dict:
