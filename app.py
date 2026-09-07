@@ -111,6 +111,11 @@ _RELATION_BADGE_COLORS = {
     "otro":     ("#f1f5f9", "#475569"),
 }
 
+_RELATION_NAMES = {
+    "familiar": "Familiar", "trabajo": "Trabajo",
+    "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro",
+}
+
 _MONTHS_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -168,11 +173,12 @@ def _mostrar_resultado_cat(r: dict | None, nombre: str):
 def _ejecutar_procesador(dry_run: bool) -> dict:
     try:
         import logging
-        import gmail_processor.rules as cfg
         from gmail_processor import GmailProcessor, setup_logging
-        cfg.DRY_RUN = dry_run
         setup_logging(level=logging.INFO)
-        processor = GmailProcessor(service=st.session_state.service)
+        # Pass dry_run directly instead of mutating the shared gmail_processor.rules
+        # module — Streamlit serves every browser session from the same process,
+        # so a module-level flag would leak between concurrent sessions/tabs.
+        processor = GmailProcessor(service=st.session_state.service, dry_run=dry_run)
         return processor.run()
     except Exception as exc:
         return {"error": str(exc)}
@@ -282,8 +288,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -423,15 +430,20 @@ def _ejecutar_smart_setup(scan_days: int | None, status_ph) -> dict:
 
 def _ejecutar_debug() -> tuple[dict, str]:
     import logging
-    import gmail_processor.rules as cfg
+    import threading
     from gmail_processor import GmailProcessor
 
-    cfg.DRY_RUN   = True
     log_lines: list[str] = []
+    _this_thread = threading.get_ident()
 
     class _BufHandler(logging.Handler):
         def emit(self, record):
-            log_lines.append(self.format(record))
+            # gmail_processor's logger is process-wide and Streamlit runs each
+            # session's script in its own thread, so without this filter a
+            # concurrent run in another session would leak its log lines
+            # (email subjects/senders) into this session's debug view.
+            if record.thread == _this_thread:
+                log_lines.append(self.format(record))
 
     handler = _BufHandler(logging.DEBUG)
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-8s] %(message)s"))
@@ -440,7 +452,10 @@ def _ejecutar_debug() -> tuple[dict, str]:
     root.setLevel(logging.DEBUG)
     root.addHandler(handler)
     try:
-        processor = GmailProcessor(service=st.session_state.service)
+        # dry_run=True passed explicitly (not via the shared rules.cfg module)
+        # so a concurrent session's live run can't be silently forced into
+        # dry-run mode by this debug call, and vice versa.
+        processor = GmailProcessor(service=st.session_state.service, dry_run=True)
         stats     = processor.run()
         return stats, "\n".join(log_lines)
     except Exception as exc:
@@ -721,8 +736,7 @@ try:
         last  = pdata.get("last_contact", "")
         bidir = pdata.get("bidirectional", False)
         _bg, _fg = _RELATION_BADGE_COLORS.get(rel, ("#f1f5f9", "#475569"))
-        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
+        _rel_names = _RELATION_NAMES
 
         c1, c2 = st.columns([1, 4])
         with c1:
@@ -1320,8 +1334,7 @@ elif _current_page == "contactos":
                         _cpbidir = _cpdata.get("bidirectional", False)
                         _cptopics = _cpdata.get("key_topics", [])
                         _cpbg, _cpfg = _RELATION_BADGE_COLORS.get(_cprel, ("#f1f5f9", "#475569"))
-                        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
+                        _rel_names = _RELATION_NAMES
 
                         with _gcol:
                             with st.container(border=True):
@@ -1809,6 +1822,15 @@ elif _current_page == "limpiar":
             if st.button("🔍 Cargar remitentes", key="btn_load_senders_limpiar"):
                 with st.spinner("Analizando…"):
                     st.session_state["senders_data"] = _cargar_remitentes_frecuentes()
+                # Per-sender state (confirm/result) is keyed by list position, so a
+                # reload that changes the ranking would otherwise leave stale
+                # confirm/result state attached to the wrong sender at that index.
+                for _stale_k in [
+                    k for k in st.session_state
+                    if k.startswith(("confirm_trash_sender_", "result_trash_sender_",
+                                      "confirm_protect_sender_", "result_protect_sender_"))
+                ]:
+                    del st.session_state[_stale_k]
                 st.rerun()
 
             _senders = st.session_state["senders_data"]
@@ -2136,11 +2158,15 @@ elif _current_page == "avanzadas":
             _fb_submit = st.form_submit_button("Enviar feedback", type="primary", use_container_width=True)
 
         if _fb_submit:
-            if not _fb_sender.strip():
+            import re as _re_fb
+            _fb_sender_clean = _fb_sender.strip().lower()
+            if not _fb_sender_clean:
                 st.error("Ingresa la dirección de correo del remitente.")
+            elif not _re_fb.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", _fb_sender_clean):
+                st.error(f"Dirección de correo no válida: {_fb_sender.strip()}")
             else:
                 with st.spinner("Registrando feedback…"):
-                    _fb_r = _enviar_feedback(_fb_sender.strip(), _fb_outcome, _fb_rule.strip())
+                    _fb_r = _enviar_feedback(_fb_sender_clean, _fb_outcome, _fb_rule.strip())
                 st.session_state["feedback_result"] = _fb_r
                 st.rerun()
 

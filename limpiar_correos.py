@@ -1,9 +1,30 @@
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+_MAX_RETRIES = 3
+_BASE_DELAY  = 1.0  # seconds before first retry, doubles each attempt
+
+
+def _execute_with_retry(request):
+    """Executes a Gmail API request, retrying with exponential backoff on
+    rate-limit/server errors (429/500/503) instead of failing the whole run."""
+    delay = _BASE_DELAY
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return request.execute()
+        except HttpError as e:
+            status = int(e.resp.status)
+            if status in (429, 500, 503) and attempt < _MAX_RETRIES:
+                print(f"  Rate limit/error {status}, reintento {attempt}/{_MAX_RETRIES} en {delay:.1f}s")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
 
 CATEGORIAS = {
     "spam":            "in:spam",
@@ -23,34 +44,39 @@ _NOMBRES_ES = {
 
 
 def obtener_servicio(creds_path="config/credentials.json", token_path="token.json"):
-    """Builds an authenticated Gmail service. Delegates to gmail_processor.auth."""
-    from gmail_processor.auth import get_service
-    return get_service(creds_path=creds_path, token_path=token_path)
+    """Builds an authenticated Gmail service. Delegates to asistente_personal.get_gmail_service
+    (itself a thin wrapper over gmail_processor.auth) to avoid duplicating the same wrapper twice."""
+    from asistente_personal import get_gmail_service
+    return get_gmail_service(creds_path=creds_path, token_path=token_path)
 
 
-def mover_lote_a_papelera(service, ids: list) -> int:
+def mover_lote_a_papelera(service, ids: list, delay: float = 0.3) -> int:
     """Move up to 1000 IDs to trash via batchModify. Returns count successfully sent."""
     if not ids:
         return 0
     total = 0
-    for i in range(0, len(ids), 1000):
-        chunk = ids[i:i + 1000]
+    chunks = [ids[i:i + 1000] for i in range(0, len(ids), 1000)]
+    for n, chunk in enumerate(chunks):
         try:
-            service.users().messages().batchModify(
+            _execute_with_retry(service.users().messages().batchModify(
                 userId='me',
                 body={
                     'ids': chunk,
                     'addLabelIds': ['TRASH'],
                     'removeLabelIds': ['INBOX'],
                 }
-            ).execute()
+            ))
             total += len(chunk)
-        except HttpError as e:
+        except (HttpError, OSError) as e:
+            # OSError covers network failures (ConnectionError, ssl.SSLError,
+            # TimeoutError) that would otherwise crash an unattended run.
             print(f"  Error en lote ({len(chunk)} mensajes): {e}")
+        if n < len(chunks) - 1:
+            time.sleep(delay)
     return total
 
 
-def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
+def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False, aggressive=False):
     """
     Mueve a la papelera los correos que coincidan con la query o categorías.
 
@@ -59,10 +85,16 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         query_custom: query Gmail directa (se ignora si se pasan categorias)
         categorias:   lista de claves de CATEGORIAS (spam, promociones, etc.)
         dry_run:      si True, sólo cuenta mensajes sin moverlos
+        aggressive:   si True, usa delays más cortos entre llamadas a la API
+                      (más rápido, más riesgo de 429); si False (default), usa
+                      delays conservadores.
 
     Returns:
         {'procesados': int, 'exitos': int, 'errores': int}
     """
+    page_delay  = 0.1 if aggressive else 0.5
+    batch_delay = 0.1 if aggressive else 0.3
+
     if categorias:
         queries = {cat: CATEGORIAS[cat] for cat in categorias if cat in CATEGORIAS}
     elif query_custom:
@@ -87,13 +119,13 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         while True:
             page_num += 1
             try:
-                result = service.users().messages().list(
+                result = _execute_with_retry(service.users().messages().list(
                     userId='me',
                     q=query,
                     maxResults=500,
                     pageToken=page_token,
-                ).execute()
-            except HttpError as e:
+                ))
+            except (HttpError, OSError) as e:
                 print(f"  Error al listar página {page_num}: {e}")
                 break
 
@@ -109,7 +141,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
                 exitos = len(ids)
             else:
                 print(f"  Página {page_num}: {len(ids)} correos → enviando a papelera...", end="", flush=True)
-                exitos = mover_lote_a_papelera(service, ids)
+                exitos = mover_lote_a_papelera(service, ids, delay=batch_delay)
                 print(f" {exitos} movidos.")
             cat_total += len(ids)
             cat_exitos += exitos
@@ -117,6 +149,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
             page_token = result.get('nextPageToken')
             if not page_token:
                 break
+            time.sleep(page_delay)
 
         if len(queries) > 1:
             nombre_es = _NOMBRES_ES.get(nombre, nombre)
@@ -169,7 +202,7 @@ def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False
     q = f"before:{fecha}"
     if solo_no_leidos:
         q += " is:unread"
-    return limpiar_bandeja(service, query_custom=q)
+    return limpiar_bandeja(service, query_custom=q, aggressive=aggressive)
 
 
 def borrar_correos_antiguos(service=None):

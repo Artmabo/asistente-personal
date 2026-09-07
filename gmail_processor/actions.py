@@ -20,12 +20,13 @@ class GmailActions:
         self.service  = service
         self.dry_run  = dry_run
         self._labels: dict[str, str] = {}   # label name → label id cache
+        self._labels_loaded = False
 
     # ── Label management ──────────────────────────────────────────────────────
 
     def ensure_label(self, name: str) -> str:
         """Returns the label ID for `name`, creating it in Gmail if needed."""
-        if not self._labels:
+        if not self._labels_loaded:
             self._load_labels()
 
         if name in self._labels:
@@ -57,6 +58,7 @@ class GmailActions:
         if result:
             for lbl in result.get("labels", []):
                 self._labels[lbl["name"]] = lbl["id"]
+            self._labels_loaded = True
 
     # ── Message operations ────────────────────────────────────────────────────
 
@@ -70,7 +72,7 @@ class GmailActions:
         return self._modify(msg_id, add=[label_id])
 
     def remove_label(self, msg_id: str, label_name: str) -> bool:
-        if not self._labels:
+        if not self._labels_loaded:
             self._load_labels()
         label_id = self._labels.get(label_name)
         if not label_id:
@@ -128,10 +130,12 @@ class GmailActions:
                 return method(**kwargs).execute()
             except HttpError as e:
                 status = int(e.resp.status)
-                # Hard permission failure — raise immediately (do not retry)
+                # Hard permission failure — stop retrying, but still return None
+                # rather than raise, so callers keep the documented "returns bool" contract
+                # and a single message's permission error doesn't abort the whole run.
                 if status == 403 and _is_permission_error(e):
                     logger.error(f"Insufficient permissions: {e}")
-                    raise
+                    return None
                 # Rate limit or transient server error — retry with backoff
                 if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
                     kind = "Rate limit" if status in (403, 429) else "Server error"

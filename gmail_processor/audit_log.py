@@ -63,14 +63,20 @@ class AuditLogger:
         })
 
     def flush(self):
-        """Writes buffered entries to disk. Called once per run."""
+        """Writes buffered entries to disk. Called once per run.
+
+        Writes to a temp file and renames it into place so a crash or an
+        overlapping run mid-write can't truncate/corrupt the existing log.
+        """
         if not self._buf:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             for entry in combined:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp_path.replace(self.path)
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 

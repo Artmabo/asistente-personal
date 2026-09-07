@@ -54,7 +54,7 @@ class StorageCleaner:
     def run(self) -> dict:
         targets = cfg.CLEANUP_RULES.get("targets", [])
         max_per = cfg.CLEANUP_RULES.get("max_per_query", 200)
-        mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode    = "DRY RUN" if self.actions.dry_run else "LIVE"
         scoring = "activo" if self.engine else "inactivo"
 
         logger.info(f"\n{'─'*55}")
@@ -218,7 +218,7 @@ class StorageCleaner:
                 return
 
         # 3. Trash
-        mode       = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode       = "DRY RUN" if self.actions.dry_run else "LIVE"
         score_line = ""
         if scored:
             factors_str = " | ".join(scored.factors) if scored.factors else "sin señales"
@@ -287,7 +287,7 @@ class StorageCleaner:
         """Persists a cleanup summary to cleanup_summary.json for the UI."""
         summary = {
             "ts":      datetime.now().isoformat(timespec="seconds"),
-            "dry_run": cfg.DRY_RUN,
+            "dry_run": self.actions.dry_run,
             **self.stats,
         }
         try:

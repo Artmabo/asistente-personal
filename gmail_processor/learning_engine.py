@@ -467,6 +467,12 @@ class LearningEngine:
                 current = stats.get("threshold_days") or base
                 new_val = current + THRESHOLD_INCREASE_DAYS
                 stats["threshold_days"] = new_val
+                # Reset counters so the next adjustment is judged on fresh
+                # evidence gathered under the new threshold, not the same
+                # stale trashed/incorrect counts that would otherwise keep
+                # re-triggering an increase every run indefinitely.
+                stats["trashed"]   = 0
+                stats["incorrect"] = 0
                 self._dirty = True
                 changes.append(
                     f"  {rule_name}: {current}d → {new_val}d  "
@@ -586,7 +592,7 @@ class LearningEngine:
                     logger.info(f"Estado migrado v{v} → v3")
                 logger.debug(f"Estado cargado desde {self.path}")
                 return data
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 logger.warning(f"Estado corrupto en {self.path}, reiniciando.")
         return copy.deepcopy(_EMPTY_STATE_V3)
 

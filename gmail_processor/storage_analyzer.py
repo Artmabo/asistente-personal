@@ -80,9 +80,13 @@ class StorageAnalyzer:
             if not query:
                 continue
 
-            all_ids, count = self._list_all_ids(query)
+            all_ids, count, had_error = self._list_all_ids(query)
             if count == 0:
-                result[cat] = {"count": 0, "size_mb": 0}
+                # `had_error` distinguishes "API call failed" from "genuinely
+                # no messages in this category" — both would otherwise look
+                # identical (0 messages) to the caller.
+                result[cat] = {"count": 0, "size_mb": 0, "error": had_error} if had_error \
+                    else {"count": 0, "size_mb": 0}
                 continue
 
             # Muestrear sizeEstimate — un solo batch HTTP en vez de N llamadas secuenciales
@@ -133,13 +137,20 @@ class StorageAnalyzer:
                 ).execute()
                 result[cat] = resp.get("resultSizeEstimate", 0)
             except HttpError:
-                result[cat] = 0
+                # None (not 0) so a real API failure is distinguishable from
+                # a category that genuinely has no messages.
+                result[cat] = None
         return result
 
-    def _list_all_ids(self, query: str, max_ids: int = 5_000) -> tuple[list[str], int]:
-        """Lista los IDs de mensajes que coinciden con la query, hasta max_ids."""
+    def _list_all_ids(self, query: str, max_ids: int = 5_000) -> tuple[list[str], int, bool]:
+        """Lista los IDs de mensajes que coinciden con la query, hasta max_ids.
+
+        Returns (ids, count, had_error) — had_error is True if a page fetch
+        failed, so callers can tell that apart from a genuinely empty result.
+        """
         ids: list[str] = []
         page_token     = None
+        had_error      = False
 
         while len(ids) < max_ids:
             try:
@@ -147,6 +158,7 @@ class StorageAnalyzer:
                     userId="me", q=query, maxResults=500, pageToken=page_token,
                 ).execute()
             except HttpError:
+                had_error = True
                 break
 
             msgs = resp.get("messages", [])
@@ -159,4 +171,4 @@ class StorageAnalyzer:
                 break
             time.sleep(0.1)
 
-        return ids[:max_ids], len(ids[:max_ids])
+        return ids[:max_ids], len(ids[:max_ids]), had_error

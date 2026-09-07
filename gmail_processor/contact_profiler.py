@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, get_header
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -72,6 +72,7 @@ class ContactProfiler:
                 self._save()
                 built += 1
             except Exception as exc:
+                logger.warning(f"Fallo al construir perfil de {addr}: {exc}")
                 errors.append(f"{addr}: {exc}")
 
         return {"built": built, "total": total, "errors": errors}
@@ -219,7 +220,10 @@ class ContactProfiler:
                 userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
             ).execute()
             stubs = resp.get("messages", [])
-        except HttpError:
+        except HttpError as e:
+            # Logged so a real API failure isn't indistinguishable from
+            # "this contact genuinely has no emails" further up the pipeline.
+            logger.warning(f"No se pudieron listar correos de {addr}: {e}")
             return []
 
         for stub in stubs:
@@ -229,7 +233,8 @@ class ContactProfiler:
                 ).execute()
                 result.append(self._parse_message(msg))
                 time.sleep(0.05)
-            except HttpError:
+            except HttpError as e:
+                logger.warning(f"No se pudo obtener el mensaje {stub['id']} de {addr}: {e}")
                 continue
 
         return result
@@ -238,19 +243,12 @@ class ContactProfiler:
         payload  = msg.get("payload", {})
         headers  = payload.get("headers", [])
 
-        def hdr(name: str) -> str:
-            nl = name.lower()
-            for h in headers:
-                if h.get("name", "").lower() == nl:
-                    return h.get("value", "")
-            return ""
-
-        from_raw   = hdr("From")
+        from_raw   = get_header(headers, "From")
         from_name  = ""
         if "<" in from_raw:
             from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
 
-        date_str    = hdr("Date")
+        date_str    = get_header(headers, "Date")
         date_parsed = None
         try:
             date_parsed = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
@@ -259,7 +257,7 @@ class ContactProfiler:
 
         return {
             "from_name":    from_name,
-            "subject":      hdr("Subject"),
+            "subject":      get_header(headers, "Subject"),
             "date_str":     date_str,
             "date_parsed":  date_parsed,
             "body_snippet": self._extract_body(payload),

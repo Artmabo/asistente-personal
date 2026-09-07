@@ -85,8 +85,11 @@ class CleanupScheduler:
         })
         self._save()
 
-        if enabled and self._scheduler and self._scheduler.running:
-            self._reschedule()
+        if enabled and self._scheduler:
+            if self._scheduler.running:
+                self._reschedule()
+            else:
+                self.start()
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""
@@ -139,11 +142,12 @@ class CleanupScheduler:
             from .cleanup_storage import StorageCleaner
             from .learning_engine import LearningEngine
             from .audit_log import AuditLogger
+            from . import rules as cfg
 
             service = get_service()
-            actions = GmailActions(service, dry_run=False)
+            actions = GmailActions(service, dry_run=cfg.DRY_RUN)
             engine  = LearningEngine()
-            audit   = AuditLogger()
+            audit   = AuditLogger(dry_run=cfg.DRY_RUN)
             cleaner = StorageCleaner(service, actions, engine=engine, audit=audit)
             result  = cleaner.run()
         except Exception as exc:
