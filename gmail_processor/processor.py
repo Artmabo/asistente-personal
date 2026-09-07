@@ -33,12 +33,16 @@ def setup_logging(
 
 
 class GmailProcessor:
-    def __init__(self, service=None):
+    def __init__(self, service=None, dry_run: bool | None = None):
+        """`dry_run` overrides cfg.DRY_RUN for this instance without mutating the
+        shared module-level flag — safer when the process/session lives longer
+        than one run (e.g. reused across multiple invocations)."""
         self.service    = service or get_service()
         self.classifier = EmailClassifier()
-        self.actions    = GmailActions(self.service, dry_run=cfg.DRY_RUN)
+        self.dry_run    = cfg.DRY_RUN if dry_run is None else dry_run
+        self.actions    = GmailActions(self.service, dry_run=self.dry_run)
         self.engine     = LearningEngine()
-        self.audit      = AuditLogger(dry_run=cfg.DRY_RUN)
+        self.audit      = AuditLogger(dry_run=self.dry_run)
         self.stats      = {
             "processed": 0,
             "labeled":   0,
@@ -56,7 +60,7 @@ class GmailProcessor:
         learning=True → enables writing to learning_state.json and threshold adjustments.
         """
         query = query or cfg.QUERY_FILTER
-        mode  = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+        mode  = "DRY RUN" if self.dry_run else "LIVE"
         logger.info(f"{'='*55}")
         logger.info(f"  Gmail Processor — mode={mode}  query='{query}'")
         logger.info(f"{'='*55}")

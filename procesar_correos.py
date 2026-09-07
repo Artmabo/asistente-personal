@@ -28,7 +28,6 @@ Entry point for the Gmail rule-based processor.
 import sys
 import argparse
 import logging
-import gmail_processor.rules as cfg
 from gmail_processor import GmailProcessor, setup_logging
 
 _SUBCOMMANDS = {"feedback", "stats", "audit"}
@@ -68,13 +67,11 @@ def main():
                         help="Enable DEBUG log level — shows full pipeline trace per email")
     args = parser.parse_args()
 
-    if args.live:
-        cfg.DRY_RUN = False
-
     level = logging.DEBUG if args.debug else logging.INFO
     setup_logging(level=level)
 
-    processor = GmailProcessor()
+    dry_run = False if args.live else None  # None → GmailProcessor falls back to cfg.DRY_RUN
+    processor = GmailProcessor(dry_run=dry_run)
     processor.run(query=args.query, cleanup=args.cleanup, learning=args.learning)
 
 
@@ -219,7 +216,9 @@ def _cmd_audit(argv: list[str]):
     else:
         entries = audit.recent(args.last)
 
-    entries = entries[-args.last:]
+    # Plain `entries[-args.last:]` breaks when args.last == 0: Python evaluates
+    # `-0` as `0`, so `entries[0:]` returns everything instead of nothing.
+    entries = entries[-args.last:] if args.last > 0 else []
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")

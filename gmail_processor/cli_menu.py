@@ -327,6 +327,7 @@ def _menu_feedback():
     sender = _ask("Email del remitente")
     if not sender:
         return
+    sender = sender.strip().lower()
 
     print("  1. correcto    (la decisión fue acertada)")
     print("  2. incorrecto  (el correo fue eliminado por error)")
@@ -751,6 +752,16 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _py_str_literal(value: str) -> str:
+    """Escapes a value for safe embedding in a double-quoted Python string literal.
+
+    rules.py is re-executed via importlib.reload() after being patched, so any
+    unescaped quote/backslash in user- or inbox-derived text (email, label,
+    domain) would break out of the literal and let arbitrary code run on reload.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
@@ -779,7 +790,9 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    safe_email = _py_str_literal(email)
+    safe_label = _py_str_literal(label)
+    new_entry = f'    "{safe_email}": {{"label": "{safe_label}", "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -851,11 +864,14 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
     if f'"{domain}"' in block_text:
         return False
 
+    safe_domain = _py_str_literal(domain)
+    safe_label  = _py_str_literal(label)
+    safe_action = _py_str_literal(action)
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": ["{safe_domain}"],\n'
+        f'        "label": "{safe_label}",\n'
+        f'        "action": "{safe_action}",\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)

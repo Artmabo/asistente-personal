@@ -13,8 +13,8 @@ def ejemplo_1_modo_conservador():
     print("\n" + "="*60)
     print("EJEMPLO 1: Modo Conservador (RECOMENDADO)")
     print("="*60)
-    print("✅ Usa delays adaptativos")
-    print("✅ Circuit breaker automático")
+    print("✅ Reintento automático con backoff exponencial en 429/500/503")
+    print("✅ Delays de 0.5s entre páginas, 0.3s entre lotes")
     print("✅ Respeita límites de Gmail API")
     print("❌ Más lento pero confiable")
     
@@ -75,15 +75,15 @@ def ejemplo_4_comparacion_modos():
     print("EJEMPLO 4: Comparación de Modes")
     print("="*60)
     
-    print("\n📊 Modo AGRESIVO:")
-    print("   - REQUEST_DELAY: 0.1s (muy rápido)")
-    print("   - BATCH_SIZE: 30")
+    print("\n📊 Modo AGRESIVO (aggressive=True):")
+    print("   - Delay entre páginas: 0.1s")
+    print("   - Delay entre lotes: 0.1s")
     print("   - RIESGO: Alto para 403/429")
     print("   - VELOCIDAD: Rápida")
-    
-    print("\n📊 Modo CONSERVADOR:")
-    print("   - REQUEST_DELAY: 0.5s (seguro)")
-    print("   - BATCH_SIZE: 15")
+
+    print("\n📊 Modo CONSERVADOR (aggressive=False, default):")
+    print("   - Delay entre páginas: 0.5s")
+    print("   - Delay entre lotes: 0.3s")
     print("   - RIESGO: Bajo o nulo")
     print("   - VELOCIDAD: Moderada")
     
@@ -110,10 +110,9 @@ def ejemplo_6_errores_comunes():
         "429 Too Many Requests": {
             "causa": "Rate limit de Gmail API",
             "solucion": [
-                "1. Circuit breaker se activa automáticamente",
-                "2. Espera exponencial con backoff",
-                "3. Aumenta PAGE_DELAY a 5.0+",
-                "4. Ejecuta en horarios menos concurridos"
+                "1. Reintento automático con backoff exponencial (ya incluido)",
+                "2. Usa aggressive=False para delays más largos entre llamadas",
+                "3. Ejecuta en horarios menos concurridos"
             ]
         },
         "401 Unauthorized": {
