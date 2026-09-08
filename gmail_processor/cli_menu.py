@@ -239,7 +239,7 @@ def _menu_stats():
             for cat, s in cat_model.items():
                 total = s.get("trashed", 0) + s.get("kept", 0)
                 fp    = s.get("false_positives", 0)
-                acc   = f"{1 - fp/s['trashed']:.1%}" if s.get("trashed") else "n/a"
+                acc   = f"{max(0, 1 - fp/s['trashed']):.1%}" if s.get("trashed") else "n/a"
                 print(f"  {cat}")
                 print(f"    papelera={s.get('trashed',0)}  conservados={s.get('kept',0)}"
                       f"  total={total}  precisión={acc}")
@@ -276,22 +276,9 @@ def _menu_audit():
 
     from .processor import setup_logging
     setup_logging(level=logging.WARNING)
-    from .audit_log import AuditLogger, MAX_ENTRIES
-    audit = AuditLogger()
-
-    if decision_filter:
-        # The filtered decision may be sparse in the log, so keep widening the
-        # fetch window until we have enough matches or run out of entries.
-        fetch_n = max(n * 3, 200)
-        while True:
-            entries = [e for e in audit.recent(fetch_n) if e.get("decision") == decision_filter]
-            if len(entries) >= n or fetch_n >= MAX_ENTRIES:
-                break
-            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
-    else:
-        entries = audit.recent(n)
-
-    entries = entries[-n:]
+    from .audit_log import AuditLogger
+    audit   = AuditLogger()
+    entries = audit.recent_filtered(n, decision_filter)
 
     print()
     if not entries:
@@ -601,8 +588,6 @@ def _menu_smart_setup(get_svc: Callable):
 
 
 def _present_contacts(contacts, domains, DOMAIN_LABELS):
-    from . import rules as cfg
-
     print(_SEP2)
     print(f"  CONTACTOS IMPORTANTES DETECTADOS")
     print(_SEP2)
@@ -690,7 +675,6 @@ def _present_contacts(contacts, domains, DOMAIN_LABELS):
 def _present_domains(domains) -> int:
     """Shows domain suggestions and applies approved ones. Returns count added."""
     from . import rules as cfg
-    from .smart_setup import DOMAIN_LABELS
 
     # Filter domains already in DOMAIN_RULES
     existing = {
@@ -752,6 +736,10 @@ def _present_domains(domains) -> int:
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    from . import rules as cfg
+    if email in cfg.CONTACT_RULES:
+        return False  # already exists — check the parsed dict, not raw text
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -774,12 +762,10 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     if end_idx is None:
         return False
 
-    for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            return False  # already exists
-
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # repr() escapes quotes/backslashes so a label like Trabajo "urgente" can't
+    # break rules.py's dict-literal syntax (it's imported as live Python, not data).
+    new_entry = f'    {repr(email)}: {{"label": {repr(label)}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -790,16 +776,26 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
+    from . import rules as cfg
+    if email not in cfg.CONTACT_RULES:
+        return False
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return False
 
+    # Match both quoting styles: legacy/manual entries use "double quotes",
+    # entries added via repr() (here and in app.py) use 'single quotes'.
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        stripped = line.strip()
+        is_match = not stripped.startswith("#") and (
+            f'"{email}"' in line or repr(email) in line
+        )
+        if is_match:
             removed = True
             continue
         new_lines.append(line)
@@ -816,6 +812,11 @@ def _patch_rules_remove_contact(email: str) -> bool:
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    from . import rules as cfg
+    existing = {d for rule in cfg.DOMAIN_RULES for d in rule.get("domains", [])}
+    if domain in existing:
+        return False  # already exists — check the parsed rules, not raw text
+
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -846,16 +847,13 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
     if end_idx is None:
         return False
 
-    # Check if domain already exists anywhere in the block
-    block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
-        return False
-
+    # repr() escapes quotes/backslashes so a stray " in domain/label can't
+    # break rules.py's list-literal syntax (it's imported as live Python, not data).
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{repr(domain)}],\n'
+        f'        "label": {repr(label)},\n'
+        f'        "action": {repr(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)

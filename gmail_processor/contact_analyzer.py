@@ -343,6 +343,14 @@ class ContactAnalyzer:
             score   = meta.get("score",   0)
             domain  = _domain(addr)
 
+            if decision == "skip":
+                # "No sé ahora" defers the decision — keep it in the pending
+                # queue for a future review instead of filing it away as
+                # final (which would make it disappear forever, since
+                # analyze_batch() never re-surfaces addresses in `reviewed`).
+                self.learn_from_decision(addr, domain, decision, score, signals)
+                continue
+
             entry = {
                 "name":       meta.get("name", ""),
                 "score":      score,

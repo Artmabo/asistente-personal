@@ -12,6 +12,7 @@ Decision pipeline per message:
 """
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -90,6 +91,9 @@ class StorageCleaner:
         reason    = target["reason"]
         rule_name = target["rule"]
 
+        if self.engine:
+            query = self._apply_learned_threshold(query, rule_name)
+
         logger.info(f"\n[TARGET] rule={rule_name}  query='{query}'")
 
         count      = 0
@@ -122,6 +126,29 @@ class StorageCleaner:
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
+
+    def _apply_learned_threshold(self, query: str, rule_name: str) -> str:
+        """Substitutes the query's older_than:Nd with the value learned by
+        LearningEngine.update_rule_thresholds(), if that rule's error rate
+        has pushed its threshold above the static value in rules.py.
+
+        Without this, update_rule_thresholds() computed and persisted a wider
+        threshold_days on high false-positive rates, but the cleanup query
+        never actually widened — the learned value sat in learning_state.json
+        having no effect on which emails got trashed.
+        """
+        match = re.search(r"older_than:(\d+)d", query)
+        if not match:
+            return query
+        base_days = int(match.group(1))
+        learned_days = self.engine.get_threshold(rule_name, base_days)
+        if learned_days == base_days:
+            return query
+        logger.info(
+            f"  Threshold aprendido para '{rule_name}': "
+            f"{base_days}d → {learned_days}d (por tasa de error alta)"
+        )
+        return query.replace(f"older_than:{base_days}d", f"older_than:{learned_days}d")
 
     # ── Per-message evaluation ────────────────────────────────────────────────
 

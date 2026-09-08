@@ -4,6 +4,9 @@ config/credentials.json
 credentials.json
 *.json.bak
 
+# ── Archivos temporales de escritura atómica (learning_state, analysis_state, …) ─
+*.tmp
+
 # ── Claude Code internal settings ────────────────────────────────────────────
 .claude/
 
