@@ -334,18 +334,8 @@ def _cargar_stats() -> dict:
 
 def _cargar_audit(last: int, decision: str | None) -> list[dict]:
     try:
-        from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
-        audit = AuditLogger()
-        if not decision:
-            return audit.recent(last)
-        # The requested decision may be sparse, so widen the fetch window
-        # until there are enough matches (or the whole log has been read).
-        fetch_n = max(last * 3, 200)
-        while True:
-            entries = [e for e in audit.recent(fetch_n) if e.get("decision") == decision]
-            if len(entries) >= last or fetch_n >= MAX_ENTRIES:
-                return entries[-last:]
-            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
+        from gmail_processor.audit_log import AuditLogger
+        return AuditLogger().recent_filtered(last, decision)
     except Exception as exc:
         st.error(f"Error al cargar audit log: {exc}")
         return []
@@ -523,6 +513,13 @@ def _ca_learning_summary() -> dict:
     return a.get_learning_stats()
 
 
+def _ca_unsubscribe_candidates() -> list[dict]:
+    try:
+        return _ca_get_analyzer().get_unsubscribe_candidates()
+    except Exception:
+        return []
+
+
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
 
 def _cargar_storage_summary() -> dict:
@@ -634,11 +631,19 @@ def _run_build_profiles(important_contacts: list[str], status_ph) -> dict:
             status_ph.info(f"Analizando contacto **{current}** de {total}: {contact_name}…")
 
         profiler = ContactProfiler()
-        return profiler.build_profiles(
+        # Skip contacts whose profile is already fresh (< 7 days, built ok) —
+        # avoids burning a Claude call per contact every time "Actualizar" is pressed.
+        to_build = [a for a in important_contacts if profiler.needs_rebuild(a)]
+        skipped  = len(important_contacts) - len(to_build)
+        if not to_build:
+            return {"built": 0, "total": 0, "skipped": skipped, "errors": []}
+        result = profiler.build_profiles(
             service=st.session_state.service,
-            important_contacts=important_contacts,
+            important_contacts=to_build,
             progress_cb=_cb,
         )
+        result["skipped"] = skipped
+        return result
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -1241,9 +1246,17 @@ elif _current_page == "contactos":
             elif _prof_r.get("error"):
                 st.error(f"Error al construir perfiles: {_prof_r['error']}")
             elif "built" in _prof_r:
-                st.success(
-                    f"✓ {_prof_r['built']} de {_prof_r['total']} perfiles construidos."
-                )
+                _pr_skipped = _prof_r.get("skipped", 0)
+                if _prof_r["total"] == 0 and _pr_skipped:
+                    st.info(
+                        f"Todos los perfiles ya estaban actualizados "
+                        f"({_pr_skipped} sin cambios)."
+                    )
+                else:
+                    _pr_msg = f"✓ {_prof_r['built']} de {_prof_r['total']} perfiles construidos."
+                    if _pr_skipped:
+                        _pr_msg += f" ({_pr_skipped} ya estaban actualizados y se omitieron)."
+                    st.success(_pr_msg)
                 _profiles = _load_profiles()
 
         if not _important_emails and not _profiles:
@@ -1638,6 +1651,29 @@ elif _current_page == "analizar":
                     f"**{_cb_pd} para revisar**"
                 )
 
+        # ── Candidatos para darte de baja ──────────────────────────────────────
+        if _ca_prev or _ca_batch:
+            _unsub_candidates = _ca_unsubscribe_candidates()
+            if _unsub_candidates:
+                with st.expander(
+                    f"📪 Candidatos para darte de baja ({len(_unsub_candidates)})"
+                ):
+                    st.caption(
+                        "Remitentes de correos masivos con enlace para darte de baja. "
+                        "Ábrelos y busca el enlace 'unsubscribe' o 'darse de baja' "
+                        "al final del mensaje."
+                    )
+                    for _uc in _unsub_candidates:
+                        _uc_label = (
+                            f"{_uc['name']} <{_uc['email']}>" if _uc.get("name")
+                            else _uc["email"]
+                        )
+                        st.markdown(f"**{_uc_label}**  ·  {_uc.get('count', 0)} correos")
+                        if _uc.get("sample_subjects"):
+                            st.caption(
+                                "  ·  ".join(f'"{s[:60]}"' for s in _uc["sample_subjects"][:2])
+                            )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PÁGINA: LIMPIAR CORREOS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1926,22 +1962,26 @@ elif _current_page == "automatica":
                 st.markdown("")
                 _sf1, _sf2, _sf3 = st.columns(3)
                 with _sf1:
+                    _freq_options = ["daily", "weekly", "monthly"]
+                    _sched_freq_saved = _sch_status.get("frequency", "weekly")
+                    if _sched_freq_saved not in _freq_options:
+                        _sched_freq_saved = "weekly"
                     _sched_freq = st.selectbox(
                         "Frecuencia",
-                        options=["daily", "weekly", "monthly"],
-                        index=["daily", "weekly", "monthly"].index(
-                            _sch_status.get("frequency", "weekly")
-                        ),
+                        options=_freq_options,
+                        index=_freq_options.index(_sched_freq_saved),
                         format_func=lambda x: {"daily": "Diaria", "weekly": "Semanal", "monthly": "Mensual"}[x],
                         key="sched_freq",
                     )
                 with _sf2:
+                    _dow_options = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+                    _sched_dow_saved = _sch_status.get("day_of_week", "sunday")
+                    if _sched_dow_saved not in _dow_options:
+                        _sched_dow_saved = "sunday"
                     _sched_dow = st.selectbox(
                         "Día de la semana",
-                        options=["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
-                        index=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"].index(
-                            _sch_status.get("day_of_week", "sunday")
-                        ),
+                        options=_dow_options,
+                        index=_dow_options.index(_sched_dow_saved),
                         format_func=lambda x: {
                             "monday": "Lunes", "tuesday": "Martes", "wednesday": "Miércoles",
                             "thursday": "Jueves", "friday": "Viernes",
@@ -2060,7 +2100,7 @@ elif _current_page == "avanzadas":
                         "Papelera":    s.get("trashed", 0),
                         "Conservados": s.get("kept",    0),
                         "Total":       s.get("trashed", 0) + s.get("kept", 0),
-                        "Precisión":   f"{(1 - s.get('false_positives', 0)/s['trashed']):.1%}"
+                        "Precisión":   f"{max(0, 1 - s.get('false_positives', 0)/s['trashed']):.1%}"
                                        if s.get("trashed") else "n/a",
                     }
                     for cat, s in _cm.items()

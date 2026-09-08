@@ -163,6 +163,13 @@ def limpiar_todo_basura(service) -> dict:
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
 
 def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False):
+    """Legacy wrapper around limpiar_bandeja() kept for old scripts.
+
+    `aggressive` is accepted for backward compatibility only and has no
+    effect — the old adaptive-throttling/circuit-breaker modes it used to
+    select were removed in favor of the single conservative retry logic
+    now built into GmailActions/mover_lote_a_papelera.
+    """
     if service is None:
         service = obtener_servicio()
     fecha = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")

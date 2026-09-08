@@ -2,6 +2,14 @@
 """
 Ejemplos de uso avanzado del sistema de throttling adaptativo.
 Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
+
+Nota: los parámetros PAGE_DELAY/REQUEST_DELAY/BATCH_SIZE y el modo
+"agresivo" descritos abajo pertenecían a una versión anterior del
+throttling. Hoy el reintento con backoff vive en GmailActions._call()
+(gmail_processor/actions.py) y no es configurable desde aquí; el
+parámetro `aggressive` de limpiar_correos() se conserva solo por
+compatibilidad y no tiene efecto. Estos ejemplos ilustran el patrón de
+uso, no el comportamiento exacto actual.
 """
 
 from limpiar_correos import limpiar_correos

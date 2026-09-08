@@ -161,7 +161,7 @@ class Metrics:
             total = s.get("trashed", 0)
             if total == 0:
                 continue
-            result[cat] = round(1.0 - s.get("false_positives", 0) / total, 3)
+            result[cat] = round(max(0.0, 1.0 - s.get("false_positives", 0) / total), 3)
         return result
 
     def summary(self) -> str:
@@ -408,6 +408,8 @@ class LearningEngine:
             if event.rule_name:
                 self._inc_incorrect(event.rule_name)
             self.metrics.record_false_positive(event.rule_name)
+        if event.source == "manual":
+            self.metrics.record_manual_override()
 
         self._dirty = True
         reason = _gate_reason(event.source, confidence, total_count)
