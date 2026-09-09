@@ -98,6 +98,11 @@ CATEGORY_RULES: dict[str, dict] = {
 CLEANUP_RULES: dict = {
     "targets": [
         {
+            "query": "in:spam",
+            "reason": "Correo marcado como spam",
+            "rule": "spam",
+        },
+        {
             "query": "category:promotions older_than:60d",
             "reason": "Promoción con más de 60 días",
             "rule": "promotions_60d",

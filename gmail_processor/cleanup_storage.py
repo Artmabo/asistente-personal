@@ -27,6 +27,16 @@ from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
 
+# Mapea las claves de categoría que expone la UI (scheduler, estimador de
+# almacenamiento) al nombre de "rule" correspondiente en CLEANUP_RULES["targets"].
+_CATEGORY_RULE_MAP: dict[str, str] = {
+    "spam":            "spam",
+    "promociones":     "promotions_60d",
+    "social":          "social_90d",
+    "actualizaciones": "updates_90d",
+    "foros":           "forums_90d",
+}
+
 
 class StorageCleaner:
     def __init__(
@@ -36,12 +46,21 @@ class StorageCleaner:
         engine:        Optional[LearningEngine] = None,
         audit:         Optional[AuditLogger]    = None,
         learning_mode: bool = False,
+        categories:    Optional[list[str]]      = None,
     ):
+        """
+        categories: si se especifica, sólo se ejecutan los targets de
+        CLEANUP_RULES cuyo "rule" corresponda a una de estas claves de
+        categoría (ver _CATEGORY_RULE_MAP). None (por defecto) ejecuta todos
+        los targets configurados, incluyendo aquellos sin categoría asociada
+        en la UI (p.ej. "unread_180d").
+        """
         self.service       = service
         self.actions       = actions
         self.engine        = engine
         self.audit         = audit
         self.learning_mode = learning_mode
+        self.categories    = categories
         self._protected_domains = _build_protected_domains()
         self.stats = {
             "examined": 0,
@@ -53,6 +72,11 @@ class StorageCleaner:
 
     def run(self) -> dict:
         targets = cfg.CLEANUP_RULES.get("targets", [])
+        if self.categories is not None:
+            allowed_rules = {
+                _CATEGORY_RULE_MAP[c] for c in self.categories if c in _CATEGORY_RULE_MAP
+            }
+            targets = [t for t in targets if t["rule"] in allowed_rules]
         max_per = cfg.CLEANUP_RULES.get("max_per_query", 200)
         mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
         scoring = "activo" if self.engine else "inactivo"

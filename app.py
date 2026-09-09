@@ -153,12 +153,15 @@ def _mostrar_resultado_cat(r: dict | None, nombre: str):
     movidos     = r.get("exitos",     0)
     encontrados = r.get("procesados", 0)
     errores     = r.get("errores",    0)
+    protegidos  = r.get("protegidos", 0)
     if encontrados == 0:
         st.info(f"No se encontraron correos en **{nombre}**. La categoría ya estaba vacía.")
     else:
         st.success(
             f"✓ Se movieron a la papelera **{movidos} de {encontrados}** correos de {nombre}."
         )
+        if protegidos:
+            st.caption(f"🛡️ {protegidos} correo(s) protegido(s) (estrella, importante o contacto) se conservaron.")
         if errores:
             st.warning(f"No se pudieron mover {errores} correos. Puedes intentarlo de nuevo más tarde.")
 
