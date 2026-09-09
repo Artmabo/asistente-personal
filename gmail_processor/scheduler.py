@@ -140,12 +140,15 @@ class CleanupScheduler:
             from .learning_engine import LearningEngine
             from .audit_log import AuditLogger
 
-            service = get_service()
-            actions = GmailActions(service, dry_run=False)
-            engine  = LearningEngine()
-            audit   = AuditLogger()
-            cleaner = StorageCleaner(service, actions, engine=engine, audit=audit)
-            result  = cleaner.run()
+            service    = get_service()
+            actions    = GmailActions(service, dry_run=False)
+            engine     = LearningEngine()
+            audit      = AuditLogger()
+            categories = self.config.get("categories")
+            cleaner    = StorageCleaner(
+                service, actions, engine=engine, audit=audit, categories=categories,
+            )
+            result     = cleaner.run()
         except Exception as exc:
             result = {"error": str(exc)}
             logger.error(f"Error en limpieza automática: {exc}")

@@ -751,6 +751,19 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _line_has_key(line: str, key: str) -> bool:
+    """True if `line` defines a CONTACT_RULES entry for `key` (dict-literal
+    line, not a comment). Entries can be quoted either as a raw double-quoted
+    string (hand-edited / older entries) or via repr() (app.py's
+    _proteger_remitente and the escaped writer below), which uses single
+    quotes unless `key` itself contains one — check both forms so a contact
+    added through one code path is still recognized by the others."""
+    stripped = line.strip()
+    if stripped.startswith("#"):
+        return False
+    return f'"{key}"' in line or repr(key) in line
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
@@ -775,11 +788,15 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         return False
 
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if _line_has_key(line, email):
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # repr() escapes quotes/backslashes safely — a raw f-string here would let
+    # a From: header containing a `"` (a legal, if unusual, addr-spec) break
+    # out of the string literal and inject code into rules.py, which is
+    # imported/reloaded as live Python. Matches app.py's _proteger_remitente.
+    new_entry = f'    {repr(email)}: {{"label": {repr(label)}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -799,7 +816,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if _line_has_key(line, email):
             removed = True
             continue
         new_lines.append(line)
@@ -848,14 +865,15 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if f'"{domain}"' in block_text or repr(domain) in block_text:
         return False
 
+    # repr() escapes quotes/backslashes safely — see _patch_rules_add_contact.
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{repr(domain)}],\n'
+        f'        "label": {repr(label)},\n'
+        f'        "action": {repr(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
@@ -949,6 +967,8 @@ def _resumen_limpieza(r: dict):
     print(f"  {'─'*36}")
     print(f"  Correos encontrados : {r['procesados']}")
     print(f"  Movidos a papelera  : {r['exitos']}")
+    if r.get('protegidos'):
+        print(f"  Protegidos (omitidos): {r['protegidos']}")
     if r.get('errores'):
         print(f"  Con error           : {r['errores']}")
     print(f"  {'─'*36}")
