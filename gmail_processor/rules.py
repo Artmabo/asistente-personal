@@ -129,6 +129,16 @@ CLEANUP_RULES: dict = {
     "max_per_query": 200,
 }
 
+# ── Correo masivo sin clasificar ──────────────────────────────────────────────
+# Se aplica solo cuando ninguna otra regla coincidió. Detecta boletines/newsletters
+# vía el header "List-Unsubscribe" (RFC 2369), que casi todo correo masivo legítimo
+# incluye aunque no use palabras clave como "unsubscribe" en el asunto.
+BULK_MAIL_RULE: dict = {
+    "enabled": True,
+    "label": "BOLETINES",
+    "action": "archive",   # mark_important | archive | trash | label_only
+}
+
 # ── Configuración general ─────────────────────────────────────────────────────
 MAX_RESULTS_PER_PAGE = 100   # Correos por página al listar (máx 500)
 QUERY_FILTER = "is:inbox"    # Query Gmail para filtrar qué correos procesar
