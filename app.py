@@ -237,33 +237,6 @@ def _limpiar_remitente(email: str) -> dict | None:
         return None
 
 
-_FREE_EMAIL_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
-
-
-def _derivar_label(email: str, name: str) -> str:
-    words = name.strip().split()
-    if words:
-        clean = "".join(c for c in words[0] if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email.split("@")[-1] if "@" in email else ""
-    local  = email.split("@")[0]  if "@" in email else email
-    if domain in _FREE_EMAIL_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
-
-
 def _proteger_remitente(email: str, name: str) -> dict:
     import re
     if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
@@ -276,13 +249,15 @@ def _proteger_remitente(email: str, name: str) -> dict:
         if email in rules_mod.CONTACT_RULES:
             return {"already_protected": True}
 
-        label      = _derivar_label(email, name)
+        from gmail_processor.contact_analyzer import derive_label
+        label      = derive_label(email, name)
         rules_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
         lines   = content.split("\n")
 
         in_cr     = False

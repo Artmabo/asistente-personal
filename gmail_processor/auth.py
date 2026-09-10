@@ -5,7 +5,10 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://mail.google.com/"]
+# gmail.modify covers everything this app does (list/get messages, add/remove
+# labels, move to trash, create labels) without granting the full-account
+# access (including permanent deletion) that "https://mail.google.com/" implies.
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 def get_service(

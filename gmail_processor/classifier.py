@@ -6,7 +6,8 @@ Priority order (first match wins):
   2. Keyword rules  — subject / sender contains keywords
   3. Category rules — Gmail auto-categories (CATEGORY_PROMOTIONS, etc.)
   4. Domain rules   — sender domain matches
-  5. Default        — unknown, no action
+  5. Bulk mail      — has a List-Unsubscribe header (newsletters etc.)
+  6. Default        — unknown, no action
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
@@ -80,7 +81,17 @@ class EmailClassifier:
                     protected=rule["action"] == "mark_important",
                 )
 
-        # 5. Default
+        # 5. Bulk-mail fallback: List-Unsubscribe header present, nothing else matched
+        bulk_rule = cfg.BULK_MAIL_RULE
+        if bulk_rule.get("enabled") and get_header(headers, "List-Unsubscribe"):
+            return Classification(
+                email_type="promotion",
+                action=bulk_rule["action"],
+                labels=[bulk_rule["label"]] if bulk_rule.get("label") else [],
+                protected=False,
+            )
+
+        # 6. Default
         return Classification(email_type="unknown", action="label_only", protected=False)
 
 

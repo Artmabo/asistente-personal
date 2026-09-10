@@ -682,7 +682,7 @@ class ContactAnalyzer:
             if email_addr in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
-            label      = _derive_label(email_addr, name)
+            label      = derive_label(email_addr, name)
             rules_path = Path(__file__).parent / "rules.py"
             content    = rules_path.read_text(encoding="utf-8")
             lines      = content.split("\n")
@@ -757,10 +757,11 @@ def _atomic_write(path: Path, data: dict) -> None:
         raise
 
 
-def _derive_label(email_addr: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
+def derive_label(email_addr: str, name: str) -> str:
+    """Derives a short Gmail label name from a contact's display name or email (shared with app.py)."""
+    words = name.strip().split()
+    if words:
+        clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
     domain = email_addr.split("@")[-1] if "@" in email_addr else ""

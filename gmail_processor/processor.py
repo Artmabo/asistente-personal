@@ -114,7 +114,7 @@ class GmailProcessor:
                 userId="me",
                 id=msg_id,
                 format="metadata",
-                metadataHeaders=["From", "Subject", "Date"],
+                metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
             ).execute()
         except HttpError as e:
             logger.error(f"Could not fetch {msg_id}: {e}")
