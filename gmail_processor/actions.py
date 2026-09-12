@@ -4,10 +4,9 @@ Actions: executes Gmail API operations with retry logic.
 All public methods return True on success, False on failure.
 In dry_run mode they log the intended action and return True without touching the API.
 """
-import json
-import time
 import logging
-from googleapiclient.errors import HttpError
+
+from .utils import call_with_backoff
 
 logger = logging.getLogger("gmail_processor.actions")
 
@@ -122,37 +121,6 @@ class GmailActions:
 
     def _call(self, method, **kwargs):
         """Executes a Gmail API call with exponential-backoff retry on rate limits."""
-        delay = _BASE_DELAY
-        for attempt in range(1, _MAX_RETRIES + 1):
-            try:
-                return method(**kwargs).execute()
-            except HttpError as e:
-                status = int(e.resp.status)
-                # Hard permission failure — raise immediately (do not retry)
-                if status == 403 and _is_permission_error(e):
-                    logger.error(f"Insufficient permissions: {e}")
-                    raise
-                # Rate limit or transient server error — retry with backoff
-                if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
-                    kind = "Rate limit" if status in (403, 429) else "Server error"
-                    logger.warning(f"{kind} ({status}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
-                    time.sleep(delay)
-                    delay *= 2
-                    continue
-                logger.error(f"API error {status} on attempt {attempt}: {e}")
-                return None
-        return None
-
-
-def _is_permission_error(exc: HttpError) -> bool:
-    """Returns True when the 403 signals missing OAuth scopes, not a quota hit."""
-    _PERMISSION_REASONS = {"insufficientPermissions", "authError"}
-    try:
-        body = json.loads(exc.content)
-        reasons = {
-            err.get("reason", "")
-            for err in body.get("error", {}).get("errors", [])
-        }
-        return bool(reasons & _PERMISSION_REASONS)
-    except Exception:
-        return "insufficient" in str(exc).lower()
+        return call_with_backoff(
+            method, max_retries=_MAX_RETRIES, base_delay=_BASE_DELAY, logger=logger, **kwargs
+        )

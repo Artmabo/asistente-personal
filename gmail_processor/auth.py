@@ -1,11 +1,14 @@
 import os
 import stat
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ["https://mail.google.com/"]
+# gmail.modify covers everything this app does (list/get, label, trash) without
+# granting permanent-delete or full-account access like the old full-mailbox scope did.
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 def get_service(
@@ -22,9 +25,17 @@ def get_service(
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-            except Exception:
-                # Refresh token revoked or network failure — force full re-auth
+            except RefreshError:
+                # Refresh token itself is invalid/revoked — only now is a full
+                # interactive re-auth actually warranted.
                 creds = None
+            except Exception:
+                # Transient failure (network blip, DNS, etc.) — the refresh
+                # token may still be perfectly valid, so don't discard it and
+                # silently fall through to an interactive OAuth prompt (which
+                # would hang forever in a headless/scheduled run). Surface the
+                # real error instead.
+                raise
         if not creds or not creds.valid:
             if not os.path.exists(creds_path):
                 raise FileNotFoundError(

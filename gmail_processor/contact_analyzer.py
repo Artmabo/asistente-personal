@@ -17,7 +17,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header
+from .utils import get_header, FREE_EMAIL_PROVIDERS as _FREE_PROVIDERS
 
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
@@ -55,12 +55,6 @@ SIGNAL_LABELS: dict[str, tuple[str, bool]] = {
 }
 
 # ── Clasificadores ────────────────────────────────────────────────────────────
-
-_FREE_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
 
 _ESP_DOMAINS = frozenset([
     "mailchimp.com", "list-manage.com", "sendgrid.net", "klaviyo.com",
@@ -675,40 +669,12 @@ class ContactAnalyzer:
     # ── Escribir en rules.py ──────────────────────────────────────────────────
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
+        from gmail_processor.rules_patcher import add_contact_rule
+        from gmail_processor.utils import derive_label
+
+        label = derive_label(email_addr, name)
         try:
-            import importlib
-            import gmail_processor.rules as rules_mod
-
-            if email_addr in rules_mod.CONTACT_RULES:
-                return {"already_protected": True}
-
-            label      = _derive_label(email_addr, name)
-            rules_path = Path(__file__).parent / "rules.py"
-            content    = rules_path.read_text(encoding="utf-8")
-            lines      = content.split("\n")
-
-            in_cr = False; depth = 0; insert_at = -1
-            for i, line in enumerate(lines):
-                if not in_cr:
-                    if "CONTACT_RULES" in line and "=" in line and "{" in line:
-                        in_cr = True
-                        depth = line.count("{") - line.count("}")
-                else:
-                    depth += line.count("{") - line.count("}")
-                    if depth <= 0:
-                        insert_at = i
-                        break
-
-            if insert_at == -1:
-                return {"error": "CONTACT_RULES closing brace not found"}
-
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
-            lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
-            importlib.reload(rules_mod)
-            return {"success": True, "label": label}
+            return add_contact_rule(email_addr, label, important=True)
         except Exception as exc:
             return {"error": str(exc)}
 
@@ -755,23 +721,3 @@ def _atomic_write(path: Path, data: dict) -> None:
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
-
-
-def _derive_label(email_addr: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email_addr.split("@")[-1] if "@" in email_addr else ""
-    local  = email_addr.split("@")[0]  if "@" in email_addr else email_addr
-    if domain in _FREE_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
