@@ -237,80 +237,13 @@ def _limpiar_remitente(email: str) -> dict | None:
         return None
 
 
-_FREE_EMAIL_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
-
-
-def _derivar_label(email: str, name: str) -> str:
-    words = name.strip().split()
-    if words:
-        clean = "".join(c for c in words[0] if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email.split("@")[-1] if "@" in email else ""
-    local  = email.split("@")[0]  if "@" in email else email
-    if domain in _FREE_EMAIL_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
-
-
 def _proteger_remitente(email: str, name: str) -> dict:
-    import re
-    if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
-        return {"error": f"Dirección de correo no válida: {email}"}
+    from gmail_processor.rules_patcher import add_contact_rule
+    from gmail_processor.utils import derive_label
 
+    label = derive_label(email, name)
     try:
-        import importlib
-        import gmail_processor.rules as rules_mod
-
-        if email in rules_mod.CONTACT_RULES:
-            return {"already_protected": True}
-
-        label      = _derivar_label(email, name)
-        rules_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "gmail_processor", "rules.py",
-        )
-
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
-
-        in_cr     = False
-        depth     = 0
-        insert_at = -1
-        for i, line in enumerate(lines):
-            if not in_cr:
-                if "CONTACT_RULES" in line and "=" in line and "{" in line:
-                    in_cr = True
-                    depth = line.count("{") - line.count("}")
-            else:
-                depth += line.count("{") - line.count("}")
-                if depth <= 0:
-                    insert_at = i
-                    break
-
-        if insert_at == -1:
-            return {"error": "No se encontró CONTACT_RULES en rules.py"}
-
-        # Use repr() so quotes, backslashes and special chars are safely escaped
-        new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
-        lines.insert(insert_at, new_line)
-
-        with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-
-        importlib.reload(rules_mod)
-        return {"success": True, "email": email, "label": label}
+        return add_contact_rule(email, label, important=True)
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -1817,11 +1750,15 @@ elif _current_page == "limpiar":
             elif not _senders:
                 st.info("No se encontraron remitentes en la bandeja de entrada.")
             else:
-                for _si, _sndr in enumerate(_senders):
+                for _sndr in _senders:
                     _se_email   = _sndr["email"]
                     _se_name    = _sndr.get("name", "")
                     _se_count   = _sndr["count"]
                     _se_label   = f"{_se_name} <{_se_email}>" if _se_name else _se_email
+                    # Keyed by email (not list position) so a stale confirm/result
+                    # from a previous "Cargar remitentes" doesn't attach to whatever
+                    # sender happens to land at the same position after a refresh.
+                    _si   = _se_email
                     _csk  = f"confirm_trash_sender_{_si}"
                     _rsk  = f"result_trash_sender_{_si}"
                     _cpsk = f"confirm_protect_sender_{_si}"

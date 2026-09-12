@@ -752,119 +752,22 @@ def _present_domains(domains) -> int:
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    start_idx = None
-    for i, line in enumerate(lines):
-        if "CONTACT_RULES: dict[str, dict] = {" in line:
-            start_idx = i
-            break
-    if start_idx is None:
-        return False
-
-    end_idx = None
-    for i in range(start_idx + 1, len(lines)):
-        if lines[i].strip() == "}":
-            end_idx = i
-            break
-    if end_idx is None:
-        return False
-
-    for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            return False  # already exists
-
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
-    lines.insert(end_idx, new_entry)
-
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    """Adds a CONTACT_RULES entry. Returns False on invalid input, a
+    duplicate, or a write failure (see rules_patcher.add_contact_rule)."""
+    from .rules_patcher import add_contact_rule
+    return add_contact_rule(email, label, important).get("success", False)
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    new_lines = []
-    removed   = False
-    for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            removed = True
-            continue
-        new_lines.append(line)
-
-    if not removed:
-        return False
-
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    from .rules_patcher import remove_contact_rule
+    return remove_contact_rule(email)
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
-    """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    # Find DOMAIN_RULES list start
-    start_idx = None
-    for i, line in enumerate(lines):
-        if "DOMAIN_RULES: list[dict] = [" in line:
-            start_idx = i
-            break
-    if start_idx is None:
-        return False
-
-    # Find closing ] by tracking bracket depth
-    depth   = 1
-    end_idx = None
-    for i in range(start_idx + 1, len(lines)):
-        for ch in lines[i]:
-            if   ch == "[": depth += 1
-            elif ch == "]": depth -= 1
-            if depth == 0:
-                end_idx = i
-                break
-        if end_idx is not None:
-            break
-    if end_idx is None:
-        return False
-
-    # Check if domain already exists anywhere in the block
-    block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
-        return False
-
-    new_entry = (
-        f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
-        f'    }},'
-    )
-    lines.insert(end_idx, new_entry)
-
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    """Adds a single-domain entry to DOMAIN_RULES. Returns False on invalid
+    input, a duplicate, or a write failure (see rules_patcher.add_domain_rule)."""
+    from .rules_patcher import add_domain_rule
+    return add_domain_rule(domain, label, action).get("success", False)
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────
