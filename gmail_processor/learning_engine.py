@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import rules as cfg
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, find_contact_rule_key
 
 logger = logging.getLogger("gmail_processor.learning")
 
@@ -638,9 +638,7 @@ def _gate_reason(source: str, confidence: float, total: int) -> str:
 
 
 def _is_critical(sender: str, domain: str) -> bool:
-    if sender in cfg.CONTACT_RULES:
-        return True
-    if domain and f"@{domain}" in cfg.CONTACT_RULES:
+    if find_contact_rule_key(sender, domain, cfg.CONTACT_RULES):
         return True
     return any(
         domain in rule["domains"]

@@ -779,7 +779,10 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # repr() safely escapes quotes/backslashes/newlines so `email`/`label`
+    # (which may come from a suggestion derived from a real Gmail header)
+    # can never break out of the string literal and inject code into rules.py.
+    new_entry = f'    {email!r}: {{"label": {label!r}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -851,11 +854,13 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
     if f'"{domain}"' in block_text:
         return False
 
+    # repr() prevents a crafted domain/label/action from breaking out of the
+    # string literal and injecting code into rules.py (see _patch_rules_add_contact).
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{domain!r}],\n'
+        f'        "label": {label!r},\n'
+        f'        "action": {action!r},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)

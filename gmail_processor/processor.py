@@ -2,6 +2,8 @@
 GmailProcessor: orchestrates fetching, classifying, and acting on emails.
 """
 import logging
+import ssl
+from logging.handlers import RotatingFileHandler
 from googleapiclient.errors import HttpError
 
 from .auth import get_service
@@ -15,19 +17,21 @@ from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
 
+_TRANSPORT_ERRORS = (HttpError, ConnectionError, TimeoutError, ssl.SSLError)
+
 
 def setup_logging(
     level: int = logging.INFO,
     log_file: str = "gmail_processor.log",
 ):
-    """Configures logging to both console and a rotating log file."""
+    """Configures logging to both console and a rotating log file (5 MB x 3 backups)."""
     fmt = "%(asctime)s [%(levelname)-8s] %(message)s"
     logging.basicConfig(
         level=level,
         format=fmt,
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_file, encoding="utf-8"),
+            RotatingFileHandler(log_file, maxBytes=5_000_000, backupCount=3, encoding="utf-8"),
         ],
     )
 
@@ -72,7 +76,7 @@ class GmailProcessor:
                     maxResults=cfg.MAX_RESULTS_PER_PAGE,
                     pageToken=page_token,
                 ).execute()
-            except HttpError as e:
+            except _TRANSPORT_ERRORS as e:
                 logger.error(f"Failed to list messages (page {page}): {e}")
                 break
 
@@ -116,7 +120,7 @@ class GmailProcessor:
                 format="metadata",
                 metadataHeaders=["From", "Subject", "Date"],
             ).execute()
-        except HttpError as e:
+        except _TRANSPORT_ERRORS as e:
             logger.error(f"Could not fetch {msg_id}: {e}")
             self.stats["errors"] += 1
             return
