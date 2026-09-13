@@ -11,7 +11,7 @@ import logging
 import re
 import time
 import email.utils
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -119,7 +119,10 @@ def _date_filter(days: int | None) -> str:
 
 def _parse_date(date_str: str) -> datetime | None:
     try:
-        return email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
+        dt = email.utils.parsedate_to_datetime(date_str)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=None)
     except Exception:
         return None
 
@@ -129,7 +132,7 @@ def _default_weights() -> dict[str, float]:
 
 
 def _empty_stats() -> dict:
-    return {"total_scanned": 0, "personal": 0, "spam": 0, "commercial": 0}
+    return {"total_scanned": 0, "personal": 0, "spam": 0}
 
 
 def _empty_state() -> dict:
@@ -702,11 +705,14 @@ class ContactAnalyzer:
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            # repr() safely escapes quotes/backslashes/newlines in both the
+            # address and label so a crafted sender can't break out of the
+            # string literal and inject code into rules.py.
+            new_line = f'    {email_addr!r}: {{"label": {label!r}, "mark_important": True}},'
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path = rules_path.with_suffix(".py.tmp")
+            tmp_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path.replace(rules_path)
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:
@@ -739,9 +745,8 @@ class ContactAnalyzer:
     def _update_stats(self):
         reviewed = self.state["reviewed"]
         stats    = self.state.setdefault("stats", _empty_stats())
-        stats["personal"]   = sum(1 for e in reviewed.values() if e.get("decision") == "personal")
-        stats["spam"]       = sum(1 for e in reviewed.values() if e.get("decision") == "spam")
-        stats["commercial"] = sum(1 for e in reviewed.values() if e.get("decision") == "commercial")
+        stats["personal"] = sum(1 for e in reviewed.values() if e.get("decision") == "personal")
+        stats["spam"]     = sum(1 for e in reviewed.values() if e.get("decision") == "spam")
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ All public methods return True on success, False on failure.
 In dry_run mode they log the intended action and return True without touching the API.
 """
 import json
+import ssl
 import time
 import logging
 from googleapiclient.errors import HttpError
@@ -13,6 +14,7 @@ logger = logging.getLogger("gmail_processor.actions")
 
 _MAX_RETRIES = 3
 _BASE_DELAY  = 1.0   # seconds before first retry (doubles each attempt)
+_TRANSPORT_ERRORS = (ConnectionError, TimeoutError, ssl.SSLError)
 
 
 class GmailActions:
@@ -121,17 +123,23 @@ class GmailActions:
         return result is not None
 
     def _call(self, method, **kwargs):
-        """Executes a Gmail API call with exponential-backoff retry on rate limits."""
+        """Executes a Gmail API call with exponential-backoff retry on rate limits.
+
+        Never raises: every public method's documented contract is "returns
+        True/False (or a value) on success/failure", so any unrecoverable
+        error is logged and swallowed here rather than propagated, which
+        would otherwise abort the whole batch run mid-loop.
+        """
         delay = _BASE_DELAY
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
                 return method(**kwargs).execute()
             except HttpError as e:
                 status = int(e.resp.status)
-                # Hard permission failure — raise immediately (do not retry)
+                # Hard permission failure — give up immediately (do not retry)
                 if status == 403 and _is_permission_error(e):
-                    logger.error(f"Insufficient permissions: {e}")
-                    raise
+                    logger.error(f"Insufficient permissions (missing OAuth scope?): {e}")
+                    return None
                 # Rate limit or transient server error — retry with backoff
                 if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
                     kind = "Rate limit" if status in (403, 429) else "Server error"
@@ -140,6 +148,15 @@ class GmailActions:
                     delay *= 2
                     continue
                 logger.error(f"API error {status} on attempt {attempt}: {e}")
+                return None
+            except _TRANSPORT_ERRORS as e:
+                # Network-level failure (not an HttpError) — retry the same way.
+                if attempt < _MAX_RETRIES:
+                    logger.warning(f"Transport error, retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s: {e}")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                logger.error(f"Transport error on attempt {attempt}: {e}")
                 return None
         return None
 

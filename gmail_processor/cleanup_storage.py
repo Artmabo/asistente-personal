@@ -12,17 +12,20 @@ Decision pipeline per message:
 """
 import json
 import logging
+import ssl
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from googleapiclient.errors import HttpError
+
+_TRANSPORT_ERRORS = (HttpError, ConnectionError, TimeoutError, ssl.SSLError)
 
 _SUMMARY_PATH = Path("cleanup_summary.json")
 
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, find_contact_rule_key
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -100,10 +103,10 @@ class StorageCleaner:
                 result = self.service.users().messages().list(
                     userId="me",
                     q=query,
-                    maxResults=min(100, cap - count),
+                    maxResults=min(500, cap - count),
                     pageToken=page_token,
                 ).execute()
-            except HttpError as e:
+            except _TRANSPORT_ERRORS as e:
                 logger.error(f"  List failed: {e}")
                 break
 
@@ -135,7 +138,7 @@ class StorageCleaner:
                 format="metadata",
                 metadataHeaders=["From", "Subject", "Date"],
             ).execute()
-        except HttpError as e:
+        except _TRANSPORT_ERRORS as e:
             logger.error(f"  Could not fetch {msg_id}: {e}")
             self.stats["errors"] += 1
             return
@@ -217,7 +220,22 @@ class StorageCleaner:
                     )
                 return
 
-        # 3. Trash
+        # 3. No scoring engine — fail safe and skip rather than blind-trash.
+        if not self.engine:
+            logger.warning(
+                f"  [SKIP ] {_s(sender, 38)} | {_s(subject, 44)}\n"
+                f"           Sin motor de scoring habilitado — se omite para evitar borrado ciego."
+            )
+            self.stats["skipped"] += 1
+            if self.audit:
+                self.audit.log(
+                    msg_id=msg_id, sender=email, domain=domain,
+                    score=0.0, decision="SKIP", action="skip",
+                    rule=rule_name, reason="no_scoring_engine",
+                )
+            return
+
+        # 4. Trash
         mode       = "DRY RUN" if cfg.DRY_RUN else "LIVE"
         score_line = ""
         if scored:
@@ -268,10 +286,11 @@ class StorageCleaner:
         email  = _sender_email(message)
         domain = email.split("@")[-1] if "@" in email else ""
 
-        if email in cfg.CONTACT_RULES:
+        contact_key = find_contact_rule_key(email, domain, cfg.CONTACT_RULES)
+        if contact_key == email:
             return f"contacto protegido ({email})"
-        if domain and f"@{domain}" in cfg.CONTACT_RULES:
-            return f"dominio protegido por contacto ({domain})"
+        if contact_key:
+            return f"dominio protegido por contacto ({contact_key})"
         if domain in self._protected_domains:
             return f"dominio protegido ({domain})"
 

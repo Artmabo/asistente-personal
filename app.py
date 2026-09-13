@@ -1984,8 +1984,17 @@ elif _current_page == "automatica":
 
             else:
                 if _sch_status.get("enabled"):
-                    _sch_obj.stop()
-                st.caption("La limpieza automática está desactivada.")
+                    st.warning("El interruptor está apagado. Guarda para confirmar la desactivación.")
+                    if st.button("💾 Guardar (desactivar limpieza automática)", key="btn_disable_sched"):
+                        _sch_obj.stop()
+                        st.session_state["schedule_disabled"] = True
+                        st.rerun()
+                else:
+                    st.caption("La limpieza automática está desactivada.")
+
+                if st.session_state.get("schedule_disabled"):
+                    st.success("Limpieza automática desactivada.")
+                    st.session_state["schedule_disabled"] = False
 
         # ── Próxima limpieza ──────────────────────────────────────────────────
         if _sched_enabled:

@@ -212,7 +212,9 @@ def format_next_run(iso: str | None) -> str:
         return "No programada"
     try:
         dt    = datetime.fromisoformat(iso)
-        now   = datetime.now()
+        # `dt` is timezone-aware (from APScheduler); match `now`'s awareness
+        # so the subtraction below doesn't raise TypeError.
+        now   = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
         delta = dt - now
         if delta.total_seconds() < 0:
             return f"atrasada — {dt.strftime('%d/%m/%Y a las %H:%M')}"
@@ -230,5 +232,6 @@ def format_next_run(iso: str | None) -> str:
             return f"el {dia} a las {dt.strftime('%H:%M')}"
         else:
             return dt.strftime("%d/%m/%Y a las %H:%M")
-    except Exception:
+    except Exception as exc:
+        logger.warning(f"format_next_run: no se pudo formatear '{iso}': {exc}")
         return iso[:16].replace("T", " ") if iso else "—"

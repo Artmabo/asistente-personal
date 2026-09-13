@@ -1,9 +1,18 @@
 import os
+import ssl
 import sys
+import time
 from datetime import datetime, timedelta
 from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+_TRANSPORT_ERRORS = (HttpError, ConnectionError, TimeoutError, ssl.SSLError)
+
+# Delay between Gmail API calls. Conservative (default) stays well under
+# Gmail's per-user rate limits; aggressive is faster but risks 403/429.
+_DELAY_CONSERVATIVE = 0.5
+_DELAY_AGGRESSIVE   = 0.05
 
 CATEGORIAS = {
     "spam":            "in:spam",
@@ -28,10 +37,16 @@ def obtener_servicio(creds_path="config/credentials.json", token_path="token.jso
     return get_service(creds_path=creds_path, token_path=token_path)
 
 
-def mover_lote_a_papelera(service, ids: list) -> int:
-    """Move up to 1000 IDs to trash via batchModify. Returns count successfully sent."""
+def mover_lote_a_papelera(service, ids: list, aggressive: bool = False) -> int:
+    """Move up to 1000 IDs to trash via batchModify. Returns count successfully sent.
+
+    `aggressive=False` (default) adds a short delay between chunks to stay
+    safely under Gmail API rate limits; `aggressive=True` skips the delay
+    for faster runs at a higher risk of 403/429 errors.
+    """
     if not ids:
         return 0
+    delay = _DELAY_AGGRESSIVE if aggressive else _DELAY_CONSERVATIVE
     total = 0
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
@@ -45,12 +60,14 @@ def mover_lote_a_papelera(service, ids: list) -> int:
                 }
             ).execute()
             total += len(chunk)
-        except HttpError as e:
+        except _TRANSPORT_ERRORS as e:
             print(f"  Error en lote ({len(chunk)} mensajes): {e}")
+        if i + 1000 < len(ids):
+            time.sleep(delay)
     return total
 
 
-def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
+def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False, aggressive=False):
     """
     Mueve a la papelera los correos que coincidan con la query o categorías.
 
@@ -59,10 +76,14 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         query_custom: query Gmail directa (se ignora si se pasan categorias)
         categorias:   lista de claves de CATEGORIAS (spam, promociones, etc.)
         dry_run:      si True, sólo cuenta mensajes sin moverlos
+        aggressive:   si True, omite los delays entre llamadas a la API
+                      (más rápido, mayor riesgo de 403/429)
 
     Returns:
         {'procesados': int, 'exitos': int, 'errores': int}
     """
+    delay = _DELAY_AGGRESSIVE if aggressive else _DELAY_CONSERVATIVE
+
     if categorias:
         queries = {cat: CATEGORIAS[cat] for cat in categorias if cat in CATEGORIAS}
     elif query_custom:
@@ -93,7 +114,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
                     maxResults=500,
                     pageToken=page_token,
                 ).execute()
-            except HttpError as e:
+            except _TRANSPORT_ERRORS as e:
                 print(f"  Error al listar página {page_num}: {e}")
                 break
 
@@ -109,7 +130,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
                 exitos = len(ids)
             else:
                 print(f"  Página {page_num}: {len(ids)} correos → enviando a papelera...", end="", flush=True)
-                exitos = mover_lote_a_papelera(service, ids)
+                exitos = mover_lote_a_papelera(service, ids, aggressive=aggressive)
                 print(f" {exitos} movidos.")
             cat_total += len(ids)
             cat_exitos += exitos
@@ -117,6 +138,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
             page_token = result.get('nextPageToken')
             if not page_token:
                 break
+            time.sleep(delay)
 
         if len(queries) > 1:
             nombre_es = _NOMBRES_ES.get(nombre, nombre)
@@ -133,7 +155,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     }
 
 
-def limpiar_todo_basura(service) -> dict:
+def limpiar_todo_basura(service, aggressive: bool = False) -> dict:
     """Limpia spam + promociones + social + actualizaciones + foros en secuencia."""
     resultados = {}
     total_p = 0
@@ -142,7 +164,7 @@ def limpiar_todo_basura(service) -> dict:
     for cat in CATEGORIAS:
         print(f"\n  {'─'*44}")
         print(f"  {_NOMBRES_ES[cat].upper()}")
-        r = limpiar_bandeja(service, categorias=[cat])
+        r = limpiar_bandeja(service, categorias=[cat], aggressive=aggressive)
         resultados[cat] = r
         total_p += r['procesados']
         total_e += r['exitos']
@@ -169,7 +191,7 @@ def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False
     q = f"before:{fecha}"
     if solo_no_leidos:
         q += " is:unread"
-    return limpiar_bandeja(service, query_custom=q)
+    return limpiar_bandeja(service, query_custom=q, aggressive=aggressive)
 
 
 def borrar_correos_antiguos(service=None):
