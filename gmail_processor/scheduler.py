@@ -140,7 +140,7 @@ class CleanupScheduler:
             from .learning_engine import LearningEngine
             from .audit_log import AuditLogger
 
-            service = get_service()
+            service = get_service(interactive=False)
             actions = GmailActions(service, dry_run=False)
             engine  = LearningEngine()
             audit   = AuditLogger()

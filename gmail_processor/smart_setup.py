@@ -51,7 +51,9 @@ TOP_DOMAINS   = 8     # max domain suggestions
 MIN_SCORE     = 35    # must clear this threshold to appear as suggestion
 MIN_MESSAGES  = 2     # min emails received from sender
 
-_BATCH_SLEEP  = 0.2   # seconds between list-pagination calls (rate-limit headroom)
+_BATCH_SLEEP      = 0.2   # seconds between list-pagination calls (rate-limit headroom)
+_BATCH_SIZE       = 100   # messages per batched metadata HTTP request
+_BATCH_MAX_RETRIES = 3    # retries for a failed batch before giving up on that chunk
 
 # ── Scoring weights ───────────────────────────────────────────────────────────
 W_REPLY           = 25    # per thread where user replied
@@ -359,8 +361,9 @@ class SmartSetup:
     def _fetch_and_process(
         self, query, sent_threads, senders, progress_cb, phase
     ):
-        """Paginate a Gmail query, fetch metadata per message, and ingest signals.
-        Sleeps _BATCH_SLEEP seconds between list pages to stay within rate limits."""
+        """Paginate a Gmail query, fetch metadata via batched HTTP requests, and
+        ingest signals. Sleeps _BATCH_SLEEP seconds between list pages to stay
+        within rate limits."""
         page_token = None
         fetched    = 0
         page       = 0
@@ -380,17 +383,12 @@ class SmartSetup:
             if not stubs:
                 break
 
-            for stub in stubs:
-                try:
-                    msg = self.service.users().messages().get(
-                        userId="me", id=stub["id"],
-                        format="metadata", metadataHeaders=["From"],
-                    ).execute()
-                except HttpError:
-                    fetched += 1
-                    continue
-                self._ingest(msg, sent_threads, senders)
-                fetched += 1
+            for i in range(0, len(stubs), _BATCH_SIZE):
+                chunk    = stubs[i:i + _BATCH_SIZE]
+                messages = self._batch_get_metadata(chunk)
+                for msg in messages:
+                    self._ingest(msg, sent_threads, senders)
+                fetched += len(chunk)
 
             page += 1
             if progress_cb:
@@ -403,6 +401,44 @@ class SmartSetup:
             time.sleep(_BATCH_SLEEP)
 
         logger.debug(f"Fase '{phase}': {fetched} mensajes en {page} páginas")
+
+    def _batch_get_metadata(self, stubs: list[dict]) -> list[dict]:
+        """Fetches metadata for up to _BATCH_SIZE messages in one HTTP batch
+        request instead of one sequential request per message — the same
+        pattern StorageAnalyzer uses for its size sampling. Retries the whole
+        batch with backoff on transient failures instead of silently dropping
+        the page."""
+        messages: list[dict] = []
+
+        def _on_response(_request_id, response, exception):
+            if exception is None and response is not None:
+                messages.append(response)
+
+        delay = _BATCH_SLEEP
+        for attempt in range(1, _BATCH_MAX_RETRIES + 1):
+            messages.clear()
+            batch = self.service.new_batch_http_request(callback=_on_response)
+            for stub in stubs:
+                batch.add(self.service.users().messages().get(
+                    userId="me", id=stub["id"],
+                    format="metadata", metadataHeaders=["From"],
+                ))
+            try:
+                batch.execute()
+                return messages
+            except HttpError as e:
+                status = getattr(getattr(e, "resp", None), "status", None)
+                if status in (429, 500, 503) and attempt < _BATCH_MAX_RETRIES:
+                    logger.warning(
+                        f"Batch metadata fetch failed ({status}), "
+                        f"retry {attempt}/{_BATCH_MAX_RETRIES} in {delay:.1f}s"
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                logger.warning(f"Batch metadata fetch failed permanently: {e}")
+                return []
+        return []
 
     def _ingest(self, message, sent_threads, senders):
         headers   = message.get("payload", {}).get("headers", [])
