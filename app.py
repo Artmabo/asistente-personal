@@ -282,7 +282,8 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
         lines   = content.split("\n")
 
         in_cr     = False
@@ -305,9 +306,19 @@ def _proteger_remitente(email: str, name: str) -> dict:
         # Use repr() so quotes, backslashes and special chars are safely escaped
         new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
         lines.insert(insert_at, new_line)
+        new_content = "\n".join(lines)
+
+        # Validate before writing — an unbalanced brace in a comment
+        # elsewhere in the file could throw off the insert point above and
+        # silently corrupt rules.py otherwise.
+        import ast
+        try:
+            ast.parse(new_content, filename=rules_path)
+        except SyntaxError as exc:
+            return {"error": f"rules.py generado sería inválido, se abortó: {exc}"}
 
         with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+            f.write(new_content)
 
         importlib.reload(rules_mod)
         return {"success": True, "email": email, "label": label}

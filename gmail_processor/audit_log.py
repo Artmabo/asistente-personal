@@ -68,9 +68,11 @@ class AuditLogger:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             for entry in combined:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp_path.replace(self.path)
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 
@@ -103,7 +105,7 @@ class AuditLogger:
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(entries)
+        writer.writerows(_neutralize_csv_row(e) for e in entries)
         return buf.getvalue()
 
     # ── Private ───────────────────────────────────────────────────────────────
@@ -113,8 +115,8 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                return list(_parse_jsonl_lines(f))
+        except OSError:
             return []
 
     def _load_tail(self, n: int) -> list[dict]:
@@ -127,6 +129,36 @@ class AuditLogger:
                     (ln for ln in f if ln.strip()),
                     maxlen=n,
                 )
-            return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+            return list(_parse_jsonl_lines(tail))
+        except OSError:
             return []
+
+
+# ── Module-level helpers ─────────────────────────────────────────────────────
+
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _neutralize_csv_row(entry: dict) -> dict:
+    """Prefixes fields that start with a formula trigger char with a tab so
+    spreadsheet apps (Excel/Sheets) never interpret sender/domain-derived
+    values — which come verbatim from attacker-controlled email headers — as
+    formulas."""
+    safe = dict(entry)
+    for field in ("sender", "domain", "reason", "rule"):
+        value = safe.get(field)
+        if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+            safe[field] = "\t" + value
+    return safe
+
+
+def _parse_jsonl_lines(lines):
+    """Parses each non-blank line as JSON, skipping (and logging) any single
+    corrupted line instead of discarding the whole file."""
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            logger.warning("Audit: skipping corrupted log line")

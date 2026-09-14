@@ -47,6 +47,11 @@ def mover_lote_a_papelera(service, ids: list) -> int:
             total += len(chunk)
         except HttpError as e:
             print(f"  Error en lote ({len(chunk)} mensajes): {e}")
+        except OSError as e:
+            # Transport-level failures (SSL errors, connection reset, socket
+            # timeout) aren't HttpError — catch them too so one bad chunk
+            # doesn't abort the whole multi-page cleanup run.
+            print(f"  Error de red en lote ({len(chunk)} mensajes): {e}")
     return total
 
 

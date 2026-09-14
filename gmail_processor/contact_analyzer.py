@@ -352,10 +352,12 @@ class ContactAnalyzer:
                 "decided_at": datetime.now().isoformat(timespec="seconds"),
             }
 
+            succeeded = True
             if decision == "personal":
                 r = self._write_contact_rule(addr, meta.get("name", ""))
                 if "error" in r and not r.get("already_protected"):
                     errors.append(f"{addr}: {r['error']}")
+                    succeeded = False
                 else:
                     protected += 1
             elif decision == "spam":
@@ -365,12 +367,18 @@ class ContactAnalyzer:
                     trashed_msgs    += n
                 else:
                     errors.append(f"{addr}: error al mover a papelera")
+                    succeeded = False
+
+            if not succeeded:
+                # Action failed — leave the address pending so it gets retried
+                # instead of being silently dropped as if it had been handled.
+                continue
 
             reviewed[addr] = entry
             pending_set.discard(addr)
             pending_meta.pop(addr, None)
 
-            # Aprender de esta decisión
+            # Aprender de esta decisión (solo si la acción se aplicó de verdad)
             self.learn_from_decision(addr, domain, decision, score, signals)
 
         self.state["pending"]      = list(pending_set)
@@ -706,7 +714,20 @@ class ContactAnalyzer:
             safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
             new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+            new_content = "\n".join(lines)
+
+            # Validate the rewritten file is syntactically valid *before*
+            # touching disk — the brace-counting insert-point search above
+            # can be thrown off by an unbalanced brace in a comment/value
+            # elsewhere in the file, which would otherwise silently corrupt
+            # rules.py (breaking every subsequent import of the module).
+            import ast
+            try:
+                ast.parse(new_content, filename=str(rules_path))
+            except SyntaxError as exc:
+                return {"error": f"generated rules.py would be invalid, aborted: {exc}"}
+
+            rules_path.write_text(new_content, encoding="utf-8")
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:

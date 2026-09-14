@@ -7,6 +7,7 @@ Entry point: run_menu()
 """
 import os
 import sys
+import json
 import logging
 import importlib
 from pathlib import Path
@@ -751,6 +752,25 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _write_rules_py(rules_path: Path, new_content: str) -> bool:
+    """Validates `new_content` parses as Python before writing it over rules.py.
+
+    An insert-point search thrown off by an unbalanced brace elsewhere in the
+    file (e.g. inside a comment) would otherwise silently corrupt rules.py,
+    breaking every subsequent import of the module.
+    """
+    import ast
+    try:
+        ast.parse(new_content, filename=str(rules_path))
+    except SyntaxError:
+        return False
+    try:
+        rules_path.write_text(new_content, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     rules_path = Path(__file__).parent / "rules.py"
     try:
@@ -774,19 +794,18 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     if end_idx is None:
         return False
 
+    email_literal = json.dumps(email)
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email_literal in line and not line.strip().startswith("#"):
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    # json.dumps() escapes embedded quotes/backslashes so the generated line
+    # is always a valid Python string literal, never a syntax/injection risk.
+    new_entry = f'    {email_literal}: {{"label": {json.dumps(label)}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_py(rules_path, "\n".join(lines) + "\n")
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
@@ -796,10 +815,11 @@ def _patch_rules_remove_contact(email: str) -> bool:
     except OSError:
         return False
 
+    email_literal = json.dumps(email)
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email_literal in line and not line.strip().startswith("#"):
             removed = True
             continue
         new_lines.append(line)
@@ -807,11 +827,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
     if not removed:
         return False
 
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_py(rules_path, "\n".join(new_lines) + "\n")
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
@@ -848,23 +864,21 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if json.dumps(domain) in block_text:
         return False
 
+    # json.dumps() escapes embedded quotes/backslashes so the generated block
+    # is always a valid Python literal, never a syntax/injection risk.
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{json.dumps(domain)}],\n'
+        f'        "label": {json.dumps(label)},\n'
+        f'        "action": {json.dumps(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_py(rules_path, "\n".join(lines) + "\n")
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────

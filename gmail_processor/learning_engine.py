@@ -275,7 +275,9 @@ class LearningEngine:
             score += 50; factors.append(f"+50 contacto protegido ({email})")
 
         # ── Sender model (decay_lambda = DECAY_LAMBDA_SENDER) ─────────────────
-        s_entry = self.state["sender_model"].get(email, {})
+        # Messages whose From header can't be parsed share an empty-string key;
+        # skip the lookup so their feedback never leaks into unrelated senders.
+        s_entry = self.state["sender_model"].get(email, {}) if email else {}
         raw_s   = s_entry.get("adjustment", 0.0)
         if raw_s:
             d       = _decay(s_entry.get("last_accepted", ""), DECAY_LAMBDA_SENDER)
@@ -287,7 +289,7 @@ class LearningEngine:
                 factors.append(f"{_fmt(s_adj)} sender_model{note} ({email})")
 
         # ── Domain model (decay_lambda = DECAY_LAMBDA_DOMAIN) ─────────────────
-        d_entry = self.state["domain_model"].get(domain, {})
+        d_entry = self.state["domain_model"].get(domain, {}) if domain else {}
         raw_d   = d_entry.get("adjustment", 0.0)
         if raw_d:
             dcy     = _decay(d_entry.get("last_accepted", ""), DECAY_LAMBDA_DOMAIN)
@@ -319,6 +321,10 @@ class LearningEngine:
         """Processes a FeedbackEvent through the confidence gate and drift control."""
         if event.outcome not in ("correct", "incorrect"):
             raise ValueError(f"outcome must be 'correct'/'incorrect', got {event.outcome!r}")
+        if not sender:
+            # No parseable sender address — there's nothing to key the model on,
+            # and writing to the "" bucket would mix unrelated messages together.
+            raise ValueError("sender must be a non-empty email address")
 
         # 1. Critical-entity protection (block negative feedback on protected entities)
         if event.outcome == "correct" and _is_critical(sender, domain):
@@ -327,6 +333,8 @@ class LearningEngine:
                       else f"dominio crítico ({domain})")
             for bucket, key in [(self.state["sender_model"], sender),
                                  (self.state["domain_model"],  domain)]:
+                if not key:
+                    continue
                 entry = bucket.setdefault(key, _new_model_entry())
                 entry["ignored_correct"] += 1
             self._dirty = True
@@ -357,6 +365,8 @@ class LearningEngine:
             ign_key = "ignored_correct" if event.outcome == "correct" else "ignored_incorrect"
             for bucket, key in [(self.state["sender_model"], sender),
                                  (self.state["domain_model"],  domain)]:
+                if not key:
+                    continue
                 bucket.setdefault(key, _new_model_entry())[ign_key] += 1
             self._dirty = True
             return FeedbackResult(
@@ -384,6 +394,9 @@ class LearningEngine:
             (self.state["sender_model"], sender, "sender"),
             (self.state["domain_model"], domain, "domain"),
         ]:
+            if not key:
+                # Empty domain (address had no "@") — nothing meaningful to key on.
+                continue
             entry    = bucket.setdefault(key, _new_model_entry())
             old_adj  = entry["adjustment"]
 
