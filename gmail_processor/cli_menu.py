@@ -276,22 +276,10 @@ def _menu_audit():
 
     from .processor import setup_logging
     setup_logging(level=logging.WARNING)
-    from .audit_log import AuditLogger, MAX_ENTRIES
+    from .audit_log import AuditLogger
     audit = AuditLogger()
 
-    if decision_filter:
-        # The filtered decision may be sparse in the log, so keep widening the
-        # fetch window until we have enough matches or run out of entries.
-        fetch_n = max(n * 3, 200)
-        while True:
-            entries = [e for e in audit.recent(fetch_n) if e.get("decision") == decision_filter]
-            if len(entries) >= n or fetch_n >= MAX_ENTRIES:
-                break
-            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
-    else:
-        entries = audit.recent(n)
-
-    entries = entries[-n:]
+    entries = audit.recent_filtered(n, decision_filter)
 
     print()
     if not entries:
