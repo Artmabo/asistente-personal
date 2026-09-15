@@ -237,82 +237,14 @@ def _limpiar_remitente(email: str) -> dict | None:
         return None
 
 
-_FREE_EMAIL_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
-
-
-def _derivar_label(email: str, name: str) -> str:
-    words = name.strip().split()
-    if words:
-        clean = "".join(c for c in words[0] if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email.split("@")[-1] if "@" in email else ""
-    local  = email.split("@")[0]  if "@" in email else email
-    if domain in _FREE_EMAIL_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
-
-
 def _proteger_remitente(email: str, name: str) -> dict:
     import re
     if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
         return {"error": f"Dirección de correo no válida: {email}"}
 
-    try:
-        import importlib
-        import gmail_processor.rules as rules_mod
-
-        if email in rules_mod.CONTACT_RULES:
-            return {"already_protected": True}
-
-        label      = _derivar_label(email, name)
-        rules_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "gmail_processor", "rules.py",
-        )
-
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
-
-        in_cr     = False
-        depth     = 0
-        insert_at = -1
-        for i, line in enumerate(lines):
-            if not in_cr:
-                if "CONTACT_RULES" in line and "=" in line and "{" in line:
-                    in_cr = True
-                    depth = line.count("{") - line.count("}")
-            else:
-                depth += line.count("{") - line.count("}")
-                if depth <= 0:
-                    insert_at = i
-                    break
-
-        if insert_at == -1:
-            return {"error": "No se encontró CONTACT_RULES en rules.py"}
-
-        # Use repr() so quotes, backslashes and special chars are safely escaped
-        new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
-        lines.insert(insert_at, new_line)
-
-        with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-
-        importlib.reload(rules_mod)
-        return {"success": True, "email": email, "label": label}
-    except Exception as exc:
-        return {"error": str(exc)}
+    from gmail_processor.utils import add_contact_rule, derive_label
+    label = derive_label(email, name)
+    return add_contact_rule(email, label, mark_important=True)
 
 
 # ── Helpers: panel avanzado ────────────────────────────────────────────────────
@@ -334,18 +266,8 @@ def _cargar_stats() -> dict:
 
 def _cargar_audit(last: int, decision: str | None) -> list[dict]:
     try:
-        from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
-        audit = AuditLogger()
-        if not decision:
-            return audit.recent(last)
-        # The requested decision may be sparse, so widen the fetch window
-        # until there are enough matches (or the whole log has been read).
-        fetch_n = max(last * 3, 200)
-        while True:
-            entries = [e for e in audit.recent(fetch_n) if e.get("decision") == decision]
-            if len(entries) >= last or fetch_n >= MAX_ENTRIES:
-                return entries[-last:]
-            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
+        from gmail_processor.audit_log import AuditLogger
+        return AuditLogger().recent_filtered(last, decision)
     except Exception as exc:
         st.error(f"Error al cargar audit log: {exc}")
         return []

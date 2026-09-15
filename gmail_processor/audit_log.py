@@ -82,6 +82,22 @@ class AuditLogger:
         persisted = self._load_tail(n - len(buf_entries))
         return (persisted + self._buf)[-n:]
 
+    def recent_filtered(self, n: int, decision: str | None = None) -> list[dict]:
+        """Returns the n most recent entries, optionally filtered by decision.
+
+        A requested decision may be sparse in the log, so when filtering this
+        widens the fetch window (3x, then 4x per retry) until there are enough
+        matches or the whole log (MAX_ENTRIES) has been read.
+        """
+        if not decision:
+            return self.recent(n)
+        fetch_n = max(n * 3, 200)
+        while True:
+            entries = [e for e in self.recent(fetch_n) if e.get("decision") == decision]
+            if len(entries) >= n or fetch_n >= MAX_ENTRIES:
+                return entries[-n:]
+            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
+
     def stats_summary(self) -> dict:
         """Counts decisions from the persisted log."""
         counts: dict[str, int] = {"TRASH": 0, "KEEP": 0, "SKIP": 0}
