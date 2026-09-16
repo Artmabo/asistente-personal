@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import extract_display_name, get_api_key, get_header
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -191,10 +191,15 @@ class ContactProfiler:
             "pre_type":      pre_type,
         })
 
+        _VALID_RELATION_TYPES = {"familiar", "trabajo", "servicio", "gobierno", "otro"}
+        relation_type = claude_result.get("relation_type", "otro")
+        if relation_type not in _VALID_RELATION_TYPES:
+            relation_type = "otro"
+
         return {
             "email":         addr,
             "name":          name or claude_result.get("name", addr),
-            "relation_type": claude_result.get("relation_type", "otro"),
+            "relation_type": relation_type,
             "summary":       claude_result.get("summary", ""),
             "first_contact": first_contact.strftime("%Y-%m-%d") if first_contact else "",
             "last_contact":  last_contact.strftime("%Y-%m-%d")  if last_contact  else "",
@@ -239,16 +244,10 @@ class ContactProfiler:
         headers  = payload.get("headers", [])
 
         def hdr(name: str) -> str:
-            nl = name.lower()
-            for h in headers:
-                if h.get("name", "").lower() == nl:
-                    return h.get("value", "")
-            return ""
+            return get_header(headers, name)
 
         from_raw   = hdr("From")
-        from_name  = ""
-        if "<" in from_raw:
-            from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
+        from_name  = extract_display_name(from_raw)
 
         date_str    = hdr("Date")
         date_parsed = None

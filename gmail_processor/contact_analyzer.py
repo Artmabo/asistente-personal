@@ -203,27 +203,21 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
-            for stub in stubs:
-                if scanned >= batch_size:
-                    break
-                scanned += 1
-                try:
-                    msg = self.svc.users().messages().get(
-                        userId="me",
-                        id=stub["id"],
-                        format="metadata",
-                        metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
-                    ).execute()
-                except HttpError:
-                    continue
+            stubs = stubs[:max(0, batch_size - scanned)]
 
-                headers        = msg.get("payload", {}).get("headers", [])
-                addr, name     = _parse_from(get_header(headers, "From"))
+            def _on_response(_request_id, response, exception):
+                nonlocal scanned
+                scanned += 1
+                if exception is not None or response is None:
+                    return
+
+                headers    = response.get("payload", {}).get("headers", [])
+                addr, name = _parse_from(get_header(headers, "From"))
                 if not addr:
-                    continue
+                    return
 
                 if addr in reviewed or addr in pending_set:
-                    continue
+                    return
 
                 subject   = get_header(headers, "Subject")
                 date_hdr  = get_header(headers, "Date")
@@ -246,6 +240,20 @@ class ContactAnalyzer:
                     w["dates"].append(date_hdr)
                 w["has_unsub"] = w["has_unsub"] or has_unsub
                 w["count"]    += 1
+
+            for i in range(0, len(stubs), 100):
+                batch = self.svc.new_batch_http_request(callback=_on_response)
+                for stub in stubs[i:i + 100]:
+                    batch.add(self.svc.users().messages().get(
+                        userId="me",
+                        id=stub["id"],
+                        format="metadata",
+                        metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
+                    ))
+                try:
+                    batch.execute()
+                except HttpError as e:
+                    logger.warning(f"Error en batch de inbox (página {page}): {e}")
 
             # Persist running count so scan is resumable
             self.state["stats"]["total_scanned"] = (
@@ -603,24 +611,31 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
-            for stub in stubs:
-                if fetched >= _MAX_SENT_INDEXED:
-                    break
-                try:
-                    msg = self.svc.users().messages().get(
-                        userId="me", id=stub["id"],
-                        format="metadata", metadataHeaders=["To", "Cc"],
-                    ).execute()
-                    headers = msg.get("payload", {}).get("headers", [])
+            stubs = stubs[:max(0, _MAX_SENT_INDEXED - fetched)]
+
+            def _on_response(_request_id, response, exception):
+                nonlocal fetched
+                if exception is None and response is not None:
+                    headers = response.get("payload", {}).get("headers", [])
                     for hname in ("To", "Cc"):
                         raw = get_header(headers, hname)
                         if raw:
                             for _, a in email.utils.getaddresses([raw]):
                                 if a:
                                     addrs.add(a.strip().lower())
-                except HttpError:
-                    pass
                 fetched += 1
+
+            for i in range(0, len(stubs), 100):
+                batch = self.svc.new_batch_http_request(callback=_on_response)
+                for stub in stubs[i:i + 100]:
+                    batch.add(self.svc.users().messages().get(
+                        userId="me", id=stub["id"],
+                        format="metadata", metadataHeaders=["To", "Cc"],
+                    ))
+                try:
+                    batch.execute()
+                except HttpError as e:
+                    logger.warning(f"Error en batch de enviados (página {page}): {e}")
 
             if progress_cb:
                 progress_cb(
@@ -758,9 +773,9 @@ def _atomic_write(path: Path, data: dict) -> None:
 
 
 def _derive_label(email_addr: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
+    words = name.strip().split()
+    if words:
+        clean = "".join(c for c in words[0] if c.isalpha())[:10]
         if clean:
             return clean.upper()
     domain = email_addr.split("@")[-1] if "@" in email_addr else ""

@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, extract_display_name
 
 logger = logging.getLogger("gmail_processor.smart_setup")
 
@@ -359,8 +359,10 @@ class SmartSetup:
     def _fetch_and_process(
         self, query, sent_threads, senders, progress_cb, phase
     ):
-        """Paginate a Gmail query, fetch metadata per message, and ingest signals.
-        Sleeps _BATCH_SLEEP seconds between list pages to stay within rate limits."""
+        """Paginate a Gmail query, fetch metadata per message via batched HTTP
+        requests (up to 100 per round trip instead of one call per message),
+        and ingest signals. Sleeps _BATCH_SLEEP seconds between list pages to
+        stay within rate limits."""
         page_token = None
         fetched    = 0
         page       = 0
@@ -380,17 +382,23 @@ class SmartSetup:
             if not stubs:
                 break
 
-            for stub in stubs:
-                try:
-                    msg = self.service.users().messages().get(
+            def _on_response(_request_id, response, exception):
+                nonlocal fetched
+                if exception is None and response is not None:
+                    self._ingest(response, sent_threads, senders)
+                fetched += 1
+
+            for i in range(0, len(stubs), 100):
+                batch = self.service.new_batch_http_request(callback=_on_response)
+                for stub in stubs[i:i + 100]:
+                    batch.add(self.service.users().messages().get(
                         userId="me", id=stub["id"],
                         format="metadata", metadataHeaders=["From"],
-                    ).execute()
-                except HttpError:
-                    fetched += 1
-                    continue
-                self._ingest(msg, sent_threads, senders)
-                fetched += 1
+                    ))
+                try:
+                    batch.execute()
+                except HttpError as e:
+                    logger.warning(f"Error en batch (fase {phase}): {e}")
 
             page += 1
             if progress_cb:
@@ -573,7 +581,4 @@ def _is_definitely_automated(email: str) -> bool:
 # ── Header helpers ────────────────────────────────────────────────────────────
 
 def _extract_name(headers: list[dict]) -> str:
-    raw = get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[0].strip().strip('"').strip("'")
-    return ""
+    return extract_display_name(get_header(headers, "From"))
