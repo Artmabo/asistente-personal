@@ -1,6 +1,7 @@
 """
 Shared utilities for gmail_processor modules.
 """
+import email.utils
 import os
 
 
@@ -37,3 +38,16 @@ def extract_email_address(raw: str) -> str:
         if end > start:
             return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
+
+
+def extract_display_name(raw: str) -> str:
+    """Extracts the display name from a raw From/To header value.
+
+    Uses email.utils.parseaddr so a name containing its own angle brackets,
+    e.g. '"Jane <J> Doe" <jane@example.com>', is not truncated at the first
+    '<' the way a naive raw.split("<")[0] would truncate it.
+    """
+    if not raw:
+        return ""
+    name, _addr = email.utils.parseaddr(raw)
+    return name.strip().strip('"').strip("'")

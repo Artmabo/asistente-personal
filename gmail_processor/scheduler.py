@@ -14,6 +14,16 @@ logger = logging.getLogger("gmail_processor.scheduler")
 
 _CONFIG_PATH = Path("cleanup_schedule.json")
 
+# Maps the UI's cleanup-category keys to CLEANUP_RULES target "rule" names
+# (gmail_processor/rules.py). "spam" has no matching scheduled target today —
+# spam cleanup is only available via the manual "Limpiar spam" menu action.
+_CATEGORY_TO_RULE = {
+    "promociones":     "promotions_60d",
+    "social":          "social_90d",
+    "actualizaciones": "updates_90d",
+    "foros":           "forums_90d",
+}
+
 _DAYS_ES = {
     "monday":    "lunes",
     "tuesday":   "martes",
@@ -145,7 +155,14 @@ class CleanupScheduler:
             engine  = LearningEngine()
             audit   = AuditLogger()
             cleaner = StorageCleaner(service, actions, engine=engine, audit=audit)
-            result  = cleaner.run()
+
+            selected_categories = self.config.get("categories") or []
+            only_rules = {
+                _CATEGORY_TO_RULE[cat]
+                for cat in selected_categories
+                if cat in _CATEGORY_TO_RULE
+            }
+            result = cleaner.run(only_rules=only_rules)
         except Exception as exc:
             result = {"error": str(exc)}
             logger.error(f"Error en limpieza automática: {exc}")

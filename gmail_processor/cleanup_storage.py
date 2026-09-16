@@ -51,8 +51,16 @@ class StorageCleaner:
             "errors":   0,
         }
 
-    def run(self) -> dict:
+    def run(self, only_rules: Optional[set[str]] = None) -> dict:
+        """Runs the cleanup pipeline.
+
+        `only_rules`, when given, restricts execution to the CLEANUP_RULES
+        targets whose "rule" name is in the set (e.g. the categories the
+        user opted into for scheduled cleanup). None runs every target.
+        """
         targets = cfg.CLEANUP_RULES.get("targets", [])
+        if only_rules is not None:
+            targets = [t for t in targets if t["rule"] in only_rules]
         max_per = cfg.CLEANUP_RULES.get("max_per_query", 200)
         mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
         scoring = "activo" if self.engine else "inactivo"

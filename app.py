@@ -42,6 +42,7 @@ st.session_state.setdefault("ca_batch_result",    None)
 st.session_state.setdefault("ca_apply_result",    None)
 st.session_state.setdefault("ca_decisions",       {})
 st.session_state.setdefault("ca_running",         False)
+st.session_state.setdefault("ca_unsub_candidates", None)
 st.session_state.setdefault("storage_data",       None)
 st.session_state.setdefault("cleanup_size_data",  None)
 st.session_state.setdefault("schedule_saved",     False)
@@ -523,6 +524,15 @@ def _ca_learning_summary() -> dict:
     return a.get_learning_stats()
 
 
+def _ca_unsubscribe_candidates(max_results: int = 20) -> list[dict]:
+    """Senders with an unsubscribe link and a low personal-interaction score —
+    good candidates for the user to unsubscribe from or mark as spam."""
+    try:
+        return _ca_get_analyzer().get_unsubscribe_candidates(max_results=max_results)
+    except Exception:
+        return []
+
+
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
 
 def _cargar_storage_summary() -> dict:
@@ -734,7 +744,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_rel_names.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1334,7 +1344,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_rel_names.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
@@ -1637,6 +1647,43 @@ elif _current_page == "analizar":
                     f"{_cb_ap + _cb_as} clasificados automáticamente · "
                     f"**{_cb_pd} para revisar**"
                 )
+
+        # ── Sugerencias para darte de baja ──────────────────────────────────
+        st.markdown("")
+        with st.expander("📬 Sugerencias para darte de baja"):
+            st.caption(
+                "Remitentes con enlace de baja (unsubscribe) y poca interacción "
+                "personal — buenos candidatos para dejar de recibir."
+            )
+            if st.button("🔍 Buscar candidatos", key="btn_ca_unsub_scan"):
+                with st.spinner("Buscando…"):
+                    st.session_state["ca_unsub_candidates"] = _ca_unsubscribe_candidates()
+                st.rerun()
+
+            _unsub_candidates = st.session_state.get("ca_unsub_candidates")
+            if _unsub_candidates is not None:
+                if not _unsub_candidates:
+                    st.caption("No se encontraron candidatos por ahora.")
+                for _uc in _unsub_candidates:
+                    _uc_addr = _uc["email"]
+                    _uc_col1, _uc_col2 = st.columns([4, 1])
+                    with _uc_col1:
+                        st.markdown(f"**{_uc.get('name') or _uc_addr}**  ·  {_uc_addr}")
+                        _uc_subjects = _uc.get("sample_subjects") or []
+                        if _uc_subjects:
+                            st.caption(" · ".join(_uc_subjects[:2]))
+                        st.caption(f"{_uc.get('count', 0)} correos · score {_uc.get('score', 0)}")
+                    with _uc_col2:
+                        if st.button("🗑️ Marcar como spam", key=f"btn_ca_unsub_{_uc_addr}"):
+                            with st.spinner("Aplicando…"):
+                                _uc_result = _ca_apply({_uc_addr: "spam"})
+                            if "error" in _uc_result:
+                                st.error(f"Error: {_uc_result['error']}")
+                            else:
+                                st.session_state["ca_unsub_candidates"] = [
+                                    c for c in _unsub_candidates if c["email"] != _uc_addr
+                                ]
+                                st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PÁGINA: LIMPIAR CORREOS
