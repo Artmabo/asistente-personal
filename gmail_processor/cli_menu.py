@@ -751,7 +751,21 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
+def _escape_py_str(value: str) -> str:
+    """Escapes backslashes and double quotes so `value` is safe to splice into
+    a double-quoted Python string literal.
+
+    Without this, a sender address or label containing a stray `"` (legal in
+    an RFC 5322 quoted-local-part, e.g. from an attacker-crafted From header)
+    would break out of the string literal being written into rules.py, which
+    is then re-imported via importlib.reload() — turning a data value into
+    executable code.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    email = email.strip().lower()
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -774,12 +788,14 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     if end_idx is None:
         return False
 
+    safe_email = _escape_py_str(email)
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if f'"{safe_email}"' in line and not line.strip().startswith("#"):
             return False  # already exists
 
+    safe_label    = _escape_py_str(label)
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f'    "{safe_email}": {{"label": "{safe_label}", "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -790,16 +806,18 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
+    email = email.strip().lower()
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return False
 
+    safe_email = _escape_py_str(email)
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if f'"{safe_email}"' in line and not line.strip().startswith("#"):
             removed = True
             continue
         new_lines.append(line)
@@ -816,6 +834,7 @@ def _patch_rules_remove_contact(email: str) -> bool:
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    domain = domain.strip().lower()
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -846,16 +865,19 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
     if end_idx is None:
         return False
 
+    safe_domain = _escape_py_str(domain)
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if f'"{safe_domain}"' in block_text:
         return False
 
+    safe_label  = _escape_py_str(label)
+    safe_action = _escape_py_str(action)
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": ["{safe_domain}"],\n'
+        f'        "label": "{safe_label}",\n'
+        f'        "action": "{safe_action}",\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
@@ -949,6 +971,8 @@ def _resumen_limpieza(r: dict):
     print(f"  {'─'*36}")
     print(f"  Correos encontrados : {r['procesados']}")
     print(f"  Movidos a papelera  : {r['exitos']}")
+    if r.get('protegidos'):
+        print(f"  Protegidos (omitidos): {r['protegidos']}")
     if r.get('errores'):
         print(f"  Con error           : {r['errores']}")
     print(f"  {'─'*36}")
