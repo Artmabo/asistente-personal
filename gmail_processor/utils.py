@@ -36,4 +36,48 @@ def extract_email_address(raw: str) -> str:
         end   = raw.find(">", start)
         if end > start:
             return raw[start + 1 : end].strip().lower()
+        return ""  # Unmatched '<' — malformed header, not a usable address
     return raw.strip().lower()
+
+
+def build_protected_domains(domain_rules: list[dict]) -> frozenset[str]:
+    """Returns sender domains that DOMAIN_RULES marks as `mark_important`.
+
+    Shared by every module that must never trash mail from these domains
+    (StorageCleaner, the quick-cleanup script, the classifier).
+    """
+    protected: set[str] = set()
+    for rule in domain_rules:
+        if rule.get("action") == "mark_important":
+            protected.update(rule["domains"])
+    return frozenset(protected)
+
+
+def protection_reason(
+    email: str,
+    domain: str,
+    label_ids: list[str],
+    contact_rules: dict,
+    protected_domains: frozenset[str],
+    safe_domains: frozenset[str] = frozenset(),
+) -> str | None:
+    """Returns a human-readable reason `email` must never be trashed, or None.
+
+    Single source of truth for "hard protection" so every trash/cleanup path
+    (StorageCleaner, limpiar_correos.py, cli_menu quick actions) agrees on
+    which messages are off-limits — regardless of which Gmail category or
+    query surfaced them.
+    """
+    if "STARRED" in label_ids:
+        return "marcado con estrella (STARRED)"
+    if "IMPORTANT" in label_ids:
+        return "marcado como importante (IMPORTANT)"
+    if email in contact_rules:
+        return f"contacto protegido ({email})"
+    if domain and f"@{domain}" in contact_rules:
+        return f"dominio protegido por contacto ({domain})"
+    if domain in protected_domains:
+        return f"dominio protegido ({domain})"
+    if domain in safe_domains:
+        return f"dominio seguro adicional ({domain})"
+    return None

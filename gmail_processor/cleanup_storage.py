@@ -22,7 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, build_protected_domains, protection_reason
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -42,7 +42,7 @@ class StorageCleaner:
         self.engine        = engine
         self.audit         = audit
         self.learning_mode = learning_mode
-        self._protected_domains = _build_protected_domains()
+        self._protected_domains = build_protected_domains(cfg.DOMAIN_RULES)
         self.stats = {
             "examined": 0,
             "trashed":  0,
@@ -126,6 +126,16 @@ class StorageCleaner:
     # ── Per-message evaluation ────────────────────────────────────────────────
 
     def _evaluate(self, msg_id: str, reason: str, rule_name: str):
+        """Wraps _evaluate_impl so one malformed message (bad headers, an
+        unexpected None, a scoring edge case) can't abort the whole cleanup
+        run — only HttpError from the initial fetch was handled before."""
+        try:
+            self._evaluate_impl(msg_id, reason, rule_name)
+        except Exception as e:
+            logger.error(f"  Error evaluando {msg_id}: {e}")
+            self.stats["errors"] += 1
+
+    def _evaluate_impl(self, msg_id: str, reason: str, rule_name: str):
         self.stats["examined"] += 1
 
         try:
@@ -259,27 +269,14 @@ class StorageCleaner:
 
     def _protection_reason(self, message: dict) -> str | None:
         label_ids = message.get("labelIds", [])
+        email     = _sender_email(message)
+        domain    = email.split("@")[-1] if "@" in email else ""
+        safe_domains = frozenset(cfg.CLEANUP_RULES.get("safe_domains", []))
 
-        if "STARRED" in label_ids:
-            return "marcado con estrella (STARRED)"
-        if "IMPORTANT" in label_ids:
-            return "marcado como importante (IMPORTANT)"
-
-        email  = _sender_email(message)
-        domain = email.split("@")[-1] if "@" in email else ""
-
-        if email in cfg.CONTACT_RULES:
-            return f"contacto protegido ({email})"
-        if domain and f"@{domain}" in cfg.CONTACT_RULES:
-            return f"dominio protegido por contacto ({domain})"
-        if domain in self._protected_domains:
-            return f"dominio protegido ({domain})"
-
-        extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
-        if domain in extra:
-            return f"dominio seguro adicional ({domain})"
-
-        return None
+        return protection_reason(
+            email, domain, label_ids,
+            cfg.CONTACT_RULES, self._protected_domains, safe_domains,
+        )
 
     # ── Summary ───────────────────────────────────────────────────────────────
 
@@ -312,14 +309,6 @@ class StorageCleaner:
 
 
 # ── Module helpers ────────────────────────────────────────────────────────────
-
-def _build_protected_domains() -> frozenset[str]:
-    protected: set[str] = set()
-    for rule in cfg.DOMAIN_RULES:
-        if rule.get("action") == "mark_important":
-            protected.update(rule["domains"])
-    return frozenset(protected)
-
 
 def _sender_email(message: dict) -> str:
     headers = message.get("payload", {}).get("headers", [])

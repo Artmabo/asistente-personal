@@ -676,7 +676,6 @@ class ContactAnalyzer:
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
         try:
-            import importlib
             import gmail_processor.rules as rules_mod
 
             if email_addr in rules_mod.CONTACT_RULES:
@@ -707,7 +706,12 @@ class ContactAnalyzer:
             new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
             rules_path.write_text("\n".join(lines), encoding="utf-8")
-            importlib.reload(rules_mod)
+            # Patch the live dict in place instead of importlib.reload(rules_mod):
+            # a full reload resets every module-level global to its file
+            # default too — including DRY_RUN — which would silently flip a
+            # concurrent live run (another Streamlit session/thread) back
+            # into dry-run mode.
+            rules_mod.CONTACT_RULES[email_addr] = {"label": label, "mark_important": True}
             return {"success": True, "label": label}
         except Exception as exc:
             return {"error": str(exc)}

@@ -121,8 +121,15 @@ class GmailProcessor:
             self.stats["errors"] += 1
             return
 
-        c = self.classifier.classify(message)
-        self._apply(msg_id, message, c)
+        try:
+            c = self.classifier.classify(message)
+            self._apply(msg_id, message, c)
+        except Exception as e:
+            # One malformed message (bad headers, unexpected None, etc.)
+            # should not abort the rest of the run.
+            logger.error(f"Error processing {msg_id}: {e}")
+            self.stats["errors"] += 1
+            return
         self.stats["processed"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):

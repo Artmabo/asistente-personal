@@ -153,12 +153,15 @@ def _mostrar_resultado_cat(r: dict | None, nombre: str):
     movidos     = r.get("exitos",     0)
     encontrados = r.get("procesados", 0)
     errores     = r.get("errores",    0)
+    protegidos  = r.get("protegidos", 0)
     if encontrados == 0:
         st.info(f"No se encontraron correos en **{nombre}**. La categoría ya estaba vacía.")
     else:
         st.success(
             f"✓ Se movieron a la papelera **{movidos} de {encontrados}** correos de {nombre}."
         )
+        if protegidos:
+            st.info(f"{protegidos} correos se omitieron por ser de contactos o dominios protegidos.")
         if errores:
             st.warning(f"No se pudieron mover {errores} correos. Puedes intentarlo de nuevo más tarde.")
 
@@ -270,7 +273,6 @@ def _proteger_remitente(email: str, name: str) -> dict:
         return {"error": f"Dirección de correo no válida: {email}"}
 
     try:
-        import importlib
         import gmail_processor.rules as rules_mod
 
         if email in rules_mod.CONTACT_RULES:
@@ -309,7 +311,12 @@ def _proteger_remitente(email: str, name: str) -> dict:
         with open(rules_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
-        importlib.reload(rules_mod)
+        # Patch the live dict in place instead of importlib.reload(rules_mod):
+        # a full module reload resets every other module-level global back to
+        # its file default too — including DRY_RUN — which would silently
+        # flip a concurrent live run (another Streamlit session/thread) back
+        # into dry-run mode.
+        rules_mod.CONTACT_RULES[email] = {"label": label, "mark_important": True}
         return {"success": True, "email": email, "label": label}
     except Exception as exc:
         return {"error": str(exc)}

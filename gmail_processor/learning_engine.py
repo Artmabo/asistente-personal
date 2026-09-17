@@ -586,7 +586,7 @@ class LearningEngine:
                     logger.info(f"Estado migrado v{v} → v3")
                 logger.debug(f"Estado cargado desde {self.path}")
                 return data
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 logger.warning(f"Estado corrupto en {self.path}, reiniciando.")
         return copy.deepcopy(_EMPTY_STATE_V3)
 
@@ -677,14 +677,19 @@ def _migrate_to_v3(old: dict) -> dict:
         entry["last_accepted"]      = src.get("last_feedback", src.get("last_accepted", ""))
         return entry
 
-    # v1 used sender_scores/domain_scores; v2 used same names
+    # v1 used sender_scores/domain_scores; v2 renamed them to sender_model/domain_model
     for old_key, new_key in [
         ("sender_scores", "sender_model"),
         ("domain_model",  "domain_model"),
     ]:
         for k, v in old.get(old_key, {}).items():
             new[new_key][k] = _to_v3_entry(v)
-    # v2 already has domain_model
+    # v2 already used these key names directly — copy them too (previously
+    # dropped entirely for sender_model, silently discarding every learned
+    # per-sender adjustment when migrating a v2 state file).
+    for k, v in old.get("sender_model", {}).items():
+        if k not in new["sender_model"]:
+            new["sender_model"][k] = _to_v3_entry(v)
     for k, v in old.get("domain_scores", {}).items():
         if k not in new["domain_model"]:
             new["domain_model"][k] = _to_v3_entry(v)

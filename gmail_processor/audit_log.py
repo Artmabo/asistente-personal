@@ -25,6 +25,22 @@ logger = logging.getLogger("gmail_processor.audit")
 MAX_ENTRIES = 10_000
 
 
+def _parse_lines(lines) -> list[dict]:
+    """Parses JSONL lines, skipping (and logging) only the lines that are
+    individually corrupt instead of discarding the entire audit history
+    when a single line is malformed (e.g. a partial write before a crash)."""
+    entries = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            logger.warning("Línea corrupta en audit log, omitida.")
+    return entries
+
+
 class AuditLogger:
     def __init__(self, path: str = "audit_log.jsonl", dry_run: bool = False):
         self.path    = Path(path)
@@ -63,14 +79,25 @@ class AuditLogger:
         })
 
     def flush(self):
-        """Writes buffered entries to disk. Called once per run."""
+        """Writes buffered entries to disk. Called once per run.
+
+        Writes to a temp file and renames it into place so a crash or kill
+        mid-write can't truncate/corrupt the whole audit history.
+        """
         if not self._buf:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
-            for entry in combined:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                for entry in combined:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            tmp.replace(self.path)
+        except OSError as e:
+            logger.error(f"No se pudo escribir el audit log: {e}")
+            tmp.unlink(missing_ok=True)
+            return
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 
@@ -113,9 +140,10 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                lines = list(f)
+        except OSError:
             return []
+        return _parse_lines(lines)
 
     def _load_tail(self, n: int) -> list[dict]:
         """Reads only the last n lines using a deque to avoid loading the whole file."""
@@ -127,6 +155,6 @@ class AuditLogger:
                     (ln for ln in f if ln.strip()),
                     maxlen=n,
                 )
-            return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+        except OSError:
             return []
+        return _parse_lines(tail)

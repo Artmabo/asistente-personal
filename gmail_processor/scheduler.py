@@ -201,9 +201,19 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
-            json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        """Writes config atomically (temp file + rename) so a crash mid-write
+        can't corrupt cleanup_schedule.json — this file gates an unattended,
+        data-destructive Gmail cleanup job, so its integrity matters more
+        than most other state files in this app."""
+        tmp = self.config_path.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(self.config_path)
+        except OSError as exc:
+            logger.error(f"No se pudo guardar {self.config_path}: {exc}")
+            tmp.unlink(missing_ok=True)
 
 
 def format_next_run(iso: str | None) -> str:
