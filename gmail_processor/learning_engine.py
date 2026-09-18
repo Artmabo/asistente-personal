@@ -677,13 +677,15 @@ def _migrate_to_v3(old: dict) -> dict:
         entry["last_accepted"]      = src.get("last_feedback", src.get("last_accepted", ""))
         return entry
 
-    # v1 used sender_scores/domain_scores; v2 used same names
+    # v1 used sender_scores/domain_scores; v2 used sender_model/domain_model
     for old_key, new_key in [
         ("sender_scores", "sender_model"),
+        ("sender_model",  "sender_model"),
         ("domain_model",  "domain_model"),
     ]:
         for k, v in old.get(old_key, {}).items():
-            new[new_key][k] = _to_v3_entry(v)
+            if k not in new[new_key]:
+                new[new_key][k] = _to_v3_entry(v)
     # v2 already has domain_model
     for k, v in old.get("domain_scores", {}).items():
         if k not in new["domain_model"]:
@@ -691,5 +693,9 @@ def _migrate_to_v3(old: dict) -> dict:
 
     new["rule_stats"]       = copy.deepcopy(old.get("rule_stats", {}))
     new["pending_feedback"] = copy.deepcopy(old.get("pending_feedback", {}))
-    new["metrics"]          = old.get("metrics", _new_metrics())
+    # Merge onto _new_metrics()'s defaults rather than taking `old["metrics"]`
+    # verbatim: a partial/old metrics dict missing a field (e.g. no
+    # "by_category") would otherwise make the very next record_*() call
+    # raise KeyError, since Metrics methods index fields directly.
+    new["metrics"] = {**_new_metrics(), **old.get("metrics", {})}
     return new

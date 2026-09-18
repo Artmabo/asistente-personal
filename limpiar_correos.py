@@ -1,9 +1,13 @@
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from googleapiclient.errors import HttpError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+_MAX_RETRIES = 3
+_BASE_DELAY  = 1.0  # segundos antes del primer reintento (se duplica cada intento)
 
 CATEGORIAS = {
     "spam":            "in:spam",
@@ -28,6 +32,73 @@ def obtener_servicio(creds_path="config/credentials.json", token_path="token.jso
     return get_service(creds_path=creds_path, token_path=token_path)
 
 
+def _execute_with_retry(request):
+    """Executes a Gmail API request with exponential-backoff retry on rate
+    limits / transient server errors, matching gmail_processor.actions'
+    policy — without it, a single 429/500 silently dropped a whole batch
+    or page here."""
+    delay = _BASE_DELAY
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return request.execute()
+        except HttpError as e:
+            status = int(e.resp.status)
+            if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
+                print(f"    ({status}, reintento {attempt}/{_MAX_RETRIES} en {delay:.0f}s)")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
+
+
+def _filtrar_protegidos(service, ids: list) -> tuple[list, int]:
+    """Removes IDs belonging to protected senders/domains (CONTACT_RULES,
+    mark_important DOMAIN_RULES, safe_domains, STARRED/IMPORTANT) before
+    they ever reach batchModify — this legacy script used to trash
+    everything a query matched with no such check, unlike
+    gmail_processor.cleanup_storage.StorageCleaner. Returns
+    (unprotected_ids, protected_count).
+    """
+    if not ids:
+        return [], 0
+
+    from gmail_processor.cleanup_storage import protection_reason, _build_protected_domains
+
+    protected_domains = _build_protected_domains()
+    fetched: dict[str, dict] = {}
+
+    def _capture(request_id, response, exception):
+        if exception is None:
+            fetched[request_id] = response
+
+    for i in range(0, len(ids), 100):
+        chunk = ids[i:i + 100]
+        batch = service.new_batch_http_request(callback=_capture)
+        for msg_id in chunk:
+            batch.add(
+                service.users().messages().get(
+                    userId='me', id=msg_id, format='metadata',
+                    metadataHeaders=['From'],
+                ),
+                request_id=msg_id,
+            )
+        _execute_with_retry(batch)
+
+    unprotected = []
+    protected_count = 0
+    for msg_id in ids:
+        message = fetched.get(msg_id)
+        if message is None:
+            # No pudimos verificar si está protegido — mejor omitirlo que
+            # arriesgarnos a borrar algo protegido.
+            continue
+        if protection_reason(message, protected_domains):
+            protected_count += 1
+        else:
+            unprotected.append(msg_id)
+    return unprotected, protected_count
+
+
 def mover_lote_a_papelera(service, ids: list) -> int:
     """Move up to 1000 IDs to trash via batchModify. Returns count successfully sent."""
     if not ids:
@@ -36,14 +107,14 @@ def mover_lote_a_papelera(service, ids: list) -> int:
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
         try:
-            service.users().messages().batchModify(
+            _execute_with_retry(service.users().messages().batchModify(
                 userId='me',
                 body={
                     'ids': chunk,
                     'addLabelIds': ['TRASH'],
                     'removeLabelIds': ['INBOX'],
                 }
-            ).execute()
+            ))
             total += len(chunk)
         except HttpError as e:
             print(f"  Error en lote ({len(chunk)} mensajes): {e}")
@@ -87,12 +158,12 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
         while True:
             page_num += 1
             try:
-                result = service.users().messages().list(
+                result = _execute_with_retry(service.users().messages().list(
                     userId='me',
                     q=query,
                     maxResults=500,
                     pageToken=page_token,
-                ).execute()
+                ))
             except HttpError as e:
                 print(f"  Error al listar página {page_num}: {e}")
                 break
@@ -104,6 +175,9 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
                 break
 
             ids = [m['id'] for m in messages]
+            ids, protegidos = _filtrar_protegidos(service, ids)
+            if protegidos:
+                print(f"  {protegidos} correo(s) protegido(s) omitidos (contacto/dominio protegido).")
             if dry_run:
                 print(f"  Página {page_num}: {len(ids)} correos encontrados (no se mueven).")
                 exitos = len(ids)
@@ -133,8 +207,12 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     }
 
 
-def limpiar_todo_basura(service) -> dict:
-    """Limpia spam + promociones + social + actualizaciones + foros en secuencia."""
+def limpiar_todo_basura(service, dry_run: bool = False) -> dict:
+    """Limpia spam + promociones + social + actualizaciones + foros en secuencia.
+
+    dry_run=True solo cuenta los correos que coincidirían, sin moverlos —
+    permite mostrar un conteo antes de confirmar (ver cli_menu._menu_limpiar_todo).
+    """
     resultados = {}
     total_p = 0
     total_e = 0
@@ -142,7 +220,7 @@ def limpiar_todo_basura(service) -> dict:
     for cat in CATEGORIAS:
         print(f"\n  {'─'*44}")
         print(f"  {_NOMBRES_ES[cat].upper()}")
-        r = limpiar_bandeja(service, categorias=[cat])
+        r = limpiar_bandeja(service, categorias=[cat], dry_run=dry_run)
         resultados[cat] = r
         total_p += r['procesados']
         total_e += r['exitos']
@@ -150,9 +228,10 @@ def limpiar_todo_basura(service) -> dict:
     print(f"\n  {'═'*44}")
     print("  RESUMEN FINAL")
     print(f"  {'═'*44}")
+    label = "encontrados" if dry_run else "enviados a papelera"
     for cat, r in resultados.items():
         barra = f"{r['exitos']}/{r['procesados']}"
-        print(f"  {_NOMBRES_ES[cat]:<18} {barra:>12}  enviados a papelera")
+        print(f"  {_NOMBRES_ES[cat]:<18} {barra:>12}  {label}")
     print(f"  {'─'*44}")
     total_barra = f"{total_e}/{total_p}"
     print(f"  {'TOTAL':<18} {total_barra:>12}")
@@ -162,7 +241,7 @@ def limpiar_todo_basura(service) -> dict:
 
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
 
-def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False):
+def limpiar_correos(service=None, meses=6, solo_no_leidos=True):
     if service is None:
         service = obtener_servicio()
     fecha = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")

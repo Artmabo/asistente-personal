@@ -687,17 +687,20 @@ class ContactAnalyzer:
             content    = rules_path.read_text(encoding="utf-8")
             lines      = content.split("\n")
 
-            in_cr = False; depth = 0; insert_at = -1
+            # Each CONTACT_RULES entry is written on a single line, and the
+            # dict's closing brace is alone on its own line (see rules.py) —
+            # matching that exact line is robust even if an email/label value
+            # itself contains "{"/"}" characters, unlike counting brace
+            # characters across the whole line (which a crafted value could
+            # throw off and corrupt rules.py's syntax).
+            in_cr = False; insert_at = -1
             for i, line in enumerate(lines):
                 if not in_cr:
                     if "CONTACT_RULES" in line and "=" in line and "{" in line:
                         in_cr = True
-                        depth = line.count("{") - line.count("}")
-                else:
-                    depth += line.count("{") - line.count("}")
-                    if depth <= 0:
-                        insert_at = i
-                        break
+                elif line.strip() == "}":
+                    insert_at = i
+                    break
 
             if insert_at == -1:
                 return {"error": "CONTACT_RULES closing brace not found"}

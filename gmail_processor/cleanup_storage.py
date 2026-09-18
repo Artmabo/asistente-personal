@@ -258,28 +258,7 @@ class StorageCleaner:
     # ── Hard protection check ─────────────────────────────────────────────────
 
     def _protection_reason(self, message: dict) -> str | None:
-        label_ids = message.get("labelIds", [])
-
-        if "STARRED" in label_ids:
-            return "marcado con estrella (STARRED)"
-        if "IMPORTANT" in label_ids:
-            return "marcado como importante (IMPORTANT)"
-
-        email  = _sender_email(message)
-        domain = email.split("@")[-1] if "@" in email else ""
-
-        if email in cfg.CONTACT_RULES:
-            return f"contacto protegido ({email})"
-        if domain and f"@{domain}" in cfg.CONTACT_RULES:
-            return f"dominio protegido por contacto ({domain})"
-        if domain in self._protected_domains:
-            return f"dominio protegido ({domain})"
-
-        extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
-        if domain in extra:
-            return f"dominio seguro adicional ({domain})"
-
-        return None
+        return protection_reason(message, self._protected_domains)
 
     # ── Summary ───────────────────────────────────────────────────────────────
 
@@ -319,6 +298,39 @@ def _build_protected_domains() -> frozenset[str]:
         if rule.get("action") == "mark_important":
             protected.update(rule["domains"])
     return frozenset(protected)
+
+
+def protection_reason(
+    message: dict, protected_domains: frozenset[str] | None = None,
+) -> str | None:
+    """Hard-protection check (STARRED/IMPORTANT, protected contacts/domains).
+
+    Standalone so any bulk-trash code path — not just StorageCleaner — can
+    apply the same protections. `protected_domains` can be precomputed via
+    `_build_protected_domains()` to avoid rebuilding the set per message.
+    """
+    label_ids = message.get("labelIds", [])
+
+    if "STARRED" in label_ids:
+        return "marcado con estrella (STARRED)"
+    if "IMPORTANT" in label_ids:
+        return "marcado como importante (IMPORTANT)"
+
+    email  = _sender_email(message)
+    domain = email.split("@")[-1] if "@" in email else ""
+
+    if email in cfg.CONTACT_RULES:
+        return f"contacto protegido ({email})"
+    if domain and f"@{domain}" in cfg.CONTACT_RULES:
+        return f"dominio protegido por contacto ({domain})"
+    if domain in (protected_domains if protected_domains is not None else _build_protected_domains()):
+        return f"dominio protegido ({domain})"
+
+    extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
+    if domain in extra:
+        return f"dominio seguro adicional ({domain})"
+
+    return None
 
 
 def _sender_email(message: dict) -> str:

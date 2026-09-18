@@ -14,7 +14,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_api_key
+from .utils import get_api_key, get_header
 
 logger = logging.getLogger("gmail_processor.contact_profiler")
 
@@ -25,6 +25,19 @@ PROFILES_PATH = Path("contact_profiles.json")
 _MAX_EMAILS   = 50
 _MAX_BODY     = 500
 _MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+
+# Valores válidos para los campos que Claude devuelve y que la UI renderiza
+# como HTML (app.py). Cualquier valor fuera de esta lista se normaliza a un
+# default seguro para evitar que texto no confiable (controlado por el
+# remitente del correo, vía el prompt) llegue a unsafe_allow_html.
+_VALID_RELATION_TYPES = {"familiar", "trabajo", "servicio", "gobierno", "otro"}
+_VALID_TONES          = {"formal", "informal", "mixto"}
+_VALID_LANGUAGES      = {"español", "inglés", "mixto"}
+
+
+def _sanitize_choice(value: str, valid: set[str], default: str) -> str:
+    """Returns `value` if it's one of `valid`, else `default`."""
+    return value if value in valid else default
 
 
 def _empty_profiles() -> dict:
@@ -80,7 +93,7 @@ class ContactProfiler:
         return self.data.get("profiles", {})
 
     def get_profile(self, email: str) -> dict | None:
-        return self.data["profiles"].get(email)
+        return self.data.get("profiles", {}).get(email)
 
     def needs_rebuild(self, email: str) -> bool:
         profile = self.get_profile(email)
@@ -194,14 +207,20 @@ class ContactProfiler:
         return {
             "email":         addr,
             "name":          name or claude_result.get("name", addr),
-            "relation_type": claude_result.get("relation_type", "otro"),
+            "relation_type": _sanitize_choice(
+                claude_result.get("relation_type", "otro"), _VALID_RELATION_TYPES, "otro"
+            ),
             "summary":       claude_result.get("summary", ""),
             "first_contact": first_contact.strftime("%Y-%m-%d") if first_contact else "",
             "last_contact":  last_contact.strftime("%Y-%m-%d")  if last_contact  else "",
             "total_emails":  len(emails_data),
             "bidirectional": bidirectional,
-            "tone":          claude_result.get("tone",     "formal"),
-            "language":      claude_result.get("language", "español"),
+            "tone":          _sanitize_choice(
+                claude_result.get("tone", "formal"), _VALID_TONES, "formal"
+            ),
+            "language":      _sanitize_choice(
+                claude_result.get("language", "español"), _VALID_LANGUAGES, "español"
+            ),
             "attachments":   attachments,
             "timeline":      claude_result.get("timeline",   []),
             "alerts":        claude_result.get("alerts",     []),
@@ -238,19 +257,11 @@ class ContactProfiler:
         payload  = msg.get("payload", {})
         headers  = payload.get("headers", [])
 
-        def hdr(name: str) -> str:
-            nl = name.lower()
-            for h in headers:
-                if h.get("name", "").lower() == nl:
-                    return h.get("value", "")
-            return ""
+        from_raw  = get_header(headers, "From")
+        from_name, _ = email.utils.parseaddr(from_raw)
+        from_name = from_name.strip()
 
-        from_raw   = hdr("From")
-        from_name  = ""
-        if "<" in from_raw:
-            from_name = from_raw.split("<")[0].strip().strip('"').strip("'")
-
-        date_str    = hdr("Date")
+        date_str    = get_header(headers, "Date")
         date_parsed = None
         try:
             date_parsed = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
@@ -259,7 +270,7 @@ class ContactProfiler:
 
         return {
             "from_name":    from_name,
-            "subject":      hdr("Subject"),
+            "subject":      get_header(headers, "Subject"),
             "date_str":     date_str,
             "date_parsed":  date_parsed,
             "body_snippet": self._extract_body(payload),
