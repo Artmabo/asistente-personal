@@ -5,6 +5,7 @@ Entry point: run_menu()
   Launched automatically when procesar_correos.py is run with no arguments.
   All destructive operations default to DRY RUN with explicit LIVE confirmation.
 """
+import json
 import os
 import sys
 import logging
@@ -774,12 +775,13 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     if end_idx is None:
         return False
 
+    email_literal = json.dumps(email)
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email_literal in line and not line.strip().startswith("#"):
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f'    {email_literal}: {{"label": {json.dumps(label)}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
@@ -796,10 +798,11 @@ def _patch_rules_remove_contact(email: str) -> bool:
     except OSError:
         return False
 
+    email_literal = json.dumps(email)
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email_literal in line and not line.strip().startswith("#"):
             removed = True
             continue
         new_lines.append(line)
@@ -848,14 +851,14 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     # Check if domain already exists anywhere in the block
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if json.dumps(domain) in block_text:
         return False
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{json.dumps(domain)}],\n'
+        f'        "label": {json.dumps(label)},\n'
+        f'        "action": {json.dumps(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
@@ -920,12 +923,17 @@ def _menu_limpiar_todo(get_svc: Callable):
     print()
     if not _confirm("¿Continuar?"):
         return
-    if not _confirm("  Confirmar: limpiar todas las categorías"):
-        return
     svc = get_svc()
     if svc is None:
         return
     from limpiar_correos import limpiar_todo_basura
+    preview = limpiar_todo_basura(svc, dry_run=True)
+    print(f"\n  Se encontraron {preview['procesados']} correos en total.")
+    if preview["procesados"] == 0:
+        _pause()
+        return
+    if not _confirm(f"  Confirmar: mover {preview['procesados']} correos a la papelera"):
+        return
     limpiar_todo_basura(svc)
     _pause()
 

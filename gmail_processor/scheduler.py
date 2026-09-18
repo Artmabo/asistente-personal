@@ -46,6 +46,20 @@ except ImportError:
     _APSCHEDULER_OK = False
 
 
+def _build_trigger(frequency: str, hour: int, day_of_week: str):
+    """Builds (and thereby validates) a CronTrigger for the given schedule.
+    Raises on invalid values (e.g. hour out of range) — callers must call
+    this BEFORE persisting the configuration, so an invalid schedule never
+    gets written to cleanup_schedule.json only to fail silently later."""
+    hour = int(hour)
+    if frequency == "daily":
+        return CronTrigger(hour=hour)
+    elif frequency == "weekly":
+        return CronTrigger(day_of_week=day_of_week, hour=hour)
+    else:  # monthly
+        return CronTrigger(day=1, hour=hour)
+
+
 class CleanupScheduler:
     """
     Encapsula un BackgroundScheduler de APScheduler con configuración persistente.
@@ -75,7 +89,14 @@ class CleanupScheduler:
         day_of_week: str = "sunday",
         enabled:     bool = True,
     ) -> None:
-        """Guarda configuración y reprograma si el scheduler está corriendo."""
+        """Guarda configuración y reprograma si el scheduler está corriendo.
+
+        Valida hour/day_of_week/frequency contra CronTrigger ANTES de
+        escribir nada a disco, para no persistir una configuración inválida
+        que luego rompería _reschedule() (y dejaría el scheduler sin poder
+        arrancar en cada carga posterior de la app, sin error visible)."""
+        trigger = _build_trigger(frequency, hour, day_of_week) if _APSCHEDULER_OK else None
+
         self.config.update({
             "frequency":   frequency,
             "categories":  categories,
@@ -86,7 +107,7 @@ class CleanupScheduler:
         self._save()
 
         if enabled and self._scheduler and self._scheduler.running:
-            self._reschedule()
+            self._reschedule(trigger)
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""
@@ -158,7 +179,7 @@ class CleanupScheduler:
 
     # ── Internos ──────────────────────────────────────────────────────────────
 
-    def _reschedule(self) -> None:
+    def _reschedule(self, trigger=None) -> None:
         if not self._scheduler:
             return
         if self._job:
@@ -167,16 +188,12 @@ class CleanupScheduler:
             except Exception:
                 pass
 
-        freq = self.config.get("frequency", "weekly")
-        hour = int(self.config.get("hour", 3))
-        dow  = self.config.get("day_of_week", "sunday")
-
-        if freq == "daily":
-            trigger = CronTrigger(hour=hour)
-        elif freq == "weekly":
-            trigger = CronTrigger(day_of_week=dow, hour=hour)
-        else:   # monthly
-            trigger = CronTrigger(day=1, hour=hour)
+        if trigger is None:
+            trigger = _build_trigger(
+                self.config.get("frequency", "weekly"),
+                self.config.get("hour", 3),
+                self.config.get("day_of_week", "sunday"),
+            )
 
         self._job = self._scheduler.add_job(self._run_cleanup, trigger, misfire_grace_time=3600)
         self._update_next_run()

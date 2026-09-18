@@ -62,8 +62,15 @@ class AssistantChat:
         self.refresh_context()
         system_prompt = self._build_system_prompt()
 
-        # Historial para la API (sin timestamps, solo role/content)
-        hist = conversation_history if conversation_history is not None else self.history
+        # Cuando el llamador (p. ej. app.py, con un historial por sesión de
+        # Streamlit) pasa su propio conversation_history, usamos y actualizamos
+        # ESE historial en vez de self.history: esta instancia se comparte entre
+        # todas las sesiones (st.cache_resource), así que mezclar conversaciones
+        # de distintas sesiones en self.history/chat_history.json filtraría
+        # mensajes de un usuario hacia otro. self.history/persistencia en disco
+        # solo aplica para llamadores que no gestionan su propio historial.
+        using_internal_history = conversation_history is None
+        hist = self.history if using_internal_history else conversation_history
         api_messages = [
             {"role": m["role"], "content": m["content"]}
             for m in hist[-(  _MAX_HISTORY * 2):]
@@ -77,15 +84,16 @@ class AssistantChat:
             )
             answer = resp.content[0].text.strip()
         except Exception as exc:
-            return f"Ocurrió un problema al contactar al asistente: {exc}"
+            logger.error(f"Error al contactar a Claude: {exc}")
+            return "Ocurrió un problema al contactar al asistente. Intenta de nuevo en un momento."
 
-        # Guardar en historial
-        ts = datetime.now().isoformat(timespec="seconds")
-        self.history.append({"role": "user",      "content": user_message, "ts": ts})
-        self.history.append({"role": "assistant",  "content": answer,       "ts": ts})
-        if len(self.history) > _MAX_HISTORY * 2:
-            self.history = self.history[-(_MAX_HISTORY * 2):]
-        self._save_history()
+        if using_internal_history:
+            ts = datetime.now().isoformat(timespec="seconds")
+            self.history.append({"role": "user",      "content": user_message, "ts": ts})
+            self.history.append({"role": "assistant",  "content": answer,       "ts": ts})
+            if len(self.history) > _MAX_HISTORY * 2:
+                self.history = self.history[-(_MAX_HISTORY * 2):]
+            self._save_history()
         return answer
 
     # ── Construcción del prompt de sistema ───────────────────────────────────
