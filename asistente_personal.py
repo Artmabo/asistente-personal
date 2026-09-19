@@ -7,8 +7,6 @@ from __future__ import print_function
 
 from gmail_processor.auth import get_service
 
-SCOPES = ["https://mail.google.com/"]
-
 
 def get_gmail_service(creds_path="config/credentials.json", token_path="token.json"):
     """Builds and returns an authenticated Gmail API service."""

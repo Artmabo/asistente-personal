@@ -17,10 +17,6 @@ CONTACT_RULES: dict[str, dict] = {
     "notificaciones@banamex.com": {"label": "FINANZAS", "mark_important": True},
     "estadosdecuenta@banamex.com": {"label": "FINANZAS", "mark_important": True},
     "facturacion_electronica@banamex.com": {"label": "FINANZAS", "mark_important": True},
-    "invoice+statements+acct_1ldl1bkzqzq0brf4@stripe.com": {"label": "FINANZAS", "mark_important": True},
-    "arturomari@gmail.com": {"label": "PERSONAL", "mark_important": False},
-    "valentinamari2704@gmail.com": {"label": "VALENTINA", "mark_important": True},
-    "arturomarid@gmail.com": {"label": "ARTURO", "mark_important": True},
     "personalbanking@info.cibc.com": {"label": "CIBC", "mark_important": True},
     "segurosbanamex@banamex.com": {"label": "SEGUROS", "mark_important": True},
 }
@@ -134,3 +130,14 @@ MAX_RESULTS_PER_PAGE = 100   # Correos por página al listar (máx 500)
 QUERY_FILTER = "is:inbox"    # Query Gmail para filtrar qué correos procesar
 DRY_RUN = True               # True = solo simula acciones (no hace cambios reales)
                              # Cambia a False cuando quieras ejecutar en producción
+
+# ── Reglas locales, no versionadas ────────────────────────────────────────────
+# Copia rules_local.example.py a rules_local.py (ya está en .gitignore) y
+# agrega ahí tus contactos personales (direcciones familiares, cuentas con
+# identificadores privados, etc.) para que NUNCA se suban al repositorio.
+# Las entradas de rules_local.py sobrescriben/complementan las de arriba.
+try:
+    from .rules_local import CONTACT_RULES as _LOCAL_CONTACT_RULES
+    CONTACT_RULES.update(_LOCAL_CONTACT_RULES)
+except ImportError:
+    pass

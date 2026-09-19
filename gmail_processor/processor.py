@@ -6,7 +6,7 @@ from googleapiclient.errors import HttpError
 
 from .auth import get_service
 from .classifier import EmailClassifier, Classification
-from .actions import GmailActions
+from .actions import GmailActions, InsufficientPermissionsError
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
@@ -82,8 +82,13 @@ class GmailProcessor:
                 break
 
             logger.info(f"Page {page}: {len(messages)} messages")
-            for stub in messages:
-                self._process_one(stub["id"])
+            try:
+                for stub in messages:
+                    self._process_one(stub["id"])
+            except InsufficientPermissionsError as e:
+                logger.error(f"Deteniendo: {e}")
+                self.stats["errors"] += 1
+                break
 
             page_token = result.get("nextPageToken")
             if not page_token:

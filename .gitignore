@@ -4,6 +4,9 @@ config/credentials.json
 credentials.json
 *.json.bak
 
+# ── Reglas de contacto personales (PII) ───────────────────────────────────────
+gmail_processor/rules_local.py
+
 # ── Claude Code internal settings ────────────────────────────────────────────
 .claude/
 
