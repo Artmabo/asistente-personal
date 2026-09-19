@@ -17,7 +17,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header
+from .utils import get_header, derive_contact_label, FREE_EMAIL_PROVIDERS
 
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
@@ -56,11 +56,7 @@ SIGNAL_LABELS: dict[str, tuple[str, bool]] = {
 
 # ── Clasificadores ────────────────────────────────────────────────────────────
 
-_FREE_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
+_FREE_PROVIDERS = FREE_EMAIL_PROVIDERS
 
 _ESP_DOMAINS = frozenset([
     "mailchimp.com", "list-manage.com", "sendgrid.net", "klaviyo.com",
@@ -124,12 +120,31 @@ def _parse_date(date_str: str) -> datetime | None:
         return None
 
 
+_UNSUB_LINK_RE = re.compile(r"<([^>]+)>")
+
+
+def _parse_unsubscribe_url(header_value: str) -> str:
+    """Extracts the best unsubscribe link from a raw List-Unsubscribe header.
+
+    The header can list several comma-separated <...> links (RFC 8058), e.g.
+    '<https://example.com/unsub?id=1>, <mailto:unsub@example.com>'. An http(s)
+    link (one-click, no email client needed) is preferred over a mailto: one.
+    """
+    if not header_value:
+        return ""
+    links = _UNSUB_LINK_RE.findall(header_value)
+    for link in links:
+        if link.lower().startswith(("http://", "https://")):
+            return link
+    return links[0] if links else ""
+
+
 def _default_weights() -> dict[str, float]:
     return {k: 1.0 for k in _SIGNAL_BASE}
 
 
 def _empty_stats() -> dict:
-    return {"total_scanned": 0, "personal": 0, "spam": 0, "commercial": 0}
+    return {"total_scanned": 0, "personal": 0, "spam": 0}
 
 
 def _empty_state() -> dict:
@@ -225,17 +240,19 @@ class ContactAnalyzer:
                 if addr in reviewed or addr in pending_set:
                     continue
 
-                subject   = get_header(headers, "Subject")
-                date_hdr  = get_header(headers, "Date")
-                has_unsub = bool(get_header(headers, "List-Unsubscribe"))
+                subject     = get_header(headers, "Subject")
+                date_hdr    = get_header(headers, "Date")
+                unsub_hdr   = get_header(headers, "List-Unsubscribe")
+                has_unsub   = bool(unsub_hdr)
 
                 if addr not in _working:
                     _working[addr] = {
-                        "name":      name or "",
-                        "subjects":  [],
-                        "dates":     [],
-                        "has_unsub": False,
-                        "count":     0,
+                        "name":        name or "",
+                        "subjects":    [],
+                        "dates":       [],
+                        "has_unsub":   False,
+                        "unsub_hdr":   "",
+                        "count":       0,
                     }
                 w = _working[addr]
                 if name and not w["name"]:
@@ -245,6 +262,8 @@ class ContactAnalyzer:
                 if date_hdr:
                     w["dates"].append(date_hdr)
                 w["has_unsub"] = w["has_unsub"] or has_unsub
+                if unsub_hdr and not w["unsub_hdr"]:
+                    w["unsub_hdr"] = unsub_hdr
                 w["count"]    += 1
 
             # Persist running count so scan is resumable
@@ -296,11 +315,12 @@ class ContactAnalyzer:
                 pending_set.add(addr)
                 pending_meta[addr] = {
                     **entry_base,
-                    "sample_subjects": w["subjects"][:3],
-                    "first_seen":      first_seen,
-                    "last_seen":       last_seen,
-                    "count":           w["count"],
-                    "asked_at":        now,
+                    "sample_subjects":  w["subjects"][:3],
+                    "first_seen":       first_seen,
+                    "last_seen":        last_seen,
+                    "count":            w["count"],
+                    "asked_at":         now,
+                    "unsubscribe_url":  _parse_unsubscribe_url(w["unsub_hdr"]),
                 }
                 new_pending += 1
 
@@ -455,6 +475,7 @@ class ContactAnalyzer:
                     "count":           meta.get("count", 0),
                     "sample_subjects": meta.get("sample_subjects", []),
                     "last_seen":       meta.get("last_seen", ""),
+                    "unsubscribe_url": meta.get("unsubscribe_url", ""),
                 })
 
         # Also include auto-spam senders with unsubscribe links that are still deliverable
@@ -470,6 +491,7 @@ class ContactAnalyzer:
                     "count":           0,
                     "sample_subjects": [],
                     "last_seen":       "",
+                    "unsubscribe_url": entry.get("unsubscribe_url", ""),
                 })
 
         candidates.sort(key=lambda x: x["count"], reverse=True)
@@ -676,39 +698,9 @@ class ContactAnalyzer:
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
         try:
-            import importlib
-            import gmail_processor.rules as rules_mod
-
-            if email_addr in rules_mod.CONTACT_RULES:
-                return {"already_protected": True}
-
-            label      = _derive_label(email_addr, name)
-            rules_path = Path(__file__).parent / "rules.py"
-            content    = rules_path.read_text(encoding="utf-8")
-            lines      = content.split("\n")
-
-            in_cr = False; depth = 0; insert_at = -1
-            for i, line in enumerate(lines):
-                if not in_cr:
-                    if "CONTACT_RULES" in line and "=" in line and "{" in line:
-                        in_cr = True
-                        depth = line.count("{") - line.count("}")
-                else:
-                    depth += line.count("{") - line.count("}")
-                    if depth <= 0:
-                        insert_at = i
-                        break
-
-            if insert_at == -1:
-                return {"error": "CONTACT_RULES closing brace not found"}
-
-            # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
-            lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
-            importlib.reload(rules_mod)
-            return {"success": True, "label": label}
+            from . import rules_editor
+            label = derive_contact_label(email_addr, name)
+            return rules_editor.add_contact_rule(email_addr, label, important=True)
         except Exception as exc:
             return {"error": str(exc)}
 
@@ -741,7 +733,6 @@ class ContactAnalyzer:
         stats    = self.state.setdefault("stats", _empty_stats())
         stats["personal"]   = sum(1 for e in reviewed.values() if e.get("decision") == "personal")
         stats["spam"]       = sum(1 for e in reviewed.values() if e.get("decision") == "spam")
-        stats["commercial"] = sum(1 for e in reviewed.values() if e.get("decision") == "commercial")
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
@@ -755,23 +746,3 @@ def _atomic_write(path: Path, data: dict) -> None:
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
-
-
-def _derive_label(email_addr: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email_addr.split("@")[-1] if "@" in email_addr else ""
-    local  = email_addr.split("@")[0]  if "@" in email_addr else email_addr
-    if domain in _FREE_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"

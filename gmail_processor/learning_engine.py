@@ -427,8 +427,8 @@ class LearningEngine:
 
     # ── Action recording ──────────────────────────────────────────────────────
 
-    def record_action(self, email: str, domain: str, rule_name: str):
-        """Records that a message was trashed (for rule stats + category model)."""
+    def record_action(self, rule_name: str):
+        """Records that a message was trashed by `rule_name` (for rule stats)."""
         if rule_name:
             stats = self.state["rule_stats"].setdefault(rule_name, {
                 "trashed": 0, "incorrect": 0, "threshold_days": None

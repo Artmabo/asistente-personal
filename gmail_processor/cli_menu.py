@@ -59,6 +59,7 @@ def run_menu():
             elif choice == "9":  _menu_limpiar_spam(_get_service)
             elif choice == "10": _menu_limpiar_promo(_get_service)
             elif choice == "11": _menu_limpiar_todo(_get_service)
+            elif choice == "12": _menu_unsubscribe()
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -86,6 +87,7 @@ def _main_menu() -> str:
         ("9",  "Limpiar spam          vaciar carpeta de spam"),
         ("10", "Limpiar promociones   vaciar categoría promociones"),
         ("11", "Limpiar todo          spam + promos + social + foros"),
+        ("12", "Sugerencias de baja   remitentes con enlace de darse de baja"),
         ("0",  "Salir"),
     ]
     for key, label in items:
@@ -750,121 +752,24 @@ def _present_domains(domains) -> int:
 
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
+# Delegates to gmail_processor.rules_editor, which writes every interpolated
+# value via repr() (safe against a crafted "From" header breaking out of the
+# generated string literal) and serializes concurrent writers with a lock.
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    start_idx = None
-    for i, line in enumerate(lines):
-        if "CONTACT_RULES: dict[str, dict] = {" in line:
-            start_idx = i
-            break
-    if start_idx is None:
-        return False
-
-    end_idx = None
-    for i in range(start_idx + 1, len(lines)):
-        if lines[i].strip() == "}":
-            end_idx = i
-            break
-    if end_idx is None:
-        return False
-
-    for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            return False  # already exists
-
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
-    lines.insert(end_idx, new_entry)
-
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    from . import rules_editor
+    return rules_editor.add_contact_rule(email, label, important).get("success", False)
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    new_lines = []
-    removed   = False
-    for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            removed = True
-            continue
-        new_lines.append(line)
-
-    if not removed:
-        return False
-
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    from . import rules_editor
+    return rules_editor.remove_contact_rule(email)
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    # Find DOMAIN_RULES list start
-    start_idx = None
-    for i, line in enumerate(lines):
-        if "DOMAIN_RULES: list[dict] = [" in line:
-            start_idx = i
-            break
-    if start_idx is None:
-        return False
-
-    # Find closing ] by tracking bracket depth
-    depth   = 1
-    end_idx = None
-    for i in range(start_idx + 1, len(lines)):
-        for ch in lines[i]:
-            if   ch == "[": depth += 1
-            elif ch == "]": depth -= 1
-            if depth == 0:
-                end_idx = i
-                break
-        if end_idx is not None:
-            break
-    if end_idx is None:
-        return False
-
-    # Check if domain already exists anywhere in the block
-    block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
-        return False
-
-    new_entry = (
-        f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
-        f'    }},'
-    )
-    lines.insert(end_idx, new_entry)
-
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    from . import rules_editor
+    return rules_editor.add_domain_rule(domain, label, action)
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────
@@ -952,6 +857,37 @@ def _resumen_limpieza(r: dict):
     if r.get('errores'):
         print(f"  Con error           : {r['errores']}")
     print(f"  {'─'*36}")
+
+
+# ── 12. Sugerencias de baja ────────────────────────────────────────────────────
+
+def _menu_unsubscribe():
+    _section("SUGERENCIAS PARA DARTE DE BAJA")
+    from .contact_analyzer import ContactAnalyzer
+
+    analyzer   = ContactAnalyzer(service=None)
+    candidates = analyzer.get_unsubscribe_candidates()
+
+    if not candidates:
+        print("  No hay candidatos todavía.")
+        print("  Ejecuta primero 'Configuración inicial' (opción 8) para que el")
+        print("  sistema detecte remitentes con enlace de 'darse de baja'.")
+        _pause()
+        return
+
+    print(f"  {len(candidates)} remitente(s) con enlace de 'darse de baja':\n")
+    for i, c in enumerate(candidates, 1):
+        name_tag = f'  "{c["name"]}"' if c["name"] else ""
+        print(f"  [{i:>2}] {c['email']}{name_tag}  (score={c['score']}, {c['count']} correos)")
+        if c.get("unsubscribe_url"):
+            print(f"        Enlace : {c['unsubscribe_url']}")
+        if c.get("sample_subjects"):
+            print(f"        Asunto : {c['sample_subjects'][0]}")
+        print()
+
+    print("  Abre el enlace en tu navegador para darte de baja manualmente.")
+    print("  (Por seguridad, esta app no visita enlaces de terceros automáticamente.)")
+    _pause()
 
 
 # ── Terminal helpers ──────────────────────────────────────────────────────────

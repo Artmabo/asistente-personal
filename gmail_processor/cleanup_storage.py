@@ -19,7 +19,7 @@ from googleapiclient.errors import HttpError
 
 _SUMMARY_PATH = Path("cleanup_summary.json")
 
-from .actions import GmailActions
+from .actions import GmailActions, InsufficientPermissionsError
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
 from .utils import get_header, extract_email_address
@@ -68,7 +68,12 @@ class StorageCleaner:
             self.engine.metrics.touch_run()
 
         for target in targets:
-            self._run_target(target, max_per)
+            try:
+                self._run_target(target, max_per)
+            except InsufficientPermissionsError as e:
+                logger.error(f"Deteniendo cleanup: {e}")
+                self.stats["errors"] += 1
+                break
 
         if self.engine and self.learning_mode:
             changes = self.engine.update_rule_thresholds()
@@ -243,7 +248,7 @@ class StorageCleaner:
                 self.engine.metrics.record_trash(rule_name)
                 self.engine.update_category_stats(label_ids, "trash")
                 if self.learning_mode:
-                    self.engine.record_action(email, domain, rule_name)
+                    self.engine.record_action(rule_name)
             if self.audit:
                 self.audit.log(
                     msg_id=msg_id, sender=email, domain=domain,

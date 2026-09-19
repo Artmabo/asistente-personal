@@ -15,6 +15,15 @@ _MAX_RETRIES = 3
 _BASE_DELAY  = 1.0   # seconds before first retry (doubles each attempt)
 
 
+class InsufficientPermissionsError(RuntimeError):
+    """Raised when the Gmail API rejects a call for lacking OAuth scopes.
+
+    This is a hard stop, not a transient failure: every subsequent call in
+    the same run will fail identically, so callers should stop the current
+    run cleanly instead of letting the exception crash it mid-batch.
+    """
+
+
 class GmailActions:
     def __init__(self, service, dry_run: bool = False):
         self.service  = service
@@ -131,7 +140,11 @@ class GmailActions:
                 # Hard permission failure — raise immediately (do not retry)
                 if status == 403 and _is_permission_error(e):
                     logger.error(f"Insufficient permissions: {e}")
-                    raise
+                    raise InsufficientPermissionsError(
+                        "El token de Gmail no tiene permisos suficientes para esta "
+                        "acción. Vuelve a autenticarte (borra token.json y vuelve a "
+                        "ejecutar) para conceder los permisos necesarios."
+                    ) from e
                 # Rate limit or transient server error — retry with backoff
                 if status in (403, 429, 500, 503) and attempt < _MAX_RETRIES:
                     kind = "Rate limit" if status in (403, 429) else "Server error"

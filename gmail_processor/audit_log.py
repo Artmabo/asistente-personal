@@ -22,7 +22,8 @@ from pathlib import Path
 
 logger = logging.getLogger("gmail_processor.audit")
 
-MAX_ENTRIES = 10_000
+MAX_ENTRIES  = 10_000
+_TRIM_MARGIN = 1_000   # only rewrite the file once it grows this far past the cap
 
 
 class AuditLogger:
@@ -63,16 +64,41 @@ class AuditLogger:
         })
 
     def flush(self):
-        """Writes buffered entries to disk. Called once per run."""
+        """Appends buffered entries to disk. Called once per run.
+
+        Entries are appended rather than rewriting the whole log each time —
+        with MAX_ENTRIES=10,000 a full rewrite-on-every-flush was O(log size)
+        disk I/O just to add a handful of lines. The cap is instead enforced
+        by `_trim_if_needed`, only when the file has grown well past it.
+        """
         if not self._buf:
             return
-        existing = self._load()
-        combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
-            for entry in combined:
+        n_new = len(self._buf)
+        with open(self.path, "a", encoding="utf-8") as f:
+            for entry in self._buf:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
+        logger.debug(f"Audit: {n_new} entries appended → {self.path}")
         self._buf = []
+        self._trim_if_needed()
+
+    def _trim_if_needed(self):
+        """Rewrites the log to the most recent MAX_ENTRIES lines, but only
+        once it has grown past MAX_ENTRIES + _TRIM_MARGIN — avoids paying
+        for a full rewrite on every single flush()."""
+        if not self.path.exists():
+            return
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                line_count = sum(1 for _ in f)
+        except OSError:
+            return
+        if line_count <= MAX_ENTRIES + _TRIM_MARGIN:
+            return
+        entries = self._load()[-MAX_ENTRIES:]
+        with open(self.path, "w", encoding="utf-8") as f:
+            for entry in entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        logger.debug(f"Audit: trimmed log to last {MAX_ENTRIES} entries")
 
     def recent(self, n: int = 20) -> list[dict]:
         """Returns the n most recent entries (including un-flushed buffer)."""
