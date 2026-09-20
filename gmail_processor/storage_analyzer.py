@@ -10,6 +10,8 @@ muestrea sizeEstimate de hasta 50 mensajes y extrapola para el total.
 import time
 from googleapiclient.errors import HttpError
 
+from .utils import get_header
+
 _CATEGORY_QUERIES: dict[str, str] = {
     "spam":            "in:spam",
     "promociones":     "category:promotions",
@@ -136,6 +138,75 @@ class StorageAnalyzer:
                 result[cat] = 0
         return result
 
+    def find_largest_messages(
+        self, query: str = "", limit: int = 10, scan_cap: int = 1_000,
+    ) -> list[dict]:
+        """Finds the `limit` largest messages matching `query` by size.
+
+        Surfaces individual storage-hogging emails (e.g. large attachments)
+        that a category-based cleanup would miss. Scans up to `scan_cap`
+        messages and fetches sizes via batched HTTP requests instead of one
+        API call per message, same as estimate_cleanup_size().
+        """
+        ids, _ = self._list_all_ids(query, max_ids=scan_cap)
+        if not ids:
+            return []
+
+        sizes: dict[str, int] = {}
+
+        def _on_size(request_id, response, exception):
+            if exception is None and response is not None:
+                sizes[request_id] = response.get("sizeEstimate", 0)
+
+        for chunk in _chunks(ids, 100):
+            batch = self.svc.new_batch_http_request(callback=_on_size)
+            for msg_id in chunk:
+                batch.add(
+                    self.svc.users().messages().get(userId="me", id=msg_id, format="minimal"),
+                    request_id=msg_id,
+                )
+            try:
+                batch.execute()
+            except HttpError:
+                pass
+
+        top_ids = sorted(sizes, key=sizes.get, reverse=True)[:limit]
+        if not top_ids:
+            return []
+
+        # Fetch headers only for the winners — no need to pull them for every scanned message.
+        details: dict[str, dict] = {}
+
+        def _on_detail(request_id, response, exception):
+            if exception is None and response is not None:
+                details[request_id] = response
+
+        batch = self.svc.new_batch_http_request(callback=_on_detail)
+        for msg_id in top_ids:
+            batch.add(
+                self.svc.users().messages().get(
+                    userId="me", id=msg_id, format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"],
+                ),
+                request_id=msg_id,
+            )
+        try:
+            batch.execute()
+        except HttpError:
+            pass
+
+        results = []
+        for msg_id in top_ids:
+            headers = details.get(msg_id, {}).get("payload", {}).get("headers", [])
+            results.append({
+                "id":      msg_id,
+                "size_mb": round(sizes[msg_id] / 1e6, 2),
+                "sender":  get_header(headers, "From"),
+                "subject": get_header(headers, "Subject"),
+                "date":    get_header(headers, "Date"),
+            })
+        return results
+
     def _list_all_ids(self, query: str, max_ids: int = 5_000) -> tuple[list[str], int]:
         """Lista los IDs de mensajes que coinciden con la query, hasta max_ids."""
         ids: list[str] = []
@@ -160,3 +231,9 @@ class StorageAnalyzer:
             time.sleep(0.1)
 
         return ids[:max_ids], len(ids[:max_ids])
+
+
+def _chunks(items: list, size: int):
+    """Yields successive `size`-length slices of `items`."""
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
