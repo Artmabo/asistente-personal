@@ -112,33 +112,59 @@ class StorageCleaner:
                 logger.info("  Sin candidatos para este target.")
                 break
 
-            for stub in messages:
-                if count >= cap:
-                    logger.warning(f"  Cap ({cap}) alcanzado — deteniendo este target.")
-                    break
-                self._evaluate(stub["id"], reason, rule_name)
+            page_ids = [stub["id"] for stub in messages[: cap - count]]
+            fetched  = self._fetch_metadata_batch(page_ids)
+
+            for msg_id in page_ids:
+                message = fetched.get(msg_id)
+                if message is None:
+                    logger.error(f"  Could not fetch {msg_id}")
+                    self.stats["errors"] += 1
+                    continue
+                self._evaluate(msg_id, message, reason, rule_name)
                 count += 1
+
+            if len(page_ids) < len(messages):
+                logger.warning(f"  Cap ({cap}) alcanzado — deteniendo este target.")
 
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
 
+    def _fetch_metadata_batch(self, msg_ids: list[str]) -> dict[str, dict]:
+        """Fetches metadata for several messages in a single batch HTTP request.
+
+        Replaces one sequential .get() call per message (up to `max_per_query`
+        per target) with one batched request per page of results.
+        """
+        fetched: dict[str, dict] = {}
+
+        def _on_response(request_id, response, exception):
+            if exception is None and response is not None:
+                fetched[request_id] = response
+
+        batch = self.service.new_batch_http_request(callback=_on_response)
+        for msg_id in msg_ids:
+            batch.add(
+                self.service.users().messages().get(
+                    userId="me",
+                    id=msg_id,
+                    format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"],
+                ),
+                request_id=msg_id,
+            )
+        try:
+            batch.execute()
+        except HttpError as e:
+            logger.error(f"  Batch fetch failed: {e}")
+
+        return fetched
+
     # ── Per-message evaluation ────────────────────────────────────────────────
 
-    def _evaluate(self, msg_id: str, reason: str, rule_name: str):
+    def _evaluate(self, msg_id: str, message: dict, reason: str, rule_name: str):
         self.stats["examined"] += 1
-
-        try:
-            message = self.service.users().messages().get(
-                userId="me",
-                id=msg_id,
-                format="metadata",
-                metadataHeaders=["From", "Subject", "Date"],
-            ).execute()
-        except HttpError as e:
-            logger.error(f"  Could not fetch {msg_id}: {e}")
-            self.stats["errors"] += 1
-            return
 
         sender    = _sender_display(message)
         subject   = _subject(message)

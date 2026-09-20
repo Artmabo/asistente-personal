@@ -17,7 +17,7 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header
+from .utils import get_header, derive_label, FREE_EMAIL_PROVIDERS
 
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
@@ -55,12 +55,6 @@ SIGNAL_LABELS: dict[str, tuple[str, bool]] = {
 }
 
 # ── Clasificadores ────────────────────────────────────────────────────────────
-
-_FREE_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
 
 _ESP_DOMAINS = frozenset([
     "mailchimp.com", "list-manage.com", "sendgrid.net", "klaviyo.com",
@@ -535,7 +529,7 @@ class ContactAnalyzer:
             active_signals.append("replied")
 
         d = _domain(addr)
-        if d and d not in _FREE_PROVIDERS and not _is_esp(addr):
+        if d and d not in FREE_EMAIL_PROVIDERS and not _is_esp(addr):
             active_signals.append("non_mass_domain")
 
         if not has_unsub:
@@ -682,7 +676,7 @@ class ContactAnalyzer:
             if email_addr in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
-            label      = _derive_label(email_addr, name)
+            label      = derive_label(email_addr, name)
             rules_path = Path(__file__).parent / "rules.py"
             content    = rules_path.read_text(encoding="utf-8")
             lines      = content.split("\n")
@@ -757,21 +751,3 @@ def _atomic_write(path: Path, data: dict) -> None:
         raise
 
 
-def _derive_label(email_addr: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
-        clean = "".join(c for c in word if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email_addr.split("@")[-1] if "@" in email_addr else ""
-    local  = email_addr.split("@")[0]  if "@" in email_addr else email_addr
-    if domain in _FREE_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
