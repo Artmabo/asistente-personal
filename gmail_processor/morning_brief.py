@@ -7,6 +7,8 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from .utils import read_json_file
+
 _CACHE_PATH = Path("morning_brief_cache.json")
 _TTL_HOURS  = 1
 
@@ -43,8 +45,8 @@ class MorningBrief:
         else:
             greeting = "Buenas noches"
 
-        profiles_raw = self._read_json("contact_profiles.json", {})
-        state        = self._read_json("analysis_state.json",   {})
+        profiles_raw = read_json_file("contact_profiles.json", {})
+        state        = read_json_file("analysis_state.json",   {})
 
         profiles      = profiles_raw.get("profiles", {})
         pending_list  = state.get("pending", [])
@@ -94,7 +96,7 @@ class MorningBrief:
                 continue
 
         # Last cleanup run info
-        last_cleanup = self._read_json("cleanup_summary.json", {})
+        last_cleanup = read_json_file("cleanup_summary.json", {})
         last_cleanup_info = None
         cleanup_recommended = False
         if last_cleanup.get("ts"):
@@ -161,11 +163,3 @@ class MorningBrief:
             json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    def _read_json(self, path: str, default: dict) -> dict:
-        p = Path(path)
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        return default

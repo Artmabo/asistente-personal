@@ -203,18 +203,39 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
+            # Fetch this page's message metadata via batched HTTP requests
+            # (chunks of 100, Gmail's practical batch limit) instead of one
+            # sequential messages().get() per message.
+            fetched: dict[str, dict] = {}
+
+            def _on_msg(_request_id, response, exception):
+                if exception is None and response is not None:
+                    fetched[_request_id] = response
+
+            for i in range(0, len(stubs), 100):
+                chunk = stubs[i:i + 100]
+                batch = self.svc.new_batch_http_request(callback=_on_msg)
+                for stub in chunk:
+                    batch.add(
+                        self.svc.users().messages().get(
+                            userId="me",
+                            id=stub["id"],
+                            format="metadata",
+                            metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
+                        ),
+                        request_id=stub["id"],
+                    )
+                try:
+                    batch.execute()
+                except HttpError as e:
+                    logger.warning(f"Batch de mensajes falló (página {page}): {e}")
+
             for stub in stubs:
                 if scanned >= batch_size:
                     break
                 scanned += 1
-                try:
-                    msg = self.svc.users().messages().get(
-                        userId="me",
-                        id=stub["id"],
-                        format="metadata",
-                        metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
-                    ).execute()
-                except HttpError:
+                msg = fetched.get(stub["id"])
+                if msg is None:
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
@@ -603,24 +624,33 @@ class ContactAnalyzer:
             if not stubs:
                 break
 
-            for stub in stubs:
-                if fetched >= _MAX_SENT_INDEXED:
-                    break
-                try:
-                    msg = self.svc.users().messages().get(
+            # Batched HTTP requests (chunks of 100) instead of one sequential
+            # messages().get() per sent message — same pattern as analyze_batch.
+            def _on_sent_msg(_request_id, response, exception):
+                if exception is not None or response is None:
+                    return
+                headers = response.get("payload", {}).get("headers", [])
+                for hname in ("To", "Cc"):
+                    raw = get_header(headers, hname)
+                    if raw:
+                        for _, a in email.utils.getaddresses([raw]):
+                            if a:
+                                addrs.add(a.strip().lower())
+
+            for i in range(0, len(stubs), 100):
+                chunk = stubs[i:i + 100]
+                batch = self.svc.new_batch_http_request(callback=_on_sent_msg)
+                for stub in chunk:
+                    batch.add(self.svc.users().messages().get(
                         userId="me", id=stub["id"],
                         format="metadata", metadataHeaders=["To", "Cc"],
-                    ).execute()
-                    headers = msg.get("payload", {}).get("headers", [])
-                    for hname in ("To", "Cc"):
-                        raw = get_header(headers, hname)
-                        if raw:
-                            for _, a in email.utils.getaddresses([raw]):
-                                if a:
-                                    addrs.add(a.strip().lower())
-                except HttpError:
-                    pass
-                fetched += 1
+                    ))
+                try:
+                    batch.execute()
+                except HttpError as e:
+                    logger.warning(f"Batch de enviados falló (página {page}): {e}")
+
+            fetched += len(stubs)
 
             if progress_cb:
                 progress_cb(
