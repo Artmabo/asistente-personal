@@ -8,9 +8,12 @@ Priority order (first match wins):
   4. Domain rules   — sender domain matches
   5. Default        — unknown, no action
 """
+import logging
 from dataclasses import dataclass, field
 from . import rules as cfg
 from .utils import get_header, extract_email_address
+
+logger = logging.getLogger("gmail_processor.classifier")
 
 
 @dataclass
@@ -51,11 +54,19 @@ class EmailClassifier:
             )
 
         # 2. Keyword rules
+        # rules.py is meant to be hand-edited, so a malformed entry (missing
+        # "keywords"/"action") is skipped with a warning instead of crashing
+        # classification for every message.
         for rule in cfg.KEYWORD_RULES:
-            if _matches_any(search_text, rule["keywords"], rule.get("case_sensitive", False)):
+            keywords = rule.get("keywords")
+            action   = rule.get("action")
+            if not keywords or not action:
+                logger.warning(f"KEYWORD_RULES: regla inválida (sin 'keywords'/'action'), se ignora: {rule}")
+                continue
+            if _matches_any(search_text, keywords, rule.get("case_sensitive", False)):
                 return Classification(
-                    email_type="spam" if rule["action"] == "trash" else "important",
-                    action=rule["action"],
+                    email_type="spam" if action == "trash" else "important",
+                    action=action,
                     labels=[rule["label"]] if rule.get("label") else [],
                     protected=False,
                 )
@@ -63,21 +74,30 @@ class EmailClassifier:
         # 3. Gmail category labels
         for category, rule in cfg.CATEGORY_RULES.items():
             if category in label_ids:
+                action = rule.get("action")
+                if not action:
+                    logger.warning(f"CATEGORY_RULES: regla inválida para {category} (sin 'action'), se ignora.")
+                    continue
                 return Classification(
                     email_type=category.replace("CATEGORY_", "").lower(),
-                    action=rule["action"],
+                    action=action,
                     labels=[rule["label"]] if rule.get("label") else [],
                     protected=False,
                 )
 
         # 4. Domain rules
         for rule in cfg.DOMAIN_RULES:
-            if domain in rule["domains"]:
+            domains = rule.get("domains")
+            action  = rule.get("action")
+            if not domains or not action:
+                logger.warning(f"DOMAIN_RULES: regla inválida (sin 'domains'/'action'), se ignora: {rule}")
+                continue
+            if domain in domains:
                 return Classification(
                     email_type="important",
-                    action=rule["action"],
+                    action=action,
                     labels=[rule["label"]] if rule.get("label") else [],
-                    protected=rule["action"] == "mark_important",
+                    protected=action == "mark_important",
                 )
 
         # 5. Default

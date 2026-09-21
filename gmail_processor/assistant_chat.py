@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from .utils import get_api_key
+from .utils import get_api_key, read_json_file
 
 logger = logging.getLogger("gmail_processor.chat")
 
@@ -28,10 +28,10 @@ class AssistantChat:
 
     def refresh_context(self):
         """Recarga todos los archivos JSON locales para tener datos frescos."""
-        profiles_raw = self._read_json("contact_profiles.json", {})
-        state        = self._read_json("analysis_state.json",   {})
-        schedule     = self._read_json("cleanup_schedule.json", {})
-        patterns     = self._read_json("user_patterns.json",    {})
+        profiles_raw = read_json_file("contact_profiles.json", {})
+        state        = read_json_file("analysis_state.json",   {})
+        schedule     = read_json_file("cleanup_schedule.json", {})
+        patterns     = read_json_file("user_patterns.json",    {})
 
         self.context = {
             "profiles":  profiles_raw.get("profiles", {}),
@@ -149,22 +149,8 @@ class AssistantChat:
 
     # ── Persistencia ──────────────────────────────────────────────────────────
 
-    def _read_json(self, path: str, default: dict) -> dict:
-        p = Path(path)
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        return default
-
     def _load_history(self) -> list[dict]:
-        if CHAT_HISTORY_PATH.exists():
-            try:
-                return json.loads(CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        return []
+        return read_json_file(CHAT_HISTORY_PATH, [])
 
     def _save_history(self):
         tmp = CHAT_HISTORY_PATH.with_suffix(".tmp")

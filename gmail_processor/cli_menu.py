@@ -59,6 +59,7 @@ def run_menu():
             elif choice == "9":  _menu_limpiar_spam(_get_service)
             elif choice == "10": _menu_limpiar_promo(_get_service)
             elif choice == "11": _menu_limpiar_todo(_get_service)
+            elif choice == "12": _menu_unsubscribe_candidates()
             else:
                 print("  Opción no válida.")
                 _pause()
@@ -86,6 +87,7 @@ def _main_menu() -> str:
         ("9",  "Limpiar spam          vaciar carpeta de spam"),
         ("10", "Limpiar promociones   vaciar categoría promociones"),
         ("11", "Limpiar todo          spam + promos + social + foros"),
+        ("12", "Sugerencias de baja   candidatos para darte de baja (unsubscribe)"),
         ("0",  "Salir"),
     ]
     for key, label in items:
@@ -920,12 +922,17 @@ def _menu_limpiar_todo(get_svc: Callable):
     print()
     if not _confirm("¿Continuar?"):
         return
-    if not _confirm("  Confirmar: limpiar todas las categorías"):
-        return
     svc = get_svc()
     if svc is None:
         return
     from limpiar_correos import limpiar_todo_basura
+    # Same dry-run preview + second confirm safeguard as "Limpiar spam" /
+    # "Limpiar promociones" (_preview_then_run_live), since this option
+    # trashes across five categories at once.
+    preview = limpiar_todo_basura(svc, dry_run=True)
+    print(f"\n  Se encontraron {preview['procesados']} correos en total que coinciden.")
+    if not _confirm(f"  Confirmar: mover {preview['procesados']} correos a la papelera"):
+        return
     limpiar_todo_basura(svc)
     _pause()
 
@@ -952,6 +959,46 @@ def _resumen_limpieza(r: dict):
     if r.get('errores'):
         print(f"  Con error           : {r['errores']}")
     print(f"  {'─'*36}")
+
+
+# ── 12. Sugerencias de baja (unsubscribe) ─────────────────────────────────────
+
+def _menu_unsubscribe_candidates():
+    """Lists senders that look like good candidates for manually clicking
+    'unsubscribe': they carry a List-Unsubscribe header, aren't already
+    protected as personal contacts, and score below 50 in the contact
+    analyzer. Reads local state only — no Gmail connection needed. This
+    surfaces ContactAnalyzer.get_unsubscribe_candidates(), which previously
+    had no caller anywhere in the app."""
+    _section("SUGERENCIAS PARA DARTE DE BAJA")
+
+    from .contact_analyzer import ContactAnalyzer, STATE_PATH
+    if not STATE_PATH.exists():
+        print("  Aún no hay un análisis de contactos. Ejecuta primero")
+        print("  '8. Configuración inicial' o 'Analizar correos' en la app.")
+        _pause()
+        return
+
+    analyzer   = ContactAnalyzer(service=None)
+    candidates = analyzer.get_unsubscribe_candidates()
+
+    if not candidates:
+        print("  No se encontraron candidatos claros para darte de baja ahora mismo.")
+        _pause()
+        return
+
+    print(f"  {len(candidates)} remitente(s) con enlace de baja y score bajo,")
+    print("  ordenados por frecuencia de envío:\n")
+    for c in candidates:
+        label = f"{c['name']} <{c['email']}>" if c.get("name") else c["email"]
+        print(f"  • {label}")
+        print(f"      score={c['score']}  correos={c.get('count', 0)}  último={c.get('last_seen') or '—'}")
+        for s in c.get("sample_subjects", [])[:1]:
+            print(f"      asunto: \"{s[:60]}\"")
+    print()
+    print("  Esto solo lista candidatos — no realiza ninguna acción. Puedes usar")
+    print("  '9/10/11. Limpiar…' o 'Feedback' para actuar sobre estos remitentes.")
+    _pause()
 
 
 # ── Terminal helpers ──────────────────────────────────────────────────────────
