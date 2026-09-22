@@ -68,6 +68,9 @@ class StorageCleaner:
             self.engine.metrics.touch_run()
 
         for target in targets:
+            if not target.get("query") or not target.get("rule"):
+                logger.warning(f"CLEANUP_RULES: target inválido (sin 'query'/'rule'), se ignora: {target}")
+                continue
             self._run_target(target, max_per)
 
         if self.engine and self.learning_mode:
@@ -87,7 +90,7 @@ class StorageCleaner:
 
     def _run_target(self, target: dict, cap: int):
         query     = target["query"]
-        reason    = target["reason"]
+        reason    = target.get("reason", "sin razón especificada")
         rule_name = target["rule"]
 
         logger.info(f"\n[TARGET] rule={rule_name}  query='{query}'")
@@ -317,7 +320,7 @@ def _build_protected_domains() -> frozenset[str]:
     protected: set[str] = set()
     for rule in cfg.DOMAIN_RULES:
         if rule.get("action") == "mark_important":
-            protected.update(rule["domains"])
+            protected.update(rule.get("domains", []))
     return frozenset(protected)
 
 

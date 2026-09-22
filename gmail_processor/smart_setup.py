@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, extract_display_name
 
 logger = logging.getLogger("gmail_processor.smart_setup")
 
@@ -380,16 +380,37 @@ class SmartSetup:
             if not stubs:
                 break
 
-            for stub in stubs:
+            # Fetch this page's message metadata via batched HTTP requests
+            # (chunks of 100, Gmail's practical batch limit) instead of one
+            # sequential messages().get() per message — same pattern as
+            # contact_analyzer.analyze_batch, needed here too since a scan
+            # can cover thousands of messages with no cap.
+            fetched_msgs: dict[str, dict] = {}
+
+            def _on_msg(_request_id, response, exception):
+                if exception is None and response is not None:
+                    fetched_msgs[_request_id] = response
+
+            for i in range(0, len(stubs), 100):
+                chunk = stubs[i:i + 100]
+                batch = self.service.new_batch_http_request(callback=_on_msg)
+                for stub in chunk:
+                    batch.add(
+                        self.service.users().messages().get(
+                            userId="me", id=stub["id"],
+                            format="metadata", metadataHeaders=["From"],
+                        ),
+                        request_id=stub["id"],
+                    )
                 try:
-                    msg = self.service.users().messages().get(
-                        userId="me", id=stub["id"],
-                        format="metadata", metadataHeaders=["From"],
-                    ).execute()
-                except HttpError:
-                    fetched += 1
-                    continue
-                self._ingest(msg, sent_threads, senders)
+                    batch.execute()
+                except HttpError as e:
+                    logger.warning(f"Batch de mensajes falló (fase {phase}): {e}")
+
+            for stub in stubs:
+                msg = fetched_msgs.get(stub["id"])
+                if msg is not None:
+                    self._ingest(msg, sent_threads, senders)
                 fetched += 1
 
             page += 1
@@ -573,7 +594,4 @@ def _is_definitely_automated(email: str) -> bool:
 # ── Header helpers ────────────────────────────────────────────────────────────
 
 def _extract_name(headers: list[dict]) -> str:
-    raw = get_header(headers, "From")
-    if "<" in raw:
-        return raw.split("<")[0].strip().strip('"').strip("'")
-    return ""
+    return extract_display_name(get_header(headers, "From"))
