@@ -133,8 +133,11 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     }
 
 
-def limpiar_todo_basura(service) -> dict:
-    """Limpia spam + promociones + social + actualizaciones + foros en secuencia."""
+def limpiar_todo_basura(service, dry_run: bool = False) -> dict:
+    """Limpia spam + promociones + social + actualizaciones + foros en secuencia.
+
+    dry_run: si True, sólo cuenta mensajes sin moverlos (igual que limpiar_bandeja).
+    """
     resultados = {}
     total_p = 0
     total_e = 0
@@ -142,17 +145,18 @@ def limpiar_todo_basura(service) -> dict:
     for cat in CATEGORIAS:
         print(f"\n  {'─'*44}")
         print(f"  {_NOMBRES_ES[cat].upper()}")
-        r = limpiar_bandeja(service, categorias=[cat])
+        r = limpiar_bandeja(service, categorias=[cat], dry_run=dry_run)
         resultados[cat] = r
         total_p += r['procesados']
         total_e += r['exitos']
 
+    label = "encontrados" if dry_run else "enviados a papelera"
     print(f"\n  {'═'*44}")
-    print("  RESUMEN FINAL")
+    print("  RESUMEN FINAL" + ("  [DRY RUN]" if dry_run else ""))
     print(f"  {'═'*44}")
     for cat, r in resultados.items():
         barra = f"{r['exitos']}/{r['procesados']}"
-        print(f"  {_NOMBRES_ES[cat]:<18} {barra:>12}  enviados a papelera")
+        print(f"  {_NOMBRES_ES[cat]:<18} {barra:>12}  {label}")
     print(f"  {'─'*44}")
     total_barra = f"{total_e}/{total_p}"
     print(f"  {'TOTAL':<18} {total_barra:>12}")

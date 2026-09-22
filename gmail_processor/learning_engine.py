@@ -264,10 +264,11 @@ class LearningEngine:
             score -= 8;  factors.append("-8  categoría Actualizaciones")
 
         for drule in cfg.DOMAIN_RULES:
-            if domain in drule["domains"]:
-                if drule["action"] == "mark_important":
+            if domain in drule.get("domains", []):
+                drule_action = drule.get("action")
+                if drule_action == "mark_important":
                     score += 35; factors.append(f"+35 dominio seguro ({domain})")
-                elif drule["action"] == "archive":
+                elif drule_action == "archive":
                     score -= 5;  factors.append(f"-5  dominio servicios ({domain})")
                 break
 
@@ -570,8 +571,8 @@ class LearningEngine:
 
     def _base_threshold(self, rule_name: str) -> Optional[int]:
         for target in cfg.CLEANUP_RULES.get("targets", []):
-            if target["rule"] == rule_name:
-                m = re.search(r"older_than:(\d+)d", target["query"])
+            if target.get("rule") == rule_name:
+                m = re.search(r"older_than:(\d+)d", target.get("query", ""))
                 return int(m.group(1)) if m else None
         return None
 
@@ -643,7 +644,7 @@ def _is_critical(sender: str, domain: str) -> bool:
     if domain and f"@{domain}" in cfg.CONTACT_RULES:
         return True
     return any(
-        domain in rule["domains"]
+        domain in rule.get("domains", [])
         for rule in cfg.DOMAIN_RULES
         if rule.get("action") == "mark_important"
     )
