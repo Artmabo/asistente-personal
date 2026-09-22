@@ -42,9 +42,13 @@ class ContactProfiler:
         service,
         important_contacts: list[str],
         progress_cb: Callable | None = None,
+        force: bool = False,
     ) -> dict:
         """
-        Construye un perfil por cada email en important_contacts.
+        Construye un perfil por cada email en important_contacts que lo
+        necesite (perfil ausente, con error previo, o con más de 7 días de
+        antigüedad — ver needs_rebuild). Con force=True reconstruye todos,
+        sin importar qué tan reciente sea el perfil existente.
         Persiste después de cada contacto para tolerar interrupciones.
         """
         api_key = get_api_key()
@@ -57,11 +61,14 @@ class ContactProfiler:
         except ImportError:
             return {"error": "anthropic_not_installed"}
 
-        total  = len(important_contacts)
+        contacts = important_contacts if force else [
+            addr for addr in important_contacts if self.needs_rebuild(addr)
+        ]
+        total  = len(contacts)
         built  = 0
         errors: list[str] = []
 
-        for i, addr in enumerate(important_contacts):
+        for i, addr in enumerate(contacts):
             if progress_cb:
                 progress_cb(i + 1, total, addr)
             try:
@@ -74,7 +81,12 @@ class ContactProfiler:
             except Exception as exc:
                 errors.append(f"{addr}: {exc}")
 
-        return {"built": built, "total": total, "errors": errors}
+        return {
+            "built":   built,
+            "total":   total,
+            "skipped": len(important_contacts) - total,
+            "errors":  errors,
+        }
 
     def get_profiles(self) -> dict:
         return self.data.get("profiles", {})
@@ -213,7 +225,6 @@ class ContactProfiler:
     # ── Obtener correos ───────────────────────────────────────────────────────
 
     def _fetch_emails(self, service, addr: str) -> list[dict]:
-        result = []
         try:
             resp = service.users().messages().list(
                 userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
@@ -222,17 +233,31 @@ class ContactProfiler:
         except HttpError:
             return []
 
-        for stub in stubs:
+        # Batched HTTP requests (chunks of 100, well under _MAX_EMAILS=50
+        # anyway) instead of one sequential messages().get() per email —
+        # same pattern as contact_analyzer.analyze_batch.
+        fetched: dict[str, dict] = {}
+
+        def _on_msg(_request_id, response, exception):
+            if exception is None and response is not None:
+                fetched[_request_id] = response
+
+        for i in range(0, len(stubs), 100):
+            chunk = stubs[i:i + 100]
+            batch = service.new_batch_http_request(callback=_on_msg)
+            for stub in chunk:
+                batch.add(
+                    service.users().messages().get(
+                        userId="me", id=stub["id"], format="full",
+                    ),
+                    request_id=stub["id"],
+                )
             try:
-                msg = service.users().messages().get(
-                    userId="me", id=stub["id"], format="full",
-                ).execute()
-                result.append(self._parse_message(msg))
-                time.sleep(0.05)
+                batch.execute()
             except HttpError:
                 continue
 
-        return result
+        return [self._parse_message(fetched[s["id"]]) for s in stubs if s["id"] in fetched]
 
     def _parse_message(self, msg: dict) -> dict:
         payload  = msg.get("payload", {})

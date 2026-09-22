@@ -387,6 +387,12 @@ class ContactAnalyzer:
                 else:
                     errors.append(f"{addr}: error al mover a papelera")
 
+            if decision == "skip":
+                # "No sé ahora" no es una decisión final: el remitente debe
+                # seguir en pending para que reaparezca en el próximo análisis,
+                # tal como promete la UI ("Los que omitas quedarán para después").
+                continue
+
             reviewed[addr] = entry
             pending_set.discard(addr)
             pending_meta.pop(addr, None)

@@ -1241,8 +1241,13 @@ elif _current_page == "contactos":
             elif _prof_r.get("error"):
                 st.error(f"Error al construir perfiles: {_prof_r['error']}")
             elif "built" in _prof_r:
+                _skip_msg = (
+                    f" ({_prof_r['skipped']} ya estaban al día, sin cambios)"
+                    if _prof_r.get("skipped")
+                    else ""
+                )
                 st.success(
-                    f"✓ {_prof_r['built']} de {_prof_r['total']} perfiles construidos."
+                    f"✓ {_prof_r['built']} de {_prof_r['total']} perfiles construidos.{_skip_msg}"
                 )
                 _profiles = _load_profiles()
 
