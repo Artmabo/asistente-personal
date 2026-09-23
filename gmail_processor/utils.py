@@ -37,3 +37,32 @@ def extract_email_address(raw: str) -> str:
         if end > start:
             return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
+
+
+def extract_domain(raw: str) -> str:
+    """Extracts the lowercase domain from a raw From/To header value or bare address."""
+    address = extract_email_address(raw)
+    return address.split("@")[-1] if "@" in address else address
+
+
+def extract_display_name(raw: str) -> str:
+    """Extracts the display name portion of a raw From/To header value, if any.
+
+    '"Jane Doe" <jane@example.com>' → 'Jane Doe'
+    'jane@example.com' → ''
+    """
+    if not raw:
+        return ""
+    if "<" in raw:
+        start = raw.rfind("<")
+        return raw[:start].strip().strip('"').strip("'")
+    return ""
+
+
+def escape_py_str(value: str) -> str:
+    """Escapes a string for safe embedding inside a double-quoted Python literal.
+
+    Used when generating source lines (e.g. rules.py entries) from user input,
+    so values containing quotes or backslashes don't produce invalid/broken syntax.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')

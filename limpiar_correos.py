@@ -162,7 +162,7 @@ def limpiar_todo_basura(service) -> dict:
 
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
 
-def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False):
+def limpiar_correos(service=None, meses=6, solo_no_leidos=True):
     if service is None:
         service = obtener_servicio()
     fecha = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")

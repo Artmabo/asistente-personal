@@ -101,7 +101,8 @@ def _cmd_feedback(argv: list[str]):
     args = parser.parse_args(argv)
 
     setup_logging(level=logging.INFO)
-    domain = args.sender.split("@")[-1] if "@" in args.sender else args.sender
+    from gmail_processor.utils import extract_domain
+    domain = extract_domain(args.sender)
 
     from gmail_processor.learning_engine import LearningEngine, FeedbackEvent
     engine = LearningEngine()
@@ -204,22 +205,13 @@ def _cmd_audit(argv: list[str]):
 
     setup_logging(level=logging.WARNING)
 
-    from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
+    from gmail_processor.audit_log import AuditLogger
     audit = AuditLogger()
 
     if args.decision:
-        # The requested decision may be sparse, so widen the fetch window
-        # until there are enough matches (or the whole log has been read).
-        fetch_n = max(args.last * 3, 200)
-        while True:
-            entries = [e for e in audit.recent(fetch_n) if e.get("decision") == args.decision]
-            if len(entries) >= args.last or fetch_n >= MAX_ENTRIES:
-                break
-            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
+        entries = audit.recent_filtered(args.last, args.decision)
     else:
         entries = audit.recent(args.last)
-
-    entries = entries[-args.last:]
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")

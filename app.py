@@ -44,7 +44,7 @@ st.session_state.setdefault("ca_decisions",       {})
 st.session_state.setdefault("ca_running",         False)
 st.session_state.setdefault("storage_data",       None)
 st.session_state.setdefault("cleanup_size_data",  None)
-st.session_state.setdefault("schedule_saved",     False)
+st.session_state.setdefault("schedule_saved",     None)
 st.session_state.setdefault("profiler_result",    None)
 st.session_state.setdefault("chat_messages",      [])
 st.session_state.setdefault("chat_open",          False)
@@ -334,18 +334,11 @@ def _cargar_stats() -> dict:
 
 def _cargar_audit(last: int, decision: str | None) -> list[dict]:
     try:
-        from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
+        from gmail_processor.audit_log import AuditLogger
         audit = AuditLogger()
         if not decision:
             return audit.recent(last)
-        # The requested decision may be sparse, so widen the fetch window
-        # until there are enough matches (or the whole log has been read).
-        fetch_n = max(last * 3, 200)
-        while True:
-            entries = [e for e in audit.recent(fetch_n) if e.get("decision") == decision]
-            if len(entries) >= last or fetch_n >= MAX_ENTRIES:
-                return entries[-last:]
-            fetch_n = min(fetch_n * 4, MAX_ENTRIES)
+        return audit.recent_filtered(last, decision)
     except Exception as exc:
         st.error(f"Error al cargar audit log: {exc}")
         return []
@@ -356,8 +349,9 @@ def _enviar_feedback(sender: str, outcome: str, rule: str) -> dict | None:
         import logging
         from gmail_processor import setup_logging
         from gmail_processor.learning_engine import LearningEngine, FeedbackEvent
+        from gmail_processor.utils import extract_domain
         setup_logging(level=logging.WARNING)
-        domain = sender.split("@")[-1] if "@" in sender else sender
+        domain = extract_domain(sender)
         engine = LearningEngine()
         event  = FeedbackEvent(
             outcome=outcome, source="manual",
@@ -602,6 +596,24 @@ def _get_chat():
     return AssistantChat()
 
 
+def _seed_chat_history_once():
+    """Restores the persisted chat_history.json into session_state on first
+    render of a browser session. Previously chat_history.json was saved on
+    every turn but never read back into the UI — real conversation memory
+    lived only in session_state and vanished on every page refresh."""
+    if st.session_state.get("chat_history_seeded") or st.session_state.get("chat_messages"):
+        st.session_state["chat_history_seeded"] = True
+        return
+    st.session_state["chat_history_seeded"] = True
+    try:
+        persisted = _get_chat().history[-20:]  # last 10 user/assistant pairs
+        st.session_state["chat_messages"] = [
+            {"role": m["role"], "content": m["content"]} for m in persisted
+        ]
+    except Exception:
+        pass
+
+
 def _get_important_contacts() -> list[str]:
     try:
         from gmail_processor.contact_analyzer import STATE_PATH
@@ -734,7 +746,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_rel_names.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -761,7 +773,8 @@ def _send_chat_message(msg_text: str, chat_msgs: list):
     with st.spinner("Pensando…"):
         try:
             _chat_obj = _get_chat()
-            _chat_obj.refresh_context()
+            # send_message() already calls refresh_context() internally — an
+            # extra call here just re-reads the same 4 JSON files for nothing.
             _api_hist = [{"role": m["role"], "content": m["content"]} for m in chat_msgs[:-1]]
             _resp = _chat_obj.send_message(msg_text, _api_hist)
         except Exception as _ce:
@@ -774,6 +787,7 @@ def _send_chat_message(msg_text: str, chat_msgs: list):
 
 def _render_chat_panel():
     """Contenido del panel de chat (reutilizable en dialog y panel inline)."""
+    _seed_chat_history_once()
     if not _check_api_key():
         st.warning(
             "Para activar el asistente configura tu clave de API. "
@@ -1334,7 +1348,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_rel_names.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
@@ -1469,7 +1483,7 @@ elif _current_page == "analizar":
                             _slabel, _spos = _SL.get(_s, (_s, True))
                             _cls = "tag-green" if _spos else "tag-amber"
                             _ico = "✓" if _spos else "✗"
-                            _sig_parts.append(f'<span class="tag {_cls}">{_ico} {_slabel}</span>')
+                            _sig_parts.append(f'<span class="tag {_cls}">{_ico} {html.escape(_slabel)}</span>')
                         st.markdown(" ".join(_sig_parts), unsafe_allow_html=True)
 
                     st.markdown("")
@@ -1588,11 +1602,15 @@ elif _current_page == "analizar":
                     )
 
                 if _ca_btn_new:
-                    _ca_reset()
-                    st.session_state["ca_batch_result"] = None
-                    st.session_state["ca_apply_result"] = None
-                    st.session_state["ca_decisions"]    = {}
-                    st.rerun()
+                    try:
+                        _ca_reset()
+                    except Exception as exc:
+                        st.error(f"No se pudo reiniciar el análisis: {exc}")
+                    else:
+                        st.session_state["ca_batch_result"] = None
+                        st.session_state["ca_apply_result"] = None
+                        st.session_state["ca_decisions"]    = {}
+                        st.rerun()
                 if _ca_btn_review:
                     st.session_state["ca_batch_result"] = {
                         "auto_personal": 0, "auto_spam": 0,
@@ -1974,13 +1992,15 @@ elif _current_page == "automatica":
                         day_of_week=_sched_dow,
                         enabled=True,
                     )
-                    _sch_obj.start()
-                    st.session_state["schedule_saved"] = True
+                    st.session_state["schedule_saved"] = _sch_obj.start()
                     st.rerun()
 
-                if st.session_state.get("schedule_saved"):
-                    st.success("Limpieza automática configurada y activada.")
-                    st.session_state["schedule_saved"] = False
+                if st.session_state.get("schedule_saved") is not None:
+                    if st.session_state["schedule_saved"]:
+                        st.success("Limpieza automática configurada y activada.")
+                    else:
+                        st.error("La configuración se guardó, pero el scheduler no pudo iniciarse. Revisa los logs.")
+                    st.session_state["schedule_saved"] = None
 
             else:
                 if _sch_status.get("enabled"):
@@ -2110,6 +2130,15 @@ elif _current_page == "avanzadas":
                 for e in _audit_d
             ]
             st.dataframe(_audit_rows, use_container_width=True, hide_index=True)
+
+            from gmail_processor.audit_log import AuditLogger
+            st.download_button(
+                "⬇️ Descargar CSV",
+                data=AuditLogger().entries_to_csv(_audit_d),
+                file_name=f"audit_log_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                key="btn_download_audit_csv",
+            )
 
     # ── Feedback ──────────────────────────────────────────────────────────────
     with _adv_tabs[2]:

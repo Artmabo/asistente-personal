@@ -29,6 +29,10 @@ class EmailClassifier:
         """
         headers  = message.get("payload", {}).get("headers", [])
         label_ids = message.get("labelIds", [])
+        # Gmail's own IMPORTANT/STARRED labels protect a message from trash
+        # regardless of which rule matched — a user-starred email shouldn't be
+        # trashed just because its subject also contains a spam keyword.
+        gmail_protected = "IMPORTANT" in label_ids or "STARRED" in label_ids
 
         sender  = extract_email_address(get_header(headers, "From"))
         domain  = sender.split("@")[-1] if "@" in sender else ""
@@ -57,7 +61,7 @@ class EmailClassifier:
                     email_type="spam" if rule["action"] == "trash" else "important",
                     action=rule["action"],
                     labels=[rule["label"]] if rule.get("label") else [],
-                    protected=False,
+                    protected=gmail_protected,
                 )
 
         # 3. Gmail category labels
@@ -67,7 +71,7 @@ class EmailClassifier:
                     email_type=category.replace("CATEGORY_", "").lower(),
                     action=rule["action"],
                     labels=[rule["label"]] if rule.get("label") else [],
-                    protected=False,
+                    protected=gmail_protected,
                 )
 
         # 4. Domain rules
@@ -77,11 +81,11 @@ class EmailClassifier:
                     email_type="important",
                     action=rule["action"],
                     labels=[rule["label"]] if rule.get("label") else [],
-                    protected=rule["action"] == "mark_important",
+                    protected=gmail_protected or rule["action"] == "mark_important",
                 )
 
         # 5. Default
-        return Classification(email_type="unknown", action="label_only", protected=False)
+        return Classification(email_type="unknown", action="label_only", protected=gmail_protected)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

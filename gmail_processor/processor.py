@@ -2,6 +2,7 @@
 GmailProcessor: orchestrates fetching, classifying, and acting on emails.
 """
 import logging
+from logging.handlers import RotatingFileHandler
 from googleapiclient.errors import HttpError
 
 from .auth import get_service
@@ -27,7 +28,7 @@ def setup_logging(
         format=fmt,
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_file, encoding="utf-8"),
+            RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"),
         ],
     )
 
@@ -121,8 +122,17 @@ class GmailProcessor:
             self.stats["errors"] += 1
             return
 
-        c = self.classifier.classify(message)
-        self._apply(msg_id, message, c)
+        try:
+            c = self.classifier.classify(message)
+            self._apply(msg_id, message, c)
+        except Exception as e:
+            # One bad message (classifier bug, unexpected API/network failure deep in
+            # actions._call, ...) must not abort the whole run and strand every
+            # remaining message in the batch unprocessed.
+            logger.error(f"Error processing {msg_id}: {e}", exc_info=True)
+            self.stats["errors"] += 1
+            return
+
         self.stats["processed"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):
@@ -135,12 +145,17 @@ class GmailProcessor:
             f" → {c.action}  labels={c.labels}  protected={c.protected}"
         )
 
-        # Apply all labels first
-        for label in c.labels:
-            if self.actions.add_label(msg_id, label):
-                self.stats["labeled"] += 1
+        # Apply labels + the primary system-label change (archive/mark_important) in
+        # a single Gmail API call instead of one modify() per label plus one more.
+        add_system = ["IMPORTANT"] if c.action == "mark_important" else None
+        remove_system = ["INBOX"] if c.action == "archive" else None
+        applied = self.actions.apply_all(
+            msg_id, label_names=c.labels, add_system=add_system, remove_system=remove_system
+        )
+        if c.labels and applied:
+            self.stats["labeled"] += len(c.labels)
 
-        # Execute primary action
+        # Execute the primary action
         match c.action:
             case "trash":
                 if c.protected:
@@ -150,11 +165,11 @@ class GmailProcessor:
                     self.stats["trashed"] += 1
 
             case "archive":
-                if self.actions.archive(msg_id):
+                if applied:
                     self.stats["archived"] += 1
 
             case "mark_important":
-                if self.actions.mark_important(msg_id):
+                if applied:
                     self.stats["important"] += 1
 
             case _:  # "label_only" or "unknown"

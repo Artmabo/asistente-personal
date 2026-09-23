@@ -12,6 +12,7 @@ Decision pipeline per message:
 """
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -90,6 +91,9 @@ class StorageCleaner:
         reason    = target["reason"]
         rule_name = target["rule"]
 
+        if self.engine:
+            query = self._apply_learned_threshold(query, rule_name)
+
         logger.info(f"\n[TARGET] rule={rule_name}  query='{query}'")
 
         count      = 0
@@ -122,6 +126,21 @@ class StorageCleaner:
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
+
+    def _apply_learned_threshold(self, query: str, rule_name: str) -> str:
+        """Substitutes a learned, more-conservative older_than:Nd value into the
+        query when update_rule_thresholds() has raised this rule's threshold due
+        to a high false-positive rate. Previously get_threshold() was never
+        called anywhere, so the safety adjustment was computed and persisted but
+        had no actual effect on what got cleaned up."""
+        match = re.search(r"older_than:(\d+)d", query)
+        if not match:
+            return query
+        default_days = int(match.group(1))
+        learned_days = self.engine.get_threshold(rule_name, default_days)
+        if learned_days == default_days:
+            return query
+        return f"{query[:match.start()]}older_than:{learned_days}d{query[match.end():]}"
 
     # ── Per-message evaluation ────────────────────────────────────────────────
 
