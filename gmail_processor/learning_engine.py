@@ -518,8 +518,8 @@ class LearningEngine:
             lines.append("  Pendientes:")
             for sender, p in pending.items():
                 lines.append(
-                    f"    {sender}: outcome={p['outcome']} "
-                    f"count={p['count']} first_seen={p['first_seen']}"
+                    f"    {sender}: outcome={p.get('outcome', '?')} "
+                    f"count={p.get('count', 0)} first_seen={p.get('first_seen', '?')}"
                 )
 
         if rs:

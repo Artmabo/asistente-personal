@@ -7,6 +7,7 @@ automáticamente al recargar la página si enabled=true.
 """
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -57,6 +58,10 @@ class CleanupScheduler:
         self.config      = self._load()
         self._scheduler  = None
         self._job        = None
+        # Guards config mutation + save: _run_cleanup() runs on APScheduler's
+        # background thread while configure()/start()/stop() run on the Streamlit
+        # thread, and both read-modify-write self.config and self.config_path.
+        self._lock       = threading.RLock()
 
         if _APSCHEDULER_OK:
             self._scheduler = BackgroundScheduler(daemon=True)
@@ -76,28 +81,30 @@ class CleanupScheduler:
         enabled:     bool = True,
     ) -> None:
         """Guarda configuración y reprograma si el scheduler está corriendo."""
-        self.config.update({
-            "frequency":   frequency,
-            "categories":  categories,
-            "hour":        hour,
-            "day_of_week": day_of_week,
-            "enabled":     enabled,
-        })
-        self._save()
+        with self._lock:
+            self.config.update({
+                "frequency":   frequency,
+                "categories":  categories,
+                "hour":        hour,
+                "day_of_week": day_of_week,
+                "enabled":     enabled,
+            })
+            self._save()
 
-        if enabled and self._scheduler and self._scheduler.running:
-            self._reschedule()
+            if enabled and self._scheduler and self._scheduler.running:
+                self._reschedule()
 
     def start(self) -> bool:
         """Inicia el scheduler y programa la limpieza. Devuelve True si OK."""
         if not _APSCHEDULER_OK or self._scheduler is None:
             return False
         try:
-            if not self._scheduler.running:
-                self._scheduler.start()
-            self._reschedule()
-            self.config["enabled"] = True
-            self._save()
+            with self._lock:
+                if not self._scheduler.running:
+                    self._scheduler.start()
+                self._reschedule()
+                self.config["enabled"] = True
+                self._save()
             logger.info("Scheduler iniciado")
             return True
         except Exception as exc:
@@ -106,27 +113,29 @@ class CleanupScheduler:
 
     def stop(self) -> None:
         """Pausa la limpieza programada sin borrar la configuración."""
-        if self._job:
-            try:
-                self._job.remove()
-            except Exception:
-                pass
-            self._job = None
-        self.config["enabled"]  = False
-        self.config["next_run"] = None
-        self._save()
+        with self._lock:
+            if self._job:
+                try:
+                    self._job.remove()
+                except Exception:
+                    pass
+                self._job = None
+            self.config["enabled"]  = False
+            self.config["next_run"] = None
+            self._save()
         logger.info("Scheduler detenido")
 
     def get_status(self) -> dict:
         """Devuelve config actualizada + next_run del job activo."""
-        next_run = None
-        if self._job:
-            try:
-                nrt = self._job.next_run_time
-                next_run = nrt.isoformat() if nrt else None
-            except Exception:
-                pass
-        return {**self.config, "next_run": next_run, "scheduler_available": _APSCHEDULER_OK}
+        with self._lock:
+            next_run = None
+            if self._job:
+                try:
+                    nrt = self._job.next_run_time
+                    next_run = nrt.isoformat() if nrt else None
+                except Exception:
+                    pass
+            return {**self.config, "next_run": next_run, "scheduler_available": _APSCHEDULER_OK}
 
     # ── Ejecución de limpieza ─────────────────────────────────────────────────
 
@@ -150,47 +159,50 @@ class CleanupScheduler:
             result = {"error": str(exc)}
             logger.error(f"Error en limpieza automática: {exc}")
 
-        self.config["last_run"]        = datetime.now().isoformat(timespec="seconds")
-        self.config["last_run_result"] = result
-        self._update_next_run()
-        self._save()
+        with self._lock:
+            self.config["last_run"]        = datetime.now().isoformat(timespec="seconds")
+            self.config["last_run_result"] = result
+            self._update_next_run()
+            self._save()
         logger.info(f"Limpieza automática completada: {result}")
 
     # ── Internos ──────────────────────────────────────────────────────────────
 
     def _reschedule(self) -> None:
-        if not self._scheduler:
-            return
-        if self._job:
-            try:
-                self._job.remove()
-            except Exception:
-                pass
+        with self._lock:
+            if not self._scheduler:
+                return
+            if self._job:
+                try:
+                    self._job.remove()
+                except Exception:
+                    pass
 
-        freq = self.config.get("frequency", "weekly")
-        hour = int(self.config.get("hour", 3))
-        dow  = self.config.get("day_of_week", "sunday")
+            freq = self.config.get("frequency", "weekly")
+            hour = int(self.config.get("hour", 3))
+            dow  = self.config.get("day_of_week", "sunday")
 
-        if freq == "daily":
-            trigger = CronTrigger(hour=hour)
-        elif freq == "weekly":
-            trigger = CronTrigger(day_of_week=dow, hour=hour)
-        else:   # monthly
-            trigger = CronTrigger(day=1, hour=hour)
+            if freq == "daily":
+                trigger = CronTrigger(hour=hour)
+            elif freq == "weekly":
+                trigger = CronTrigger(day_of_week=dow, hour=hour)
+            else:   # monthly
+                trigger = CronTrigger(day=1, hour=hour)
 
-        self._job = self._scheduler.add_job(self._run_cleanup, trigger, misfire_grace_time=3600)
-        self._update_next_run()
-        self._save()
+            self._job = self._scheduler.add_job(self._run_cleanup, trigger, misfire_grace_time=3600)
+            self._update_next_run()
+            self._save()
 
     def _update_next_run(self) -> None:
-        if self._job:
-            try:
-                nrt = self._job.next_run_time
-                self.config["next_run"] = nrt.isoformat() if nrt else None
-            except Exception:
+        with self._lock:
+            if self._job:
+                try:
+                    nrt = self._job.next_run_time
+                    self.config["next_run"] = nrt.isoformat() if nrt else None
+                except Exception:
+                    self.config["next_run"] = None
+            else:
                 self.config["next_run"] = None
-        else:
-            self.config["next_run"] = None
 
     def _load(self) -> dict:
         if self.config_path.exists():
@@ -201,9 +213,14 @@ class CleanupScheduler:
         return _empty_config()
 
     def _save(self) -> None:
-        self.config_path.write_text(
-            json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        """Atomic write (temp file + replace) so a concurrent read never sees a
+        half-written file and a crash mid-write can't corrupt the schedule."""
+        with self._lock:
+            tmp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+            tmp_path.write_text(
+                json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp_path.replace(self.config_path)
 
 
 def format_next_run(iso: str | None) -> str:

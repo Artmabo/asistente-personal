@@ -703,8 +703,10 @@ class ContactAnalyzer:
                 return {"error": "CONTACT_RULES closing brace not found"}
 
             # Escape characters that would break the Python string literal
-            safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
+            from .utils import escape_py_str
+            safe_addr  = escape_py_str(email_addr)
+            safe_label = escape_py_str(label)
+            new_line = f'    "{safe_addr}": {{"label": "{safe_label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
             rules_path.write_text("\n".join(lines), encoding="utf-8")
             importlib.reload(rules_mod)

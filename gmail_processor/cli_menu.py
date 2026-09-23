@@ -324,8 +324,8 @@ def _menu_feedback():
     print("  'incorrecto' = el correo NO debió eliminarse")
     print()
 
-    sender = _ask("Email del remitente")
-    if not sender:
+    sender_raw = _ask("Email del remitente")
+    if not sender_raw:
         return
 
     print("  1. correcto    (la decisión fue acertada)")
@@ -338,7 +338,12 @@ def _menu_feedback():
     if source not in ("manual", "recovery", "automatic"):
         source = "manual"
 
-    domain = sender.split("@")[-1] if "@" in sender else sender
+    # calculate_score() always looks senders/domains up via extract_email_address(),
+    # which lowercases — normalize here too, or a feedback entry typed with any
+    # uppercase never matches on the next scoring pass and silently does nothing.
+    from .utils import extract_email_address, extract_domain
+    sender = extract_email_address(sender_raw) or sender_raw.strip().lower()
+    domain = extract_domain(sender_raw)
 
     from .processor import setup_logging
     setup_logging(level=logging.INFO)
@@ -778,8 +783,12 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
         if f'"{email}"' in line and not line.strip().startswith("#"):
             return False  # already exists
 
+    from .utils import escape_py_str
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = (
+        f'    "{escape_py_str(email)}": '
+        f'{{"label": "{escape_py_str(label)}", "mark_important": {important_str}}},'
+    )
     lines.insert(end_idx, new_entry)
 
     try:
@@ -851,11 +860,12 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
     if f'"{domain}"' in block_text:
         return False
 
+    from .utils import escape_py_str
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": ["{escape_py_str(domain)}"],\n'
+        f'        "label": "{escape_py_str(label)}",\n'
+        f'        "action": "{escape_py_str(action)}",\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)

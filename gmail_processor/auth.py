@@ -35,7 +35,10 @@ def get_service(
                 )
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
             creds = flow.run_local_server(port=0)
+        # mode= is only honored by the OS when O_CREAT actually creates the file;
+        # chmod explicitly so a pre-existing world/group-readable token is locked down too.
         fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w") as f:
             f.write(creds.to_json())
 
