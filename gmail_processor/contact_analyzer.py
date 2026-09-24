@@ -17,8 +17,6 @@ from typing import Callable
 
 from googleapiclient.errors import HttpError
 
-from .utils import get_header
-
 logger = logging.getLogger("gmail_processor.contact_analyzer")
 
 # ── Constantes públicas ───────────────────────────────────────────────────────
@@ -100,6 +98,27 @@ def _domain(addr: str) -> str:
     return addr.split("@")[-1].lower() if "@" in addr else ""
 
 
+def _header_map(headers: list[dict]) -> dict[str, str]:
+    """Builds a lowercase-keyed {name: value} lookup from message headers,
+    keeping the first occurrence per name (same semantics as utils.get_header)
+    so a message's headers only need to be scanned once, not once per field."""
+    hmap: dict[str, str] = {}
+    for h in headers:
+        key = h.get("name", "").lower()
+        if key not in hmap:
+            hmap[key] = h.get("value", "")
+    return hmap
+
+
+def _mask_email(addr: str) -> str:
+    """Masks the local part of an email address for safe logging, e.g. 'j***@example.com'."""
+    if not addr or "@" not in addr:
+        return "***"
+    local, _, domain = addr.partition("@")
+    prefix = local[0] if local else ""
+    return f"{prefix}***@{domain}"
+
+
 def _is_esp(addr: str) -> bool:
     d = _domain(addr)
     return d in _ESP_DOMAINS or any(d.endswith("." + e) for e in _ESP_DOMAINS)
@@ -153,6 +172,9 @@ def _empty_patterns() -> dict:
 # ── Core class ────────────────────────────────────────────────────────────────
 
 class ContactAnalyzer:
+    """Scans inbox senders in batches, scores them with learned signal weights,
+    and persists review state and learned patterns to disk."""
+
     def __init__(self, service, state_path: str | Path = STATE_PATH):
         self.svc      = service
         self.path     = Path(state_path)
@@ -218,16 +240,17 @@ class ContactAnalyzer:
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
-                addr, name     = _parse_from(get_header(headers, "From"))
+                hmap           = _header_map(headers)
+                addr, name     = _parse_from(hmap.get("from", ""))
                 if not addr:
                     continue
 
                 if addr in reviewed or addr in pending_set:
                     continue
 
-                subject   = get_header(headers, "Subject")
-                date_hdr  = get_header(headers, "Date")
-                has_unsub = bool(get_header(headers, "List-Unsubscribe"))
+                subject   = hmap.get("subject", "")
+                date_hdr  = hmap.get("date", "")
+                has_unsub = bool(hmap.get("list-unsubscribe", ""))
 
                 if addr not in _working:
                     _working[addr] = {
@@ -510,12 +533,15 @@ class ContactAnalyzer:
         return sorted(result, key=lambda x: x["score"], reverse=True)
 
     def get_stats(self) -> dict:
+        """Returns aggregate scan/decision counters (scanned, personal, spam, commercial)."""
         return self.state.get("stats", {})
 
     def has_previous_state(self) -> bool:
+        """True if a state file exists on disk with at least one reviewed sender."""
         return self.path.exists() and bool(self.state.get("reviewed"))
 
     def reset(self):
+        """Discards all persisted analysis state (reviewed/pending senders and stats)."""
         self.state = _empty_state()
         self._save_state()
 
@@ -528,14 +554,17 @@ class ContactAnalyzer:
         has_unsub: bool,
         sent_addrs: set[str],
     ) -> tuple[int, list[str]]:
+        """Computes a 0-100 score and the list of active signals for one sender,
+        weighting each signal's base value by the learned weight from patterns."""
         weights        = self.patterns.get("signal_weights", _default_weights())
         active_signals = []
 
         if addr in sent_addrs:
             active_signals.append("replied")
 
-        d = _domain(addr)
-        if d and d not in _FREE_PROVIDERS and not _is_esp(addr):
+        d           = _domain(addr)
+        is_esp_addr = _is_esp(addr)
+        if d and d not in _FREE_PROVIDERS and not is_esp_addr:
             active_signals.append("non_mass_domain")
 
         if not has_unsub:
@@ -546,7 +575,7 @@ class ContactAnalyzer:
         if _NOREPLY_RE.match(addr):
             active_signals.append("is_noreply")
 
-        if _is_esp(addr):
+        if is_esp_addr:
             active_signals.append("is_esp")
 
         if subjects and _has_marketing_subject(subjects):
@@ -561,10 +590,14 @@ class ContactAnalyzer:
         return max(0, min(100, score)), active_signals
 
     def _check_domain_auto(self, domain: str) -> str | None:
+        """Looks up learned votes for `domain` and returns 'personal'/'spam' if it
+        should be auto-classified, else None."""
         votes = self.patterns.get("domain_votes", {}).get(domain, {})
         return self._check_domain_auto_from_votes(votes)
 
     def _check_domain_auto_from_votes(self, votes: dict) -> str | None:
+        """Returns 'personal' or 'spam' if that direction has enough votes and a
+        clear majority over the opposite direction, else None."""
         for direction in ("personal", "spam"):
             count    = votes.get(direction, 0)
             opposite = votes.get("spam" if direction == "personal" else "personal", 0)
@@ -579,6 +612,8 @@ class ContactAnalyzer:
         days_range: int | None,
         progress_cb: Callable | None,
     ) -> set[str]:
+        """Scans 'Sent' messages (capped at _MAX_SENT_INDEXED) and returns the set of
+        recipient addresses the user has emailed, used for the 'replied' signal."""
         date_q     = _date_filter(days_range)
         query      = f"in:sent{date_q}"
         addrs: set[str] = set()
@@ -612,8 +647,9 @@ class ContactAnalyzer:
                         format="metadata", metadataHeaders=["To", "Cc"],
                     ).execute()
                     headers = msg.get("payload", {}).get("headers", [])
-                    for hname in ("To", "Cc"):
-                        raw = get_header(headers, hname)
+                    hmap    = _header_map(headers)
+                    for hname in ("to", "cc"):
+                        raw = hmap.get(hname, "")
                         if raw:
                             for _, a in email.utils.getaddresses([raw]):
                                 if a:
@@ -640,6 +676,7 @@ class ContactAnalyzer:
     # ── Borrar correos de un remitente ────────────────────────────────────────
 
     def _trash_sender(self, addr: str) -> int:
+        """Moves all inbox messages from `addr` to Trash. Returns the count moved, or -1 on error."""
         query      = f"from:{addr}"
         page_token = None
         total      = 0
@@ -664,7 +701,9 @@ class ContactAnalyzer:
                 ).execute()
                 total += len(ids)
             except HttpError as e:
-                logger.warning(f"batchModify failed for {len(ids)} msgs from {addr}: {e}")
+                logger.warning(
+                    f"batchModify failed for {len(ids)} msgs from {_mask_email(addr)}: {e}"
+                )
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -675,6 +714,7 @@ class ContactAnalyzer:
     # ── Escribir en rules.py ──────────────────────────────────────────────────
 
     def _write_contact_rule(self, email_addr: str, name: str) -> dict:
+        """Appends a CONTACT_RULES entry for `email_addr` to rules.py and hot-reloads it."""
         try:
             import importlib
             import gmail_processor.rules as rules_mod
@@ -758,8 +798,10 @@ def _atomic_write(path: Path, data: dict) -> None:
 
 
 def _derive_label(email_addr: str, name: str) -> str:
-    if name:
-        word  = name.strip().split()[0]
+    """Derives a short uppercase label for a new contact rule from the sender's name or email."""
+    stripped_name = name.strip() if name else ""
+    if stripped_name:
+        word  = stripped_name.split()[0]
         clean = "".join(c for c in word if c.isalpha())[:10]
         if clean:
             return clean.upper()

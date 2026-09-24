@@ -34,20 +34,26 @@ def ejemplo_2_listar_sin_borrar():
     print("="*60)
     
     service = get_gmail_service()
-    
+
     # Buscar sin eliminar (seguro para previsualizacion)
     from datetime import datetime, timedelta
     fecha_limite = (datetime.now() - timedelta(days=6 * 30)).strftime("%Y/%m/%d")
     query = f"before:{fecha_limite} is:unread"
-    
-    resultados = service.users().messages().list(
-        userId="me",
-        q=query,
-        maxResults=100  # Pequeño límite para ver
-    ).execute()
-    
-    mensajes = resultados.get("messages", [])
-    print(f"\n📊 Se encontraron {len(mensajes)} correos que cumplen criterio")
+
+    try:
+        resultados = service.users().messages().list(
+            userId="me",
+            q=query,
+            maxResults=100  # Pequeño límite para ver
+        ).execute()
+    except Exception as e:
+        print(f"\nError al consultar Gmail: {e}\n")
+        return
+
+    # resultSizeEstimate refleja el total real que cumple el criterio;
+    # "messages" sólo trae esta primera página (hasta maxResults).
+    total_estimado = resultados.get("resultSizeEstimate", len(resultados.get("messages", [])))
+    print(f"\n📊 Se encontraron ~{total_estimado} correos que cumplen criterio")
     print(f"📅 Criterio: {query}")
     print(f"\nℹ️  Para eliminarlos, ejecuta:")
     print("    python limpiar_correos.py")
@@ -145,7 +151,6 @@ if __name__ == "__main__":
     ejemplo_2_listar_sin_borrar()
     # ejemplo_3_limpieza_personalizada()
     # ejemplo_4_comparacion_modos()
-    # ejemplo_5_monitorear_throttle()
     # ejemplo_6_errores_comunes()
     
     print("\n✅ Fin de ejemplos")

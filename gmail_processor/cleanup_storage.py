@@ -17,8 +17,6 @@ from pathlib import Path
 from typing import Optional
 from googleapiclient.errors import HttpError
 
-_SUMMARY_PATH = Path("cleanup_summary.json")
-
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
@@ -27,8 +25,14 @@ from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
 
+_SUMMARY_PATH = Path("cleanup_summary.json")
+
 
 class StorageCleaner:
+    """Evaluates and trashes expired/irrelevant Gmail messages per CLEANUP_RULES,
+    protecting starred/important/known-contact senders and (optionally) scoring
+    the rest via a LearningEngine."""
+
     def __init__(
         self,
         service,
@@ -43,6 +47,7 @@ class StorageCleaner:
         self.audit         = audit
         self.learning_mode = learning_mode
         self._protected_domains = _build_protected_domains()
+        self._mode_label = "DRY RUN" if cfg.DRY_RUN else "LIVE"
         self.stats = {
             "examined": 0,
             "trashed":  0,
@@ -52,14 +57,14 @@ class StorageCleaner:
         }
 
     def run(self) -> dict:
+        """Runs the full cleanup pipeline over all configured targets and returns stats."""
         targets = cfg.CLEANUP_RULES.get("targets", [])
         max_per = cfg.CLEANUP_RULES.get("max_per_query", 200)
-        mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
         scoring = "activo" if self.engine else "inactivo"
 
         logger.info(f"\n{'─'*55}")
         logger.info(
-            f"  CLEANUP — mode={mode}  targets={len(targets)}"
+            f"  CLEANUP — mode={self._mode_label}  targets={len(targets)}"
             f"  cap={max_per}  scoring={scoring}"
         )
         logger.info(f"{'─'*55}")
@@ -143,7 +148,7 @@ class StorageCleaner:
         sender    = _sender_display(message)
         subject   = _subject(message)
         email     = _sender_email(message)
-        domain    = email.split("@")[-1] if "@" in email else ""
+        domain    = _domain_of(email)
         label_ids = message.get("labelIds", [])
 
         if self.engine:
@@ -185,8 +190,7 @@ class StorageCleaner:
         if self.engine:
             scored = self.engine.calculate_score(message, rule_name)
             floor  = PROTECT_THRESHOLD - DOUBT_MARGIN
-            factors_str = " | ".join(scored.factors) if scored.factors else "sin señales"
-            learned_tag = "Sí" if scored.learned else "No"
+            factors_str, learned_tag = _explain(scored)
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -218,11 +222,9 @@ class StorageCleaner:
                 return
 
         # 3. Trash
-        mode       = "DRY RUN" if cfg.DRY_RUN else "LIVE"
         score_line = ""
         if scored:
-            factors_str = " | ".join(scored.factors) if scored.factors else "sin señales"
-            learned_tag = "Sí" if scored.learned else "No"
+            factors_str, learned_tag = _explain(scored)
             score_line  = (
                 f"\n           Score   : {scored.score:+.1f} → TRASH  "
                 f"(aprendizaje: {learned_tag})"
@@ -234,7 +236,7 @@ class StorageCleaner:
             f"{score_line}\n"
             f"           Razón  : {reason}\n"
             f"           Regla  : {rule_name}\n"
-            f"           Acción : [{mode}] trash → {msg_id}"
+            f"           Acción : [{self._mode_label}] trash → {msg_id}"
         )
 
         if self.actions.trash(msg_id):
@@ -266,7 +268,7 @@ class StorageCleaner:
             return "marcado como importante (IMPORTANT)"
 
         email  = _sender_email(message)
-        domain = email.split("@")[-1] if "@" in email else ""
+        domain = _domain_of(email)
 
         if email in cfg.CONTACT_RULES:
             return f"contacto protegido ({email})"
@@ -312,6 +314,18 @@ class StorageCleaner:
 
 
 # ── Module helpers ────────────────────────────────────────────────────────────
+
+def _domain_of(email: str) -> str:
+    """Returns the domain part of an email address, or '' if there is none."""
+    return email.split("@")[-1] if "@" in email else ""
+
+
+def _explain(scored) -> tuple[str, str]:
+    """Formats a ScoreResult's factors/learned flag for the human-readable log lines."""
+    factors_str = " | ".join(scored.factors) if scored.factors else "sin señales"
+    learned_tag = "Sí" if scored.learned else "No"
+    return factors_str, learned_tag
+
 
 def _build_protected_domains() -> frozenset[str]:
     protected: set[str] = set()

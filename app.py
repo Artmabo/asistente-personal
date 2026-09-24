@@ -111,6 +111,11 @@ _RELATION_BADGE_COLORS = {
     "otro":     ("#f1f5f9", "#475569"),
 }
 
+_RELATION_NAMES = {
+    "familiar": "Familiar", "trabajo": "Trabajo",
+    "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro",
+}
+
 _MONTHS_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -120,6 +125,7 @@ _DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "do
 # ── Helpers: conexión y limpieza ───────────────────────────────────────────────
 
 def _init_service() -> bool:
+    """Connect to Gmail (caching the service in session state); show an error and return False on failure."""
     if st.session_state.service is not None:
         return True
     try:
@@ -139,6 +145,7 @@ def _init_service() -> bool:
 
 
 def _ejecutar_limpieza(categorias: list[str]) -> dict | None:
+    """Move all messages in the given categories to the Gmail trash."""
     try:
         from limpiar_correos import limpiar_bandeja
         return limpiar_bandeja(st.session_state.service, categorias=categorias)
@@ -148,6 +155,7 @@ def _ejecutar_limpieza(categorias: list[str]) -> dict | None:
 
 
 def _mostrar_resultado_cat(r: dict | None, nombre: str):
+    """Render the outcome of a single-category cleanup as a Streamlit message."""
     if r is None:
         return
     movidos     = r.get("exitos",     0)
@@ -166,6 +174,7 @@ def _mostrar_resultado_cat(r: dict | None, nombre: str):
 # ── Helpers: organizar correos ─────────────────────────────────────────────────
 
 def _ejecutar_procesador(dry_run: bool) -> dict:
+    """Run the GmailProcessor rules engine, optionally in dry-run (simulation) mode."""
     try:
         import logging
         import gmail_processor.rules as cfg
@@ -179,6 +188,7 @@ def _ejecutar_procesador(dry_run: bool) -> dict:
 
 
 def _cargar_remitentes_frecuentes() -> list[dict]:
+    """Return the 15 most frequent senders among the last 150 inbox messages."""
     try:
         import email.utils as eutils
         from collections import Counter
@@ -226,6 +236,7 @@ def _cargar_remitentes_frecuentes() -> list[dict]:
 
 
 def _limpiar_remitente(email: str) -> dict | None:
+    """Move all messages from a single sender to the trash."""
     try:
         from limpiar_correos import limpiar_bandeja
         return limpiar_bandeja(
@@ -245,6 +256,7 @@ _FREE_EMAIL_PROVIDERS = frozenset([
 
 
 def _derivar_label(email: str, name: str) -> str:
+    """Derive a short, uppercase Gmail label from a contact's name or email domain."""
     words = name.strip().split()
     if words:
         clean = "".join(c for c in words[0] if c.isalpha())[:10]
@@ -265,6 +277,7 @@ def _derivar_label(email: str, name: str) -> str:
 
 
 def _proteger_remitente(email: str, name: str) -> dict:
+    """Add a sender to CONTACT_RULES in rules.py so it is never auto-cleaned."""
     import re
     if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
         return {"error": f"Dirección de correo no válida: {email}"}
@@ -282,8 +295,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
+        with open(rules_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
 
         in_cr     = False
         depth     = 0
@@ -318,6 +332,7 @@ def _proteger_remitente(email: str, name: str) -> dict:
 # ── Helpers: panel avanzado ────────────────────────────────────────────────────
 
 def _cargar_stats() -> dict:
+    """Load learning-engine and audit-log statistics for the advanced panel."""
     try:
         from gmail_processor.learning_engine import LearningEngine
         from gmail_processor.audit_log import AuditLogger
@@ -333,6 +348,7 @@ def _cargar_stats() -> dict:
 
 
 def _cargar_audit(last: int, decision: str | None) -> list[dict]:
+    """Fetch the most recent audit log entries, optionally filtered by decision."""
     try:
         from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
         audit = AuditLogger()
@@ -352,6 +368,7 @@ def _cargar_audit(last: int, decision: str | None) -> list[dict]:
 
 
 def _enviar_feedback(sender: str, outcome: str, rule: str) -> dict | None:
+    """Record manual feedback about a rule decision and update the learning engine."""
     try:
         import logging
         from gmail_processor import setup_logging
@@ -384,6 +401,7 @@ def _enviar_feedback(sender: str, outcome: str, rule: str) -> dict | None:
 
 
 def _ejecutar_smart_setup(scan_days: int | None, status_ph) -> dict:
+    """Scan sent/inbox mail to auto-detect important contacts and trusted domains."""
     try:
         from gmail_processor.smart_setup import SmartSetup
 
@@ -422,6 +440,7 @@ def _ejecutar_smart_setup(scan_days: int | None, status_ph) -> dict:
 
 
 def _ejecutar_debug() -> tuple[dict, str]:
+    """Run the processor in dry-run mode with DEBUG logging captured to a string."""
     import logging
     import gmail_processor.rules as cfg
     from gmail_processor import GmailProcessor
@@ -453,11 +472,13 @@ def _ejecutar_debug() -> tuple[dict, str]:
 # ── Helpers: analizador de contactos ──────────────────────────────────────────
 
 def _ca_get_analyzer():
+    """Build a ContactAnalyzer bound to the current Gmail service."""
     from gmail_processor.contact_analyzer import ContactAnalyzer
     return ContactAnalyzer(st.session_state.service)
 
 
 def _ca_run_batch(days_range: int | None, batch_size: int, status_ph) -> dict:
+    """Run one batch of the contact analyzer and return its progress/pending results."""
     try:
         analyzer  = _ca_get_analyzer()
         _counters = {"scanned": 0, "auto": 0, "pending": 0}
@@ -487,6 +508,7 @@ def _ca_run_batch(days_range: int | None, batch_size: int, status_ph) -> dict:
 
 
 def _ca_apply(decisions: dict) -> dict:
+    """Apply the user's personal/spam decisions via the contact analyzer."""
     try:
         analyzer = _ca_get_analyzer()
         result   = analyzer.apply_decisions(decisions)
@@ -497,6 +519,7 @@ def _ca_apply(decisions: dict) -> dict:
 
 
 def _ca_state_summary() -> dict | None:
+    """Return a summary of the contact analyzer's saved state, or None if none exists."""
     from gmail_processor.contact_analyzer import ContactAnalyzer
     analyzer = ContactAnalyzer(st.session_state.service)
     if not analyzer.has_previous_state():
@@ -513,11 +536,13 @@ def _ca_state_summary() -> dict | None:
 
 
 def _ca_reset():
+    """Reset the contact analyzer's saved state."""
     from gmail_processor.contact_analyzer import ContactAnalyzer
     ContactAnalyzer(st.session_state.service).reset()
 
 
 def _ca_learning_summary() -> dict:
+    """Return learning-engine statistics for the contact analyzer."""
     from gmail_processor.contact_analyzer import ContactAnalyzer
     a = ContactAnalyzer(st.session_state.service)
     return a.get_learning_stats()
@@ -526,6 +551,7 @@ def _ca_learning_summary() -> dict:
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
 
 def _cargar_storage_summary() -> dict:
+    """Fetch a summary of Gmail storage usage."""
     try:
         from gmail_processor.storage_analyzer import StorageAnalyzer
         return StorageAnalyzer(st.session_state.service).get_storage_summary()
@@ -534,6 +560,7 @@ def _cargar_storage_summary() -> dict:
 
 
 def _cargar_cleanup_estimate(categories: list[str] | None = None) -> dict:
+    """Estimate how much storage would be freed by cleaning the given categories."""
     try:
         from gmail_processor.storage_analyzer import StorageAnalyzer
         return StorageAnalyzer(st.session_state.service).estimate_cleanup_size(categories)
@@ -545,11 +572,13 @@ def _cargar_cleanup_estimate(categories: list[str] | None = None) -> dict:
 
 @st.cache_resource
 def _get_scheduler():
+    """Return the cached CleanupScheduler instance."""
     from gmail_processor.scheduler import CleanupScheduler
     return CleanupScheduler()
 
 
 def _schedule_status() -> dict:
+    """Return the scheduler's current status, or {} on failure."""
     try:
         return _get_scheduler().get_status()
     except Exception:
@@ -557,11 +586,12 @@ def _schedule_status() -> dict:
 
 
 def _time_ago(date_str: str) -> str:
+    """Format an ISO 'YYYY-MM-DD' date as a relative Spanish time phrase (e.g. 'hace 3 días')."""
     if not date_str:
         return ""
     try:
         d    = datetime.strptime(date_str, "%Y-%m-%d")
-        days = (datetime.now() - d).days
+        days = max((datetime.now() - d).days, 0)
         if days == 0:
             return "hoy"
         elif days == 1:
@@ -584,11 +614,13 @@ def _time_ago(date_str: str) -> str:
 # ── Helpers: perfiles y chat ───────────────────────────────────────────────────
 
 def _check_api_key() -> bool:
+    """Return True if an AI API key is configured."""
     from gmail_processor.utils import get_api_key
     return bool(get_api_key())
 
 
 def _get_morning_brief() -> dict:
+    """Generate the morning brief summary, or {} on failure."""
     try:
         from gmail_processor.morning_brief import MorningBrief
         return MorningBrief().generate()
@@ -598,11 +630,13 @@ def _get_morning_brief() -> dict:
 
 @st.cache_resource
 def _get_chat():
+    """Return the cached AssistantChat instance."""
     from gmail_processor.assistant_chat import AssistantChat
     return AssistantChat()
 
 
 def _get_important_contacts() -> list[str]:
+    """Return the emails marked 'personal' in the contact analyzer's reviewed state."""
     try:
         from gmail_processor.contact_analyzer import STATE_PATH
         if not STATE_PATH.exists():
@@ -617,6 +651,7 @@ def _get_important_contacts() -> list[str]:
 
 
 def _load_profiles() -> dict:
+    """Load saved contact profiles from disk."""
     try:
         from gmail_processor.contact_profiler import ContactProfiler, PROFILES_PATH
         if not PROFILES_PATH.exists():
@@ -627,6 +662,7 @@ def _load_profiles() -> dict:
 
 
 def _run_build_profiles(important_contacts: list[str], status_ph) -> dict:
+    """Build AI profiles for the given important contacts."""
     try:
         from gmail_processor.contact_profiler import ContactProfiler
 
@@ -646,10 +682,12 @@ def _run_build_profiles(important_contacts: list[str], status_ph) -> dict:
 # ── Helpers: nuevos ────────────────────────────────────────────────────────────
 
 def _nav_to(page: str):
+    """Switch the current page in session state."""
     st.session_state["current_page"] = page
 
 
 def _get_quick_metrics() -> dict:
+    """Gather the headline metrics shown on the home page."""
     state = {}
     try:
         p = Path("analysis_state.json")
@@ -672,6 +710,7 @@ def _get_quick_metrics() -> dict:
 
 
 def _render_contact_detail(pdata: dict):
+    """Render a contact's AI summary, timeline, attachments and alerts."""
     summary  = pdata.get("summary", "")
     timeline = pdata.get("timeline", [])
     atts     = pdata.get("attachments", [])
@@ -721,8 +760,6 @@ try:
         last  = pdata.get("last_contact", "")
         bidir = pdata.get("bidirectional", False)
         _bg, _fg = _RELATION_BADGE_COLORS.get(rel, ("#f1f5f9", "#475569"))
-        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
 
         c1, c2 = st.columns([1, 4])
         with c1:
@@ -734,7 +771,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_RELATION_NAMES.get(rel, rel))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1320,8 +1357,6 @@ elif _current_page == "contactos":
                         _cpbidir = _cpdata.get("bidirectional", False)
                         _cptopics = _cpdata.get("key_topics", [])
                         _cpbg, _cpfg = _RELATION_BADGE_COLORS.get(_cprel, ("#f1f5f9", "#475569"))
-                        _rel_names = {"familiar": "Familiar", "trabajo": "Trabajo",
-                                      "servicio": "Servicio", "gobierno": "Gobierno", "otro": "Otro"}
 
                         with _gcol:
                             with st.container(border=True):
@@ -1334,7 +1369,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_RELATION_NAMES.get(_cprel, _cprel))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
@@ -1469,7 +1504,7 @@ elif _current_page == "analizar":
                             _slabel, _spos = _SL.get(_s, (_s, True))
                             _cls = "tag-green" if _spos else "tag-amber"
                             _ico = "✓" if _spos else "✗"
-                            _sig_parts.append(f'<span class="tag {_cls}">{_ico} {_slabel}</span>')
+                            _sig_parts.append(f'<span class="tag {_cls}">{_ico} {html.escape(str(_slabel))}</span>')
                         st.markdown(" ".join(_sig_parts), unsafe_allow_html=True)
 
                     st.markdown("")

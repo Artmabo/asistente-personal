@@ -12,6 +12,7 @@ _TTL_HOURS  = 1
 
 
 class MorningBrief:
+    """Builds (and caches) the daily summary from local JSON state files."""
 
     def generate(self, service=None) -> dict:
         """
@@ -157,9 +158,15 @@ class MorningBrief:
         return None
 
     def _save_cache(self, brief: dict):
-        _CACHE_PATH.write_text(
-            json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        """Writes the cache atomically so a crash mid-write can't leave a truncated file."""
+        tmp = _CACHE_PATH.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(_CACHE_PATH)
+        except OSError:
+            tmp.unlink(missing_ok=True)
 
     def _read_json(self, path: str, default: dict) -> dict:
         p = Path(path)

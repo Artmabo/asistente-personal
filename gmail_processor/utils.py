@@ -23,6 +23,11 @@ def get_header(headers: list[dict], name: str) -> str:
     return ""
 
 
+def extract_domain(email: str, default: str = "") -> str:
+    """Returns the domain portion of an email address, or `default` if there is none."""
+    return email.split("@")[-1] if email and "@" in email else default
+
+
 def extract_email_address(raw: str) -> str:
     """Extracts a bare email address from a raw From/To header value.
 

@@ -128,34 +128,42 @@ class Metrics:
     """Persistent quality metrics backed by the state dict."""
 
     def __init__(self, data: dict):
+        """Wraps the `metrics` sub-dict of the engine's state (mutated in place)."""
         self._d = data
 
     def record_processed(self):
+        """Increments the total number of messages processed."""
         self._d["total_processed"] += 1
 
     def record_keep(self, category: str = ""):
+        """Records a KEEP decision, optionally attributed to `category` (rule name)."""
         self._d["total_keep"] += 1
         if category:
             self._d["by_category"].setdefault(category, _empty_cat())["kept"] += 1
 
     def record_trash(self, rule_name: str = ""):
+        """Records a TRASH decision, optionally attributed to `rule_name`."""
         self._d["total_trash"] += 1
         if rule_name:
             self._d["by_category"].setdefault(rule_name, _empty_cat())["trashed"] += 1
 
     def record_false_positive(self, rule_name: str = ""):
+        """Records a TRASH decision later found incorrect, optionally attributed to `rule_name`."""
         self._d["false_positives"] += 1
         if rule_name:
             self._d["by_category"].setdefault(rule_name, _empty_cat())["false_positives"] += 1
 
     def record_manual_override(self):
+        """Increments the count of manual user overrides."""
         self._d["manual_overrides"] += 1
 
     def touch_run(self):
+        """Marks a processing run as completed (updates last_run/runs_total)."""
         self._d["last_run"]    = datetime.now().isoformat(timespec="seconds")
         self._d["runs_total"] += 1
 
     def accuracy_estimate(self) -> dict[str, float]:
+        """Returns estimated precision (1 - false_positive_rate) per rule/category."""
         result: dict[str, float] = {}
         for cat, s in self._d["by_category"].items():
             total = s.get("trashed", 0)
@@ -165,6 +173,7 @@ class Metrics:
         return result
 
     def summary(self) -> str:
+        """Renders a human-readable summary of the tracked metrics."""
         d = self._d
         lines = [
             f"  Total procesados   : {d['total_processed']}",
@@ -225,6 +234,9 @@ _EMPTY_STATE_V3: dict = {
 # ── Main class ────────────────────────────────────────────────────────────────
 
 class LearningEngine:
+    """Adaptive scoring engine: computes message scores from static rules plus
+    decayed, drift-controlled per-sender/per-domain adjustments learned from
+    feedback, and persists its state to a JSON file (see module docstring)."""
 
     def __init__(self, state_path: str = "learning_state.json"):
         self.path    = Path(state_path)
@@ -263,13 +275,12 @@ class LearningEngine:
         if "CATEGORY_UPDATES" in label_ids:
             score -= 8;  factors.append("-8  categoría Actualizaciones")
 
-        for drule in cfg.DOMAIN_RULES:
-            if domain in drule["domains"]:
-                if drule["action"] == "mark_important":
-                    score += 35; factors.append(f"+35 dominio seguro ({domain})")
-                elif drule["action"] == "archive":
-                    score -= 5;  factors.append(f"-5  dominio servicios ({domain})")
-                break
+        drule = _domain_rule_map().get(domain)
+        if drule:
+            if drule["action"] == "mark_important":
+                score += 35; factors.append(f"+35 dominio seguro ({domain})")
+            elif drule["action"] == "archive":
+                score -= 5;  factors.append(f"-5  dominio servicios ({domain})")
 
         if email in cfg.CONTACT_RULES:
             score += 50; factors.append(f"+50 contacto protegido ({email})")
@@ -455,6 +466,12 @@ class LearningEngine:
     # ── Threshold adjustment ──────────────────────────────────────────────────
 
     def update_rule_thresholds(self) -> list[str]:
+        """Raises a rule's age threshold when its learned error rate is too high.
+
+        For each rule with enough samples (>= MIN_SAMPLES_FOR_ADJUSTMENT) and an
+        error rate above ERROR_RATE_TRIGGER, bumps its threshold_days by
+        THRESHOLD_INCREASE_DAYS. Returns a list of human-readable change lines.
+        """
         changes = []
         for rule_name, stats in self.state["rule_stats"].items():
             trashed   = stats.get("trashed", 0)
@@ -477,12 +494,14 @@ class LearningEngine:
         return changes
 
     def get_threshold(self, rule_name: str, default: int) -> int:
+        """Returns the learned age threshold (days) for `rule_name`, or `default`."""
         return (self.state["rule_stats"].get(rule_name, {}).get("threshold_days")
                 or default)
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def persist(self):
+        """Writes state to disk atomically (temp file + rename), if there are unsaved changes."""
         if not self._dirty:
             return
         tmp = self.path.with_suffix(".tmp")
@@ -638,15 +657,32 @@ def _gate_reason(source: str, confidence: float, total: int) -> str:
 
 
 def _is_critical(sender: str, domain: str) -> bool:
+    """True if `sender`/`domain` is a protected contact or a mark_important domain."""
     if sender in cfg.CONTACT_RULES:
         return True
     if domain and f"@{domain}" in cfg.CONTACT_RULES:
         return True
-    return any(
-        domain in rule["domains"]
-        for rule in cfg.DOMAIN_RULES
-        if rule.get("action") == "mark_important"
-    )
+    drule = _domain_rule_map().get(domain)
+    return bool(drule and drule.get("action") == "mark_important")
+
+
+_domain_rule_cache: dict = {"key": None, "map": {}}
+
+
+def _domain_rule_map() -> dict:
+    """Returns a domain → DOMAIN_RULES-entry lookup, rebuilt only when
+    cfg.DOMAIN_RULES itself changes (e.g. after a rules.py reload). Avoids
+    re-scanning the whole DOMAIN_RULES list for every message/feedback event."""
+    rules = cfg.DOMAIN_RULES
+    key = id(rules)
+    if _domain_rule_cache["key"] != key:
+        mapping = {}
+        for rule in rules:
+            for d in rule.get("domains", []):
+                mapping.setdefault(d, rule)  # first match wins, mirrors old scan order
+        _domain_rule_cache["key"] = key
+        _domain_rule_cache["map"] = mapping
+    return _domain_rule_cache["map"]
 
 
 def _decay(last_accepted: str, lam: float) -> float:
@@ -677,19 +713,26 @@ def _migrate_to_v3(old: dict) -> dict:
         entry["last_accepted"]      = src.get("last_feedback", src.get("last_accepted", ""))
         return entry
 
-    # v1 used sender_scores/domain_scores; v2 used same names
+    # v1 used sender_scores/domain_scores; v2 used sender_model/domain_model
     for old_key, new_key in [
         ("sender_scores", "sender_model"),
         ("domain_model",  "domain_model"),
     ]:
         for k, v in old.get(old_key, {}).items():
             new[new_key][k] = _to_v3_entry(v)
-    # v2 already has domain_model
-    for k, v in old.get("domain_scores", {}).items():
-        if k not in new["domain_model"]:
-            new["domain_model"][k] = _to_v3_entry(v)
+    # Fallback legacy key names: only fill gaps left by the primary pass above,
+    # so whichever key name a given state actually used is preserved.
+    for old_key, model_key in [
+        ("sender_model",  "sender_model"),
+        ("domain_scores", "domain_model"),
+    ]:
+        for k, v in old.get(old_key, {}).items():
+            if k not in new[model_key]:
+                new[model_key][k] = _to_v3_entry(v)
 
     new["rule_stats"]       = copy.deepcopy(old.get("rule_stats", {}))
     new["pending_feedback"] = copy.deepcopy(old.get("pending_feedback", {}))
-    new["metrics"]          = old.get("metrics", _new_metrics())
+    # Merge onto the full v3 metrics schema so a legacy metrics dict missing
+    # newer fields (e.g. manual_overrides) doesn't cause a later KeyError.
+    new["metrics"] = {**_new_metrics(), **old.get("metrics", {})}
     return new
