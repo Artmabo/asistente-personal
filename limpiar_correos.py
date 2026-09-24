@@ -133,7 +133,7 @@ def limpiar_bandeja(service, query_custom=None, categorias=None, dry_run=False):
     }
 
 
-def limpiar_todo_basura(service) -> dict:
+def limpiar_todo_basura(service, dry_run: bool = False) -> dict:
     """Limpia spam + promociones + social + actualizaciones + foros en secuencia."""
     resultados = {}
     total_p = 0
@@ -142,7 +142,7 @@ def limpiar_todo_basura(service) -> dict:
     for cat in CATEGORIAS:
         print(f"\n  {'─'*44}")
         print(f"  {_NOMBRES_ES[cat].upper()}")
-        r = limpiar_bandeja(service, categorias=[cat])
+        r = limpiar_bandeja(service, categorias=[cat], dry_run=dry_run)
         resultados[cat] = r
         total_p += r['procesados']
         total_e += r['exitos']
@@ -163,6 +163,7 @@ def limpiar_todo_basura(service) -> dict:
 # ── Compatibilidad con versiones anteriores ───────────────────────────────────
 
 def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False):
+    """Legacy wrapper: trashes messages older than `meses` months (optionally unread-only)."""
     if service is None:
         service = obtener_servicio()
     fecha = (datetime.now() - timedelta(days=meses * 30)).strftime("%Y/%m/%d")
@@ -173,6 +174,7 @@ def limpiar_correos(service=None, meses=6, solo_no_leidos=True, aggressive=False
 
 
 def borrar_correos_antiguos(service=None):
+    """Legacy wrapper: trashes unread messages older than 6 months (see `limpiar_correos`)."""
     if service is None:
         service = obtener_servicio()
     return limpiar_correos(service=service)

@@ -52,6 +52,7 @@ MIN_SCORE     = 35    # must clear this threshold to appear as suggestion
 MIN_MESSAGES  = 2     # min emails received from sender
 
 _BATCH_SLEEP  = 0.2   # seconds between list-pagination calls (rate-limit headroom)
+_GET_BATCH_SIZE = 50  # messages.get() calls grouped per batch HTTP request
 
 # ── Scoring weights ───────────────────────────────────────────────────────────
 W_REPLY           = 25    # per thread where user replied
@@ -185,6 +186,8 @@ _DEFINITELY_AUTOMATED_LOCALS = frozenset([
 
 @dataclass
 class SenderStats:
+    """Aggregated signals collected for a single sender email across the scanned inbox."""
+
     email:            str
     name:             str
     domain:           str
@@ -203,6 +206,8 @@ class SenderStats:
 
 @dataclass
 class DomainSuggestion:
+    """A suggested domain-level rule (e.g. mark a bank's domain important)."""
+
     domain:       str
     label:        str
     action:       str   # "mark_important" | "archive"
@@ -360,7 +365,12 @@ class SmartSetup:
         self, query, sent_threads, senders, progress_cb, phase
     ):
         """Paginate a Gmail query, fetch metadata per message, and ingest signals.
-        Sleeps _BATCH_SLEEP seconds between list pages to stay within rate limits."""
+
+        Metadata for each page is fetched via batched HTTP requests (chunks of
+        _GET_BATCH_SIZE) instead of one sequential call per message — this cuts
+        wall-clock scan time substantially on large mailboxes. Sleeps
+        _BATCH_SLEEP seconds between list pages to stay within rate limits.
+        """
         page_token = None
         fetched    = 0
         page       = 0
@@ -380,17 +390,8 @@ class SmartSetup:
             if not stubs:
                 break
 
-            for stub in stubs:
-                try:
-                    msg = self.service.users().messages().get(
-                        userId="me", id=stub["id"],
-                        format="metadata", metadataHeaders=["From"],
-                    ).execute()
-                except HttpError:
-                    fetched += 1
-                    continue
-                self._ingest(msg, sent_threads, senders)
-                fetched += 1
+            for chunk in _chunked(stubs, _GET_BATCH_SIZE):
+                fetched += self._fetch_chunk(chunk, sent_threads, senders, phase)
 
             page += 1
             if progress_cb:
@@ -403,6 +404,33 @@ class SmartSetup:
             time.sleep(_BATCH_SLEEP)
 
         logger.debug(f"Fase '{phase}': {fetched} mensajes en {page} páginas")
+
+    def _fetch_chunk(self, stubs, sent_threads, senders, phase) -> int:
+        """Fetches metadata for a chunk of message stubs in one batch HTTP request
+        and ingests each successfully-fetched message. Returns the number processed."""
+        count = 0
+
+        def _on_message(_request_id, response, exception):
+            nonlocal count
+            if exception is None and response is not None:
+                self._ingest(response, sent_threads, senders)
+            count += 1
+
+        batch = self.service.new_batch_http_request(callback=_on_message)
+        for stub in stubs:
+            batch.add(self.service.users().messages().get(
+                userId="me", id=stub["id"],
+                format="metadata", metadataHeaders=["From"],
+            ))
+        try:
+            batch.execute()
+        except HttpError as e:
+            logger.warning(f"Error en batch (fase {phase}): {e}")
+            # Batch call itself failed (e.g. transport error) — none of the
+            # per-message callbacks ran, so nothing in this chunk was fetched.
+            return 0
+
+        return count
 
     def _ingest(self, message, sent_threads, senders):
         headers   = message.get("payload", {}).get("headers", [])
@@ -487,7 +515,7 @@ def _score(s: SenderStats) -> tuple[float, list[tuple[float, str]]]:
         _add(-10, "sin respuestas registradas hacia este remitente")
 
     # 7. Newsletter/marketing local-part penalty
-    local = s.email.split("@")[0].lower()
+    local = _local_part(s.email)
     if local in _NEWSLETTER_EXACT_LOCALS:
         _add(P_NEWSLETTER_LOCAL,
              f"patrón newsletter en dirección ({local}@...)")
@@ -547,7 +575,7 @@ def _behavioral_reclassify(stats: SenderStats) -> str:
     if dtype in ("financial", "government", "educational"):
         return dtype
 
-    local = stats.email.split("@")[0].lower()
+    local = _local_part(stats.email)
 
     # Exact newsletter local → always newsletter
     if local in _NEWSLETTER_EXACT_LOCALS:
@@ -566,8 +594,19 @@ def _behavioral_reclassify(stats: SenderStats) -> str:
     return dtype
 
 
+def _local_part(email: str) -> str:
+    """Returns the lowercased local part (before '@') of an email address."""
+    return email.split("@")[0].lower()
+
+
+def _chunked(items: list, size: int):
+    """Yields successive chunks of `items`, each at most `size` long."""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
 def _is_definitely_automated(email: str) -> bool:
-    return email.split("@")[0].lower() in _DEFINITELY_AUTOMATED_LOCALS
+    return _local_part(email) in _DEFINITELY_AUTOMATED_LOCALS
 
 
 # ── Header helpers ────────────────────────────────────────────────────────────

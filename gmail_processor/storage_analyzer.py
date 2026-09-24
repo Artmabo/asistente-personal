@@ -7,8 +7,11 @@ si las credenciales tienen acceso a Drive, también devuelve cuota en GB.
 estimate_cleanup_size() lista todos los mensajes de cada categoría,
 muestrea sizeEstimate de hasta 50 mensajes y extrapola para el total.
 """
+import logging
 import time
 from googleapiclient.errors import HttpError
+
+logger = logging.getLogger("gmail_processor.storage_analyzer")
 
 _CATEGORY_QUERIES: dict[str, str] = {
     "spam":            "in:spam",
@@ -23,6 +26,8 @@ _AVG_BYTES_FALLBACK = 25_000   # 25 KB si no hay muestra
 
 
 class StorageAnalyzer:
+    """Estimates Gmail storage usage and the space cleanup would reclaim."""
+
     def __init__(self, service):
         self.svc = service
 
@@ -41,6 +46,7 @@ class StorageAnalyzer:
             result["messages_total"] = 0
             result["threads_total"]  = 0
             result["error_profile"]  = str(e)
+            logger.warning(f"No se pudo obtener el perfil de Gmail: {e}")
 
         # Cuota de almacenamiento vía Drive API (scope opcional)
         try:
@@ -56,7 +62,9 @@ class StorageAnalyzer:
             result["used_gb"]      = round(used_bytes  / 1e9, 2)
             result["total_gb"]     = round(total_bytes / 1e9, 1)
             result["percent_used"] = int(100 * used_bytes / total_bytes) if total_bytes else 0
-        except Exception:
+        except Exception as e:
+            # Best-effort: Drive scope/credentials may simply not be available.
+            logger.debug(f"Cuota de Drive no disponible: {e}")
             result["used_gb"]      = None
             result["total_gb"]     = None
             result["percent_used"] = None
@@ -100,8 +108,8 @@ class StorageAnalyzer:
                 ))
             try:
                 batch.execute()
-            except HttpError:
-                pass
+            except HttpError as e:
+                logger.warning(f"Batch de muestreo falló para '{cat}': {e}")
 
             sampled   = len(sample_sizes)
             avg_bytes = sum(sample_sizes) / sampled if sampled else _AVG_BYTES_FALLBACK
@@ -132,7 +140,8 @@ class StorageAnalyzer:
                     userId="me", q=query, maxResults=1,
                 ).execute()
                 result[cat] = resp.get("resultSizeEstimate", 0)
-            except HttpError:
+            except HttpError as e:
+                logger.warning(f"No se pudo contar la categoría '{cat}': {e}")
                 result[cat] = 0
         return result
 
@@ -146,7 +155,8 @@ class StorageAnalyzer:
                 resp = self.svc.users().messages().list(
                     userId="me", q=query, maxResults=500, pageToken=page_token,
                 ).execute()
-            except HttpError:
+            except HttpError as e:
+                logger.warning(f"Error listando IDs para query '{query}': {e}")
                 break
 
             msgs = resp.get("messages", [])
@@ -159,4 +169,5 @@ class StorageAnalyzer:
                 break
             time.sleep(0.1)
 
-        return ids[:max_ids], len(ids[:max_ids])
+        capped = ids[:max_ids]
+        return capped, len(capped)

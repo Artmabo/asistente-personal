@@ -16,6 +16,7 @@ def get_gmail_service(creds_path="config/credentials.json", token_path="token.js
 
 
 def main():
+    """Authenticates and prints the user's Gmail labels (used to verify OAuth setup)."""
     service = get_gmail_service()
 
     results = service.users().labels().list(userId="me").execute()

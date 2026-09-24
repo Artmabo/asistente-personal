@@ -26,6 +26,8 @@ MAX_ENTRIES = 10_000
 
 
 class AuditLogger:
+    """Buffers per-decision audit entries and flushes them to a capped JSONL file."""
+
     def __init__(self, path: str = "audit_log.jsonl", dry_run: bool = False):
         self.path    = Path(path)
         self.dry_run = dry_run
@@ -63,14 +65,21 @@ class AuditLogger:
         })
 
     def flush(self):
-        """Writes buffered entries to disk. Called once per run."""
+        """Writes buffered entries to disk atomically. Called once per run."""
         if not self._buf:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
-            for entry in combined:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                for entry in combined:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            tmp_path.replace(self.path)
+        except OSError as e:
+            tmp_path.unlink(missing_ok=True)
+            logger.warning(f"No se pudo escribir el audit log: {e}")
+            return
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 
@@ -108,13 +117,30 @@ class AuditLogger:
 
     # ── Private ───────────────────────────────────────────────────────────────
 
+    def _parse_lines(self, lines) -> list[dict]:
+        """Parses JSONL lines into dicts, skipping (and logging) any malformed line.
+
+        A single corrupted line must never make the caller lose the rest of an
+        otherwise-valid audit log, so bad lines are skipped rather than raised.
+        """
+        entries: list[dict] = []
+        skipped = 0
+        for line in lines:
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                skipped += 1
+        if skipped:
+            logger.warning(f"Audit: se omitieron {skipped} línea(s) corruptas en {self.path}")
+        return entries
+
     def _load(self) -> list[dict]:
         if not self.path.exists():
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                return self._parse_lines(ln for ln in f if ln.strip())
+        except OSError:
             return []
 
     def _load_tail(self, n: int) -> list[dict]:
@@ -127,6 +153,6 @@ class AuditLogger:
                     (ln for ln in f if ln.strip()),
                     maxlen=n,
                 )
-            return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+        except OSError:
             return []
+        return self._parse_lines(tail)

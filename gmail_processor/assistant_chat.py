@@ -19,6 +19,8 @@ _MODEL       = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 
 class AssistantChat:
+    """Conversational assistant over Claude, grounded in the locally cached email context."""
+
     def __init__(self):
         self.context: dict = {}
         self.history: list[dict] = self._load_history()
@@ -55,9 +57,14 @@ class AssistantChat:
 
         try:
             import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
         except ImportError:
             return "No está instalado el módulo necesario. Ejecuta: pip install anthropic"
+
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+        except Exception as exc:
+            logger.warning(f"No se pudo inicializar el cliente de Anthropic: {exc}")
+            return "No se pudo iniciar el asistente. Revisa tu clave de API en el archivo .env."
 
         self.refresh_context()
         system_prompt = self._build_system_prompt()
@@ -66,7 +73,7 @@ class AssistantChat:
         hist = conversation_history if conversation_history is not None else self.history
         api_messages = [
             {"role": m["role"], "content": m["content"]}
-            for m in hist[-(  _MAX_HISTORY * 2):]
+            for m in hist[-(_MAX_HISTORY * 2):]
         ]
         api_messages.append({"role": "user", "content": user_message})
 

@@ -31,7 +31,18 @@ def _empty_profiles() -> dict:
     return {"profiles": {}, "last_build": None, "total_profiles": 0}
 
 
+def _mask_email(addr: str) -> str:
+    """Masks the local part of an email address for safe logging, e.g. 'j***@example.com'."""
+    if not addr or "@" not in addr:
+        return "***"
+    local, _, domain = addr.partition("@")
+    prefix = local[0] if local else ""
+    return f"{prefix}***@{domain}"
+
+
 class ContactProfiler:
+    """Builds and persists AI-generated relationship profiles for important contacts."""
+
     def __init__(self):
         self.data = self._load()
 
@@ -77,12 +88,15 @@ class ContactProfiler:
         return {"built": built, "total": total, "errors": errors}
 
     def get_profiles(self) -> dict:
+        """Returns all persisted profiles, keyed by email address."""
         return self.data.get("profiles", {})
 
     def get_profile(self, email: str) -> dict | None:
-        return self.data["profiles"].get(email)
+        """Returns the persisted profile for `email`, or None if not built yet."""
+        return self.data.get("profiles", {}).get(email)
 
     def needs_rebuild(self, email: str) -> bool:
+        """True if `email` has no profile yet, its last build failed, or it is stale (>7 days)."""
         profile = self.get_profile(email)
         if not profile:
             return True
@@ -142,6 +156,8 @@ class ContactProfiler:
         return None
 
     def _build_single(self, service, client, addr: str) -> dict:
+        """Fetches recent emails from `addr`, pre-classifies the relation, and asks
+        Claude to build the full profile (summary, tone, timeline, alerts, etc)."""
         emails_data = self._fetch_emails(service, addr)
         pre_type    = self._pre_classify(addr)
 
@@ -156,8 +172,8 @@ class ContactProfiler:
                 userId="me", q=f"in:sent to:{addr}", maxResults=1,
             ).execute()
             bidirectional = bool(sent.get("messages"))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"Could not check bidirectional status for contact: {exc}")
 
         for em in emails_data:
             if em.get("from_name") and not name:
@@ -213,6 +229,7 @@ class ContactProfiler:
     # ── Obtener correos ───────────────────────────────────────────────────────
 
     def _fetch_emails(self, service, addr: str) -> list[dict]:
+        """Fetches up to _MAX_EMAILS full messages sent from `addr` and parses each one."""
         result = []
         try:
             resp = service.users().messages().list(
@@ -235,15 +252,19 @@ class ContactProfiler:
         return result
 
     def _parse_message(self, msg: dict) -> dict:
+        """Parses a Gmail API message into sender, subject, date, body and attachments."""
         payload  = msg.get("payload", {})
         headers  = payload.get("headers", [])
 
+        # Build the header lookup once instead of re-scanning the header list per field.
+        header_map: dict[str, str] = {}
+        for h in headers:
+            key = h.get("name", "").lower()
+            if key not in header_map:
+                header_map[key] = h.get("value", "")
+
         def hdr(name: str) -> str:
-            nl = name.lower()
-            for h in headers:
-                if h.get("name", "").lower() == nl:
-                    return h.get("value", "")
-            return ""
+            return header_map.get(name.lower(), "")
 
         from_raw   = hdr("From")
         from_name  = ""
@@ -256,6 +277,7 @@ class ContactProfiler:
             date_parsed = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
         except Exception:
             pass
+        date_short = date_parsed.strftime("%Y-%m-%d") if date_parsed else ""
 
         return {
             "from_name":    from_name,
@@ -263,15 +285,17 @@ class ContactProfiler:
             "date_str":     date_str,
             "date_parsed":  date_parsed,
             "body_snippet": self._extract_body(payload),
-            "attachments":  self._extract_attachments(payload, date_str),
+            "attachments":  self._extract_attachments(payload, date_short),
         }
 
     def _extract_body(self, payload: dict) -> str:
+        """Recursively extracts and decodes the first text/plain body snippet found."""
         if payload.get("mimeType") == "text/plain":
             data = payload.get("body", {}).get("data", "")
             if data:
                 try:
-                    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")[:_MAX_BODY].strip()
+                    padded = data + "=" * (-len(data) % 4)
+                    return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")[:_MAX_BODY].strip()
                 except Exception:
                     pass
         for part in payload.get("parts", []):
@@ -280,7 +304,12 @@ class ContactProfiler:
                 return text
         return ""
 
-    def _extract_attachments(self, payload: dict, date_str: str) -> list[dict]:
+    def _extract_attachments(self, payload: dict, date_short: str) -> list[dict]:
+        """Recursively collects attachment metadata (name/date/type) from a message payload.
+
+        `date_short` is the message's already-formatted date (YYYY-MM-DD), computed once
+        by the caller so it isn't re-parsed for every attachment found.
+        """
         result: list[dict] = []
         for part in payload.get("parts", []):
             fname = part.get("filename", "")
@@ -299,22 +328,16 @@ class ContactProfiler:
                 else:
                     att_type = "documento"
 
-                date_short = ""
-                try:
-                    d = email.utils.parsedate_to_datetime(date_str).replace(tzinfo=None)
-                    date_short = d.strftime("%Y-%m-%d")
-                except Exception:
-                    pass
-
                 result.append({"name": fname, "date": date_short, "type": att_type})
 
             if part.get("parts"):
-                result.extend(self._extract_attachments(part, date_str))
+                result.extend(self._extract_attachments(part, date_short))
         return result
 
     # ── Llamada a Claude ──────────────────────────────────────────────────────
 
     def _call_claude(self, client, data: dict) -> dict:
+        """Prompts Claude to build the contact profile JSON, with retries on transient errors."""
         emails_text = ""
         for em in data.get("emails", []):
             emails_text += (
@@ -415,7 +438,7 @@ class ContactProfiler:
                 except Exception:
                     pass
                 logger.warning(
-                    f"Claude returned non-JSON for {data.get('email', '?')}: {exc}. "
+                    f"Claude returned non-JSON for {_mask_email(data.get('email', ''))}: {exc}. "
                     f"Raw start: {raw_snippet}"
                 )
                 last_exc = exc
@@ -431,6 +454,7 @@ class ContactProfiler:
     # ── Persistencia ──────────────────────────────────────────────────────────
 
     def _load(self) -> dict:
+        """Loads persisted profiles from disk, falling back to an empty store if missing/corrupt."""
         if PROFILES_PATH.exists():
             try:
                 return json.loads(PROFILES_PATH.read_text(encoding="utf-8"))
@@ -439,6 +463,7 @@ class ContactProfiler:
         return _empty_profiles()
 
     def _save(self):
+        """Atomically writes profiles to disk (write to temp file, then rename) to avoid partial writes."""
         tmp = PROFILES_PATH.with_suffix(".tmp")
         try:
             tmp.write_text(

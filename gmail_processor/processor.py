@@ -33,6 +33,8 @@ def setup_logging(
 
 
 class GmailProcessor:
+    """Orchestrates listing, classifying, and acting on inbox messages via the Gmail API."""
+
     def __init__(self, service=None):
         self.service    = service or get_service()
         self.classifier = EmailClassifier()
@@ -109,6 +111,7 @@ class GmailProcessor:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _process_one(self, msg_id: str):
+        """Fetches, classifies, and acts on a single message; never raises (errors are counted)."""
         try:
             message = self.service.users().messages().get(
                 userId="me",
@@ -121,11 +124,25 @@ class GmailProcessor:
             self.stats["errors"] += 1
             return
 
-        c = self.classifier.classify(message)
-        self._apply(msg_id, message, c)
+        # Classification/action errors (including Gmail API failures raised by
+        # GmailActions, e.g. permission errors) must not abort the whole run —
+        # one bad message would otherwise silently drop every message after it.
+        try:
+            c = self.classifier.classify(message)
+            self._apply(msg_id, message, c)
+        except HttpError as e:
+            logger.error(f"Gmail API error while processing {msg_id}: {e}")
+            self.stats["errors"] += 1
+            return
+        except Exception as e:
+            logger.error(f"Unexpected error processing {msg_id}: {e}")
+            self.stats["errors"] += 1
+            return
+
         self.stats["processed"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):
+        """Applies the classification's labels and primary action, updating stats."""
         headers = message.get("payload", {}).get("headers", [])
         sender  = get_header(headers, "From")  or "?"
         subject = get_header(headers, "Subject") or "(sin asunto)"
@@ -161,6 +178,7 @@ class GmailProcessor:
                 self.stats["skipped"] += 1
 
     def _print_summary(self):
+        """Logs the final run counters."""
         s = self.stats
         logger.info(
             f"\n{'='*55}\n"
@@ -177,4 +195,5 @@ class GmailProcessor:
 
 
 def _short(text: str, n: int) -> str:
+    """Truncates `text` to at most `n` characters, appending an ellipsis if cut."""
     return text if len(text) <= n else text[:n - 1] + "…"

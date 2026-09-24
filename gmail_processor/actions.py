@@ -16,16 +16,19 @@ _BASE_DELAY  = 1.0   # seconds before first retry (doubles each attempt)
 
 
 class GmailActions:
+    """Thin wrapper over the Gmail API for label/message mutations, with retry and dry-run support."""
+
     def __init__(self, service, dry_run: bool = False):
         self.service  = service
         self.dry_run  = dry_run
         self._labels: dict[str, str] = {}   # label name → label id cache
+        self._labels_loaded = False         # whether _load_labels() has run at least once
 
     # ── Label management ──────────────────────────────────────────────────────
 
     def ensure_label(self, name: str) -> str:
         """Returns the label ID for `name`, creating it in Gmail if needed."""
-        if not self._labels:
+        if not self._labels_loaded:
             self._load_labels()
 
         if name in self._labels:
@@ -53,14 +56,19 @@ class GmailActions:
         return ""
 
     def _load_labels(self):
+        """Fetches and caches all existing Gmail labels (name → id)."""
         result = self._call(self.service.users().labels().list, userId="me")
         if result:
             for lbl in result.get("labels", []):
                 self._labels[lbl["name"]] = lbl["id"]
+        # Mark as loaded even on failure/empty response so callers don't
+        # re-issue a labels().list() API call on every single lookup.
+        self._labels_loaded = True
 
     # ── Message operations ────────────────────────────────────────────────────
 
     def add_label(self, msg_id: str, label_name: str) -> bool:
+        """Adds `label_name` to the message, creating the label first if it doesn't exist."""
         label_id = self.ensure_label(label_name)
         if not label_id:
             return False
@@ -70,7 +78,8 @@ class GmailActions:
         return self._modify(msg_id, add=[label_id])
 
     def remove_label(self, msg_id: str, label_name: str) -> bool:
-        if not self._labels:
+        """Removes `label_name` from the message; a no-op (True) if the label doesn't exist."""
+        if not self._labels_loaded:
             self._load_labels()
         label_id = self._labels.get(label_name)
         if not label_id:
@@ -81,6 +90,7 @@ class GmailActions:
         return self._modify(msg_id, remove=[label_id])
 
     def mark_important(self, msg_id: str) -> bool:
+        """Adds the IMPORTANT system label to the message."""
         if self.dry_run:
             logger.info(f"[DRY RUN] mark_important → {msg_id}")
             return True
@@ -94,6 +104,7 @@ class GmailActions:
         return self._modify(msg_id, remove=["INBOX"])
 
     def trash(self, msg_id: str) -> bool:
+        """Moves the message to Gmail's trash."""
         if self.dry_run:
             logger.info(f"[DRY RUN] trash → {msg_id}")
             return True
@@ -104,9 +115,22 @@ class GmailActions:
         )
         return result is not None
 
+    def untrash(self, msg_id: str) -> bool:
+        """Restores a message out of Gmail's trash (undo for `trash`)."""
+        if self.dry_run:
+            logger.info(f"[DRY RUN] untrash → {msg_id}")
+            return True
+        result = self._call(
+            self.service.users().messages().untrash,
+            userId="me",
+            id=msg_id,
+        )
+        return result is not None
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _modify(self, msg_id: str, add: list = None, remove: list = None) -> bool:
+        """Calls messages.modify with the given addLabelIds/removeLabelIds."""
         body = {}
         if add:
             body["addLabelIds"] = add

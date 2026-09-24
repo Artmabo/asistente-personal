@@ -17,6 +17,7 @@ Entry point for the Gmail rule-based processor.
                                       [--time-to-action SEC]
   stats [--section learning|metrics|categories|all]
   audit [--last N] [--decision TRASH|KEEP|SKIP] [--csv PATH]
+  undo [--last N] [--yes]
 
 ── Ejemplos ─────────────────────────────────────────────────────────────────
   python procesar_correos.py feedback newsletter@spam.com correct
@@ -24,17 +25,20 @@ Entry point for the Gmail rule-based processor.
   python procesar_correos.py stats --section metrics
   python procesar_correos.py audit --last 50 --decision TRASH
   python procesar_correos.py audit --last 500 --csv audit_export.csv
+  python procesar_correos.py undo --last 5
 """
 import sys
 import argparse
 import logging
 import gmail_processor.rules as cfg
 from gmail_processor import GmailProcessor, setup_logging
+from gmail_processor.utils import extract_domain
 
-_SUBCOMMANDS = {"feedback", "stats", "audit"}
+_SUBCOMMANDS = {"feedback", "stats", "audit", "undo"}
 
 
 def main():
+    """CLI entry point: dispatches to the interactive menu, a subcommand, or the processor run."""
     # No args → interactive menu
     if len(sys.argv) == 1:
         from gmail_processor.cli_menu import run_menu
@@ -50,6 +54,8 @@ def main():
             _cmd_stats(sys.argv[2:])
         elif cmd == "audit":
             _cmd_audit(sys.argv[2:])
+        elif cmd == "undo":
+            _cmd_undo(sys.argv[2:])
         return
 
     parser = argparse.ArgumentParser(
@@ -81,6 +87,7 @@ def main():
 # ── feedback ──────────────────────────────────────────────────────────────────
 
 def _cmd_feedback(argv: list[str]):
+    """Handles `procesar_correos.py feedback ...`: records a correct/incorrect cleanup outcome."""
     parser = argparse.ArgumentParser(
         prog="procesar_correos.py feedback",
         description="Register feedback on a cleanup decision",
@@ -101,7 +108,7 @@ def _cmd_feedback(argv: list[str]):
     args = parser.parse_args(argv)
 
     setup_logging(level=logging.INFO)
-    domain = args.sender.split("@")[-1] if "@" in args.sender else args.sender
+    domain = extract_domain(args.sender, default=args.sender)
 
     from gmail_processor.learning_engine import LearningEngine, FeedbackEvent
     engine = LearningEngine()
@@ -136,6 +143,7 @@ def _cmd_feedback(argv: list[str]):
 # ── stats ─────────────────────────────────────────────────────────────────────
 
 def _cmd_stats(argv: list[str]):
+    """Handles `procesar_correos.py stats ...`: prints learning/quality/category/audit stats."""
     parser = argparse.ArgumentParser(
         prog="procesar_correos.py stats",
         description="Show persistent learning state and quality metrics",
@@ -189,6 +197,7 @@ def _cmd_stats(argv: list[str]):
 # ── audit ─────────────────────────────────────────────────────────────────────
 
 def _cmd_audit(argv: list[str]):
+    """Handles `procesar_correos.py audit ...`: prints or exports recent audit log entries."""
     parser = argparse.ArgumentParser(
         prog="procesar_correos.py audit",
         description="Show recent audit log entries",
@@ -201,6 +210,9 @@ def _cmd_audit(argv: list[str]):
     parser.add_argument("--csv", default=None, metavar="PATH",
                         help="Write the selected entries as CSV to PATH instead of printing a table")
     args = parser.parse_args(argv)
+    # Guard against 0/negative values: entries[-0:] is the whole list (0 == -0
+    # in a slice), which would silently show everything instead of nothing.
+    args.last = max(args.last, 1)
 
     setup_logging(level=logging.WARNING)
 
@@ -244,6 +256,67 @@ def _cmd_audit(argv: list[str]):
             f"{e.get('rule',''):<20}  "
             f"{mode}"
         )
+
+
+# ── undo ──────────────────────────────────────────────────────────────────────
+
+def _cmd_undo(argv: list[str]):
+    """Handles `procesar_correos.py undo ...`: restores the most recent LIVE
+    TRASH decisions from the audit log by moving those messages back to the inbox."""
+    parser = argparse.ArgumentParser(
+        prog="procesar_correos.py undo",
+        description="Undo the most recent live cleanup by restoring trashed messages",
+    )
+    parser.add_argument("--last", default=1, type=int,
+                        help="Number of recent TRASH decisions to undo (default: 1)")
+    parser.add_argument("--yes", action="store_true",
+                        help="Skip the confirmation prompt")
+    args = parser.parse_args(argv)
+    args.last = max(args.last, 1)
+
+    setup_logging(level=logging.INFO)
+
+    from gmail_processor.audit_log import AuditLogger, MAX_ENTRIES
+    audit = AuditLogger()
+
+    fetch_n = max(args.last * 3, 200)
+    while True:
+        candidates = [
+            e for e in audit.recent(fetch_n)
+            if e.get("decision") == "TRASH" and not e.get("dry_run") and e.get("msg_id")
+        ]
+        if len(candidates) >= args.last or fetch_n >= MAX_ENTRIES:
+            break
+        fetch_n = min(fetch_n * 4, MAX_ENTRIES)
+
+    to_undo = candidates[-args.last:]
+    if not to_undo:
+        print("No hay decisiones TRASH (modo LIVE) recientes para deshacer.")
+        return
+
+    print(f"\nSe restaurarán {len(to_undo)} correo(s) movido(s) a la papelera:\n")
+    for e in to_undo:
+        print(f"  {e.get('ts',''):<22} {e.get('sender','')[:40]:<40} rule={e.get('rule','')}")
+
+    if not args.yes:
+        confirm = input("\n¿Confirmar restauración? [s/N] ").strip().lower()
+        if confirm not in ("s", "si", "sí", "y", "yes"):
+            print("Cancelado.")
+            return
+
+    from gmail_processor.auth import get_service
+    from gmail_processor.actions import GmailActions
+
+    actions = GmailActions(get_service())
+    restored, failed = 0, 0
+    for e in to_undo:
+        if actions.untrash(e["msg_id"]):
+            restored += 1
+        else:
+            failed += 1
+            print(f"  ✗ No se pudo restaurar {e.get('sender','')} ({e['msg_id']})")
+
+    print(f"\nRestaurados: {restored}  Fallidos: {failed}")
 
 
 if __name__ == "__main__":

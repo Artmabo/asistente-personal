@@ -120,6 +120,29 @@ def _confirm(msg: str) -> bool:
     except (KeyboardInterrupt, EOFError):
         return False
 
+def _confirm_live(prompt: str, confirm_prompt: str) -> bool:
+    """Two-step confirmation gate used before any destructive LIVE operation."""
+    if not _confirm(prompt):
+        return False
+    return _confirm(confirm_prompt)
+
+def _parse_selection(raw: str, count: int) -> list:
+    """Parses a menu selection ('A'=all, 'N'=none, or comma-separated 1-based
+    indices) into a list of 0-based indices, silently dropping out-of-range values."""
+    raw = raw.strip().upper()
+    if raw == "N":
+        return []
+    if raw == "A":
+        return list(range(count))
+    selected = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            idx = int(part) - 1
+            if 0 <= idx < count:
+                selected.append(idx)
+    return selected
+
 
 # ── 1. Procesar inbox ─────────────────────────────────────────────────────────
 
@@ -133,10 +156,10 @@ def _menu_inbox(get_svc: Callable):
 
     query = _ask("Query Gmail (Enter = usar la actual)", cfg.QUERY_FILTER)
 
-    live = False
-    if _confirm("¿Ejecutar en modo LIVE (aplicar cambios reales)?"):
-        if _confirm("  Confirmar: ejecutar en LIVE (esto modifica tu bandeja)"):
-            live = True
+    live = _confirm_live(
+        "¿Ejecutar en modo LIVE (aplicar cambios reales)?",
+        "  Confirmar: ejecutar en LIVE (esto modifica tu bandeja)",
+    )
     mode_label = "LIVE" if live else "DRY RUN"
     print(f"\n  Modo: {mode_label}\n")
 
@@ -168,10 +191,10 @@ def _menu_cleanup(get_svc: Callable):
         print(f"    • {t.get('rule', '?'):<20} {t.get('query', '?')}")
 
     print()
-    live = False
-    if _confirm("¿Ejecutar en modo LIVE (mover a papelera de verdad)?"):
-        if _confirm("  Confirmar: cleanup LIVE (correos irán a papelera)"):
-            live = True
+    live = _confirm_live(
+        "¿Ejecutar en modo LIVE (mover a papelera de verdad)?",
+        "  Confirmar: cleanup LIVE (correos irán a papelera)",
+    )
 
     learning = False
     if live:
@@ -497,7 +520,8 @@ def _remove_contact_interactive(cfg):
 
 
 def _open_rules_file():
-    rules_path = Path(__file__).parent / "rules.py"
+    """Prints the path to rules.py and, on Windows, offers to open it in Notepad."""
+    rules_path = _rules_path()
     print(f"\n  Archivo: {rules_path}")
     if os.name == "nt":
         if _confirm("¿Abrir en Notepad?"):
@@ -569,10 +593,8 @@ def _menu_smart_setup(get_svc: Callable):
         print(f"\n  Cuenta: {setup.user_email}")
 
     print()
-    _phase_label = [""]
 
     def progress(scanned: int, phase: str = "inbox", page: int = 0):
-        _phase_label[0] = phase
         label = "Enviados indexados" if phase == "sent" else "Correos analizados"
         print(f"\r  {label}: {scanned:,}  (pag. {page})" + " " * 10, end="", flush=True)
 
@@ -630,21 +652,11 @@ def _present_contacts(contacts, domains, DOMAIN_LABELS):
     print("    1,3,5    Aceptar solo esos números (separados por coma)")
     print(_SEP)
 
-    raw = _ask("Selección", "A").strip().upper()
+    raw = _ask("Selección", "A")
 
-    if raw == "N":
+    if raw.strip().upper() == "N":
         print("  Sin cambios en contactos.")
-        selected_contacts = []
-    elif raw == "A":
-        selected_contacts = list(range(len(contacts)))
-    else:
-        selected_contacts = []
-        for part in raw.split(","):
-            part = part.strip()
-            if part.isdigit():
-                idx = int(part) - 1
-                if 0 <= idx < len(contacts):
-                    selected_contacts.append(idx)
+    selected_contacts = _parse_selection(raw, len(contacts))
 
     # Apply contacts
     added_contacts = 0
@@ -716,21 +728,8 @@ def _present_domains(domains) -> int:
         print()
 
     print(_SEP)
-    raw = _ask("Selección (A=todos, N=ninguno, o números)", "A").strip().upper()
-
-    if raw == "N":
-        return 0
-
-    if raw == "A":
-        selected = list(range(len(new_domains)))
-    else:
-        selected = []
-        for part in raw.split(","):
-            part = part.strip()
-            if part.isdigit():
-                idx = int(part) - 1
-                if 0 <= idx < len(new_domains):
-                    selected.append(idx)
+    raw = _ask("Selección (A=todos, N=ninguno, o números)", "A")
+    selected = _parse_selection(raw, len(new_domains))
 
     added = 0
     print()
@@ -751,11 +750,51 @@ def _present_domains(domains) -> int:
 
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
-def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
+def _rules_path() -> Path:
+    return Path(__file__).parent / "rules.py"
+
+
+def _read_rules_lines() -> Optional[list]:
+    """Reads rules.py as a list of lines, or None if it can't be read."""
     try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
+        return _rules_path().read_text(encoding="utf-8").splitlines()
     except OSError:
+        return None
+
+
+def _write_rules_lines(lines: list) -> bool:
+    """Writes rules.py from a list of lines. Returns True on success."""
+    try:
+        _rules_path().write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _py_str_literal(s: str) -> str:
+    """Safely encodes a string as a double-quoted Python string literal.
+
+    Values patched into rules.py (email addresses, labels, domains) can
+    originate from untrusted Gmail message headers (smart setup). Building
+    the literal via naive f-string interpolation would let a value containing
+    a `"` or newline break out of the string and inject arbitrary code into
+    rules.py, which is imported (and thus executed) by the app. Escaping here
+    closes that hole.
+    """
+    escaped = (
+        s.replace("\\", "\\\\")
+         .replace('"', '\\"')
+         .replace("\n", "\\n")
+         .replace("\r", "")
+         .replace("\x00", "")
+    )
+    return f'"{escaped}"'
+
+
+def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    """Appends a new entry to CONTACT_RULES in rules.py. Returns True on success."""
+    lines = _read_rules_lines()
+    if lines is None:
         return False
 
     start_idx = None
@@ -774,32 +813,29 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
     if end_idx is None:
         return False
 
+    email_literal = _py_str_literal(email)
     for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email_literal in line and not line.strip().startswith("#"):
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f'    {email_literal}: {{"label": {_py_str_literal(label)}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_lines(lines)
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+    """Removes the CONTACT_RULES entry for `email` from rules.py. Returns True on success."""
+    lines = _read_rules_lines()
+    if lines is None:
         return False
 
+    email_literal = _py_str_literal(email)
     new_lines = []
     removed   = False
     for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
+        if email_literal in line and not line.strip().startswith("#"):
             removed = True
             continue
         new_lines.append(line)
@@ -807,19 +843,13 @@ def _patch_rules_remove_contact(email: str) -> bool:
     if not removed:
         return False
 
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_lines(new_lines)
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+    lines = _read_rules_lines()
+    if lines is None:
         return False
 
     # Find DOMAIN_RULES list start
@@ -847,24 +877,21 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
         return False
 
     # Check if domain already exists anywhere in the block
+    domain_literal = _py_str_literal(domain)
     block_text = "\n".join(lines[start_idx:end_idx])
-    if f'"{domain}"' in block_text:
+    if domain_literal in block_text:
         return False
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{domain_literal}],\n'
+        f'        "label": {_py_str_literal(label)},\n'
+        f'        "action": {_py_str_literal(action)},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
 
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return _write_rules_lines(lines)
 
 
 # ── 9. Limpiar spam ───────────────────────────────────────────────────────────
@@ -918,9 +945,7 @@ def _menu_limpiar_todo(get_svc: Callable):
     print()
     print("  Los correos permanecen 30 días en papelera antes de eliminarse.")
     print()
-    if not _confirm("¿Continuar?"):
-        return
-    if not _confirm("  Confirmar: limpiar todas las categorías"):
+    if not _confirm_live("¿Continuar?", "  Confirmar: limpiar todas las categorías"):
         return
     svc = get_svc()
     if svc is None:
