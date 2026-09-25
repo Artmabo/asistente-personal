@@ -17,6 +17,7 @@ Entry point for the Gmail rule-based processor.
                                       [--time-to-action SEC]
   stats [--section learning|metrics|categories|all]
   audit [--last N] [--decision TRASH|KEEP|SKIP] [--csv PATH]
+  unsubscribe [--max N]
 
 ── Ejemplos ─────────────────────────────────────────────────────────────────
   python procesar_correos.py feedback newsletter@spam.com correct
@@ -24,6 +25,7 @@ Entry point for the Gmail rule-based processor.
   python procesar_correos.py stats --section metrics
   python procesar_correos.py audit --last 50 --decision TRASH
   python procesar_correos.py audit --last 500 --csv audit_export.csv
+  python procesar_correos.py unsubscribe --max 30
 """
 import sys
 import argparse
@@ -31,7 +33,7 @@ import logging
 import gmail_processor.rules as cfg
 from gmail_processor import GmailProcessor, setup_logging
 
-_SUBCOMMANDS = {"feedback", "stats", "audit"}
+_SUBCOMMANDS = {"feedback", "stats", "audit", "unsubscribe"}
 
 
 def main():
@@ -50,6 +52,8 @@ def main():
             _cmd_stats(sys.argv[2:])
         elif cmd == "audit":
             _cmd_audit(sys.argv[2:])
+        elif cmd == "unsubscribe":
+            _cmd_unsubscribe(sys.argv[2:])
         return
 
     parser = argparse.ArgumentParser(
@@ -219,7 +223,7 @@ def _cmd_audit(argv: list[str]):
     else:
         entries = audit.recent(args.last)
 
-    entries = entries[-args.last:]
+    entries = entries[-args.last:] if args.last > 0 else []
 
     if not entries:
         print("Audit log vacío o sin entradas para el filtro seleccionado.")
@@ -243,6 +247,49 @@ def _cmd_audit(argv: list[str]):
             f"{e.get('score', 0):>+7.1f}  "
             f"{e.get('rule',''):<20}  "
             f"{mode}"
+        )
+
+
+# ── unsubscribe ───────────────────────────────────────────────────────────────
+
+def _cmd_unsubscribe(argv: list[str]):
+    parser = argparse.ArgumentParser(
+        prog="procesar_correos.py unsubscribe",
+        description=(
+            "List senders that are good candidates for manual unsubscription: "
+            "commercial/newsletter senders with an unsubscribe link that "
+            "haven't been reviewed as personal contacts. Uses the local "
+            "analysis_state.json from a previous 'Analizar correos' run — "
+            "no Gmail API calls."
+        ),
+    )
+    parser.add_argument("--max", default=20, type=int,
+                        help="Maximum number of candidates to show (default: 20)")
+    args = parser.parse_args(argv)
+
+    setup_logging(level=logging.WARNING)
+
+    from gmail_processor.contact_analyzer import ContactAnalyzer
+    analyzer   = ContactAnalyzer(service=None)
+    candidates = analyzer.get_unsubscribe_candidates(max_results=args.max)
+
+    if not candidates:
+        print(
+            "No hay candidatos para darse de baja por ahora "
+            "(ejecuta un análisis de correos primero si es la primera vez)."
+        )
+        return
+
+    print(f"\n{len(candidates)} remitente(s) candidatos para darse de baja:\n")
+    print(f"{'REMITENTE':<42} {'SCORE':>6} {'CORREOS':>8}  ÚLTIMO VISTO")
+    print("─" * 90)
+    for c in candidates:
+        label = f'{c["name"]} <{c["email"]}>' if c.get("name") else c["email"]
+        print(
+            f"{label[:41]:<42} "
+            f"{c.get('score', 0):>6.0f} "
+            f"{c.get('count', 0):>8}  "
+            f"{c.get('last_seen', '')[:19]}"
         )
 
 

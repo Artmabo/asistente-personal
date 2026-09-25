@@ -77,7 +77,11 @@ class AssistantChat:
             )
             answer = resp.content[0].text.strip()
         except Exception as exc:
-            return f"Ocurrió un problema al contactar al asistente: {exc}"
+            logger.error(f"Error al llamar a la API de Claude: {exc}")
+            return (
+                "Ocurrió un problema al contactar al asistente. "
+                "Intenta de nuevo en un momento."
+            )
 
         # Guardar en historial
         ts = datetime.now().isoformat(timespec="seconds")

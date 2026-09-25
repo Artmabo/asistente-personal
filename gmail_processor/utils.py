@@ -23,6 +23,25 @@ def get_header(headers: list[dict], name: str) -> str:
     return ""
 
 
+def match_contact_rule(sender: str, domain: str, contact_rules: dict) -> str | None:
+    """Returns the CONTACT_RULES key matching `sender`/`domain`, or None.
+
+    Domain-prefix entries (e.g. "@anahuac.mx") also match subdomains of that
+    domain (e.g. "noreply.anahuac.mx"), not just an exact domain match.
+    """
+    if sender in contact_rules:
+        return sender
+    if not domain:
+        return None
+    labels = domain.split(".")
+    for i in range(len(labels) - 1):
+        suffix = ".".join(labels[i:])
+        key = f"@{suffix}"
+        if key in contact_rules:
+            return key
+    return None
+
+
 def extract_email_address(raw: str) -> str:
     """Extracts a bare email address from a raw From/To header value.
 

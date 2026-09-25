@@ -2,6 +2,7 @@
 GmailProcessor: orchestrates fetching, classifying, and acting on emails.
 """
 import logging
+import logging.handlers
 from googleapiclient.errors import HttpError
 
 from .auth import get_service
@@ -20,16 +21,25 @@ def setup_logging(
     level: int = logging.INFO,
     log_file: str = "gmail_processor.log",
 ):
-    """Configures logging to both console and a rotating log file."""
+    """Configures logging to both console and a size-capped rotating log file.
+
+    Safe to call more than once (e.g. from a long-running CLI menu that
+    switches verbosity between actions): `logging.basicConfig` only takes
+    effect on its first call in a process, so the root logger's level is
+    also set explicitly here to keep later calls from being silent no-ops.
+    """
     fmt = "%(asctime)s [%(levelname)-8s] %(message)s"
     logging.basicConfig(
         level=level,
         format=fmt,
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.handlers.RotatingFileHandler(
+                log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+            ),
         ],
     )
+    logging.getLogger().setLevel(level)
 
 
 class GmailProcessor:
@@ -82,8 +92,12 @@ class GmailProcessor:
                 break
 
             logger.info(f"Page {page}: {len(messages)} messages")
-            for stub in messages:
-                self._process_one(stub["id"])
+            msg_ids = [stub["id"] for stub in messages]
+            fetched = self._fetch_batch(msg_ids)
+            for msg_id in msg_ids:
+                message = fetched.get(msg_id)
+                if message is not None:
+                    self._handle_message(msg_id, message)
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -108,21 +122,48 @@ class GmailProcessor:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _process_one(self, msg_id: str):
+    def _fetch_batch(self, msg_ids: list[str]) -> dict[str, dict]:
+        """Fetches metadata for a page of messages in one HTTP batch request
+        instead of one `messages().get()` round-trip per message."""
+        if not msg_ids:
+            return {}
+
+        results: dict[str, dict] = {}
+
+        def _on_response(request_id, response, exception):
+            if exception is not None:
+                logger.error(f"Could not fetch {request_id}: {exception}")
+                self.stats["errors"] += 1
+                return
+            results[request_id] = response
+
+        batch = self.service.new_batch_http_request(callback=_on_response)
+        for msg_id in msg_ids:
+            batch.add(
+                self.service.users().messages().get(
+                    userId="me",
+                    id=msg_id,
+                    format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"],
+                ),
+                request_id=msg_id,
+            )
         try:
-            message = self.service.users().messages().get(
-                userId="me",
-                id=msg_id,
-                format="metadata",
-                metadataHeaders=["From", "Subject", "Date"],
-            ).execute()
+            batch.execute()
         except HttpError as e:
-            logger.error(f"Could not fetch {msg_id}: {e}")
+            logger.error(f"Batch fetch failed for {len(msg_ids)} message(s): {e}")
+            self.stats["errors"] += len(msg_ids) - len(results)
+
+        return results
+
+    def _handle_message(self, msg_id: str, message: dict):
+        c = self.classifier.classify(message)
+        try:
+            self._apply(msg_id, message, c)
+        except HttpError as e:
+            logger.error(f"Could not apply actions to {msg_id}: {e}")
             self.stats["errors"] += 1
             return
-
-        c = self.classifier.classify(message)
-        self._apply(msg_id, message, c)
         self.stats["processed"] += 1
 
     def _apply(self, msg_id: str, message: dict, c: Classification):

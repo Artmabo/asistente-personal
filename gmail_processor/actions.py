@@ -5,6 +5,7 @@ All public methods return True on success, False on failure.
 In dry_run mode they log the intended action and return True without touching the API.
 """
 import json
+import random
 import time
 import logging
 from googleapiclient.errors import HttpError
@@ -137,7 +138,7 @@ class GmailActions:
                     kind = "Rate limit" if status in (403, 429) else "Server error"
                     logger.warning(f"{kind} ({status}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
                     time.sleep(delay)
-                    delay *= 2
+                    delay = delay * 2 + random.uniform(0, 0.5)
                     continue
                 logger.error(f"API error {status} on attempt {attempt}: {e}")
                 return None
