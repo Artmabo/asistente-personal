@@ -28,6 +28,10 @@ PATTERNS_PATH = Path("user_patterns.json")
 _BATCH_SLEEP      = 0.2
 _MAX_SENT_INDEXED = 2_000   # cap on sent messages fetched to build the "replied" index
 
+# Conservative address format allowed before writing an email into rules.py
+# as a Python string literal (see _write_contact_rule).
+_SAFE_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
 SCORE_AUTO_PERSONAL = 70
 SCORE_AUTO_SPAM     = 20
 _DOMAIN_AUTO_VOTES  = 3   # votos mínimos para auto-clasificar dominio
@@ -679,6 +683,14 @@ class ContactAnalyzer:
             import importlib
             import gmail_processor.rules as rules_mod
 
+            # email_addr is derived from a message's From header, which is
+            # attacker-controlled content: it gets spliced into rules.py as a
+            # Python string literal below and the module is then reloaded
+            # (i.e. executed). Reject anything that isn't a plain, well-formed
+            # address before it ever touches the source file.
+            if not _SAFE_EMAIL_RE.match(email_addr):
+                return {"error": f"Dirección de correo con formato inesperado: {email_addr!r}"}
+
             if email_addr in rules_mod.CONTACT_RULES:
                 return {"already_protected": True}
 
@@ -706,7 +718,9 @@ class ContactAnalyzer:
             safe_addr = email_addr.replace("\\", "\\\\").replace('"', '\\"')
             new_line = f'    "{safe_addr}": {{"label": "{label}", "mark_important": True}},'
             lines.insert(insert_at, new_line)
-            rules_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path = rules_path.with_suffix(".py.tmp")
+            tmp_path.write_text("\n".join(lines), encoding="utf-8")
+            tmp_path.replace(rules_path)
             importlib.reload(rules_mod)
             return {"success": True, "label": label}
         except Exception as exc:
@@ -718,8 +732,8 @@ class ContactAnalyzer:
         if self.path.exists():
             try:
                 return json.loads(self.path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                pass
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(f"Could not read {self.path}, starting fresh: {e}")
         return _empty_state()
 
     def _save_state(self):
@@ -729,8 +743,8 @@ class ContactAnalyzer:
         if PATTERNS_PATH.exists():
             try:
                 return json.loads(PATTERNS_PATH.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                pass
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(f"Could not read {PATTERNS_PATH}, starting fresh: {e}")
         return _empty_patterns()
 
     def _save_patterns(self):

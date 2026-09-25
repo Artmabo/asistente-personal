@@ -68,14 +68,18 @@ class AuditLogger:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             for entry in combined:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp_path.replace(self.path)
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 
     def recent(self, n: int = 20) -> list[dict]:
         """Returns the n most recent entries (including un-flushed buffer)."""
+        if n <= 0:
+            return []
         buf_entries = self._buf[-n:]
         if len(buf_entries) >= n:
             return buf_entries

@@ -22,7 +22,7 @@ _SUMMARY_PATH = Path("cleanup_summary.json")
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, match_contact_rule
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
@@ -43,6 +43,12 @@ class StorageCleaner:
         self.audit         = audit
         self.learning_mode = learning_mode
         self._protected_domains = _build_protected_domains()
+        if engine is None:
+            logger.warning(
+                "StorageCleaner initialized without a LearningEngine — "
+                "score-based soft protection is disabled; every message that "
+                "isn't hard-protected will be trashed."
+            )
         self.stats = {
             "examined": 0,
             "trashed":  0,
@@ -112,33 +118,62 @@ class StorageCleaner:
                 logger.info("  Sin candidatos para este target.")
                 break
 
+            page_ids = []
             for stub in messages:
                 if count >= cap:
                     logger.warning(f"  Cap ({cap}) alcanzado — deteniendo este target.")
                     break
-                self._evaluate(stub["id"], reason, rule_name)
+                page_ids.append(stub["id"])
                 count += 1
+
+            fetched = self._fetch_batch(page_ids)
+            for msg_id in page_ids:
+                message = fetched.get(msg_id)
+                if message is not None:
+                    self._evaluate(msg_id, message, reason, rule_name)
 
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
 
+    def _fetch_batch(self, msg_ids: list[str]) -> dict[str, dict]:
+        """Fetches metadata for a page of message ids in one HTTP batch
+        request instead of one `messages().get()` round-trip per message."""
+        if not msg_ids:
+            return {}
+
+        results: dict[str, dict] = {}
+
+        def _on_response(request_id, response, exception):
+            if exception is not None:
+                logger.error(f"  Could not fetch {request_id}: {exception}")
+                self.stats["errors"] += 1
+                return
+            results[request_id] = response
+
+        batch = self.service.new_batch_http_request(callback=_on_response)
+        for msg_id in msg_ids:
+            batch.add(
+                self.service.users().messages().get(
+                    userId="me",
+                    id=msg_id,
+                    format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"],
+                ),
+                request_id=msg_id,
+            )
+        try:
+            batch.execute()
+        except HttpError as e:
+            logger.error(f"  Batch fetch failed for {len(msg_ids)} message(s): {e}")
+            self.stats["errors"] += len(msg_ids) - len(results)
+
+        return results
+
     # ── Per-message evaluation ────────────────────────────────────────────────
 
-    def _evaluate(self, msg_id: str, reason: str, rule_name: str):
+    def _evaluate(self, msg_id: str, message: dict, reason: str, rule_name: str):
         self.stats["examined"] += 1
-
-        try:
-            message = self.service.users().messages().get(
-                userId="me",
-                id=msg_id,
-                format="metadata",
-                metadataHeaders=["From", "Subject", "Date"],
-            ).execute()
-        except HttpError as e:
-            logger.error(f"  Could not fetch {msg_id}: {e}")
-            self.stats["errors"] += 1
-            return
 
         sender    = _sender_display(message)
         subject   = _subject(message)
@@ -237,7 +272,14 @@ class StorageCleaner:
             f"           Acción : [{mode}] trash → {msg_id}"
         )
 
-        if self.actions.trash(msg_id):
+        try:
+            trashed = self.actions.trash(msg_id)
+        except HttpError as e:
+            logger.error(f"  Could not trash {msg_id}: {e}")
+            self.stats["errors"] += 1
+            return
+
+        if trashed:
             self.stats["trashed"] += 1
             if self.engine:
                 self.engine.metrics.record_trash(rule_name)
@@ -268,9 +310,10 @@ class StorageCleaner:
         email  = _sender_email(message)
         domain = email.split("@")[-1] if "@" in email else ""
 
-        if email in cfg.CONTACT_RULES:
+        contact_key = match_contact_rule(email, domain, cfg.CONTACT_RULES)
+        if contact_key == email:
             return f"contacto protegido ({email})"
-        if domain and f"@{domain}" in cfg.CONTACT_RULES:
+        if contact_key:
             return f"dominio protegido por contacto ({domain})"
         if domain in self._protected_domains:
             return f"dominio protegido ({domain})"

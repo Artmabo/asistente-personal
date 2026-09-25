@@ -6,11 +6,19 @@ Entry point: run_menu()
   All destructive operations default to DRY RUN with explicit LIVE confirmation.
 """
 import os
+import re
 import sys
 import logging
 import importlib
 from pathlib import Path
 from typing import Callable, Optional
+
+# Conservative address/domain formats allowed before writing into rules.py
+# as a Python string literal — these values can originate from a message's
+# From header (an auto-detected contact/domain suggestion), so they must be
+# validated before being spliced into source that gets importlib.reload'ed.
+_SAFE_EMAIL_RE  = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+_SAFE_DOMAIN_RE = re.compile(r"^[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
 _W    = 54
 _SEP  = "─" * _W
@@ -752,6 +760,8 @@ def _present_domains(domains) -> int:
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
+    if not _SAFE_EMAIL_RE.match(email):
+        return False
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -779,11 +789,13 @@ def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
             return False  # already exists
 
     important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
+    new_entry = f'    {email!r}: {{"label": {label!r}, "mark_important": {important_str}}},'
     lines.insert(end_idx, new_entry)
 
     try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tmp_path = rules_path.with_suffix(".py.tmp")
+        tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tmp_path.replace(rules_path)
         return True
     except OSError:
         return False
@@ -808,7 +820,9 @@ def _patch_rules_remove_contact(email: str) -> bool:
         return False
 
     try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        tmp_path = rules_path.with_suffix(".py.tmp")
+        tmp_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        tmp_path.replace(rules_path)
         return True
     except OSError:
         return False
@@ -816,6 +830,8 @@ def _patch_rules_remove_contact(email: str) -> bool:
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:
     """Appends a new single-domain entry to DOMAIN_RULES in rules.py."""
+    if not _SAFE_DOMAIN_RE.match(domain):
+        return False
     rules_path = Path(__file__).parent / "rules.py"
     try:
         lines = rules_path.read_text(encoding="utf-8").splitlines()
@@ -853,15 +869,17 @@ def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_importa
 
     new_entry = (
         f'    {{\n'
-        f'        "domains": ["{domain}"],\n'
-        f'        "label": "{label}",\n'
-        f'        "action": "{action}",\n'
+        f'        "domains": [{domain!r}],\n'
+        f'        "label": {label!r},\n'
+        f'        "action": {action!r},\n'
         f'    }},'
     )
     lines.insert(end_idx, new_entry)
 
     try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tmp_path = rules_path.with_suffix(".py.tmp")
+        tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tmp_path.replace(rules_path)
         return True
     except OSError:
         return False

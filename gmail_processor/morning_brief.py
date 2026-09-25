@@ -4,8 +4,11 @@ Sin llamadas a Gmail ni a Anthropic — solo lectura de estado local.
 Resultado cacheado por 1 hora para no recalcular en cada recarga.
 """
 import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+
+logger = logging.getLogger("gmail_processor.morning_brief")
 
 _CACHE_PATH = Path("morning_brief_cache.json")
 _TTL_HOURS  = 1
@@ -157,9 +160,12 @@ class MorningBrief:
         return None
 
     def _save_cache(self, brief: dict):
-        _CACHE_PATH.write_text(
-            json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        try:
+            _CACHE_PATH.write_text(
+                json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError as e:
+            logger.warning(f"Could not write morning brief cache: {e}")
 
     def _read_json(self, path: str, default: dict) -> dict:
         p = Path(path)
