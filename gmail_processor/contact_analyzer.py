@@ -179,7 +179,9 @@ class ContactAnalyzer:
         pending_set = set(self.state["pending"])
 
         _working: dict[str, dict] = {}
-        scanned    = 0
+        scanned           = 0
+        already_reviewed  = 0
+        fetch_errors      = 0
         page_token = None
         page       = 0
         date_q     = _date_filter(days_range)
@@ -215,6 +217,7 @@ class ContactAnalyzer:
                         metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
                     ).execute()
                 except HttpError:
+                    fetch_errors += 1
                     continue
 
                 headers        = msg.get("payload", {}).get("headers", [])
@@ -223,6 +226,7 @@ class ContactAnalyzer:
                     continue
 
                 if addr in reviewed or addr in pending_set:
+                    already_reviewed += 1
                     continue
 
                 subject   = get_header(headers, "Subject")
@@ -304,8 +308,6 @@ class ContactAnalyzer:
                 }
                 new_pending += 1
 
-        already_reviewed  = scanned - sum(w["count"] for w in _working.values())
-
         self.state["pending"]             = list(pending_set)
         self.state["pending_meta"]        = pending_meta
         self.state["last_processed_date"] = now
@@ -317,6 +319,7 @@ class ContactAnalyzer:
             "auto_spam":        auto_spam,
             "pending":          new_pending,
             "already_reviewed": already_reviewed,
+            "fetch_errors":     fetch_errors,
             "scanned":          scanned,
         }
 

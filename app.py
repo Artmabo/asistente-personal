@@ -523,6 +523,13 @@ def _ca_learning_summary() -> dict:
     return a.get_learning_stats()
 
 
+def _ca_unsubscribe_candidates() -> list[dict]:
+    try:
+        return _ca_get_analyzer().get_unsubscribe_candidates()
+    except Exception:
+        return []
+
+
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
 
 def _cargar_storage_summary() -> dict:
@@ -1549,6 +1556,29 @@ elif _current_page == "analizar":
                     with st.expander(f"⚠️ {len(_apr_e)} errores"):
                         for _e in _apr_e:
                             st.caption(_e)
+
+        # ── Sugerencias para darte de baja ──────────────────────────────────────
+        if _ca_prev:
+            _unsub = _ca_unsubscribe_candidates()
+            if _unsub:
+                st.markdown("")
+                with st.expander(f"💌 {len(_unsub)} remitentes candidatos para darte de baja"):
+                    st.caption(
+                        "Correos con enlace de baja y puntaje bajo (posiblemente comerciales) "
+                        "que aún no has marcado como spam. Puedes darte de baja manualmente "
+                        "desde el correo, o marcarlos como spam en la sección de pendientes."
+                    )
+                    for _u in _unsub[:10]:
+                        _u_label = f"{_u['name']} <{_u['email']}>" if _u.get("name") else _u["email"]
+                        st.markdown(f"**{_u_label}**")
+                        _u_ctx = [f"Puntaje: {_u.get('score', 0)}/100"]
+                        if _u.get("count"):
+                            _u_ctx.append(f"{_u['count']} correos")
+                        if _u.get("last_seen"):
+                            _u_ctx.append(f"último: {_time_ago(_u['last_seen'])}")
+                        st.caption("  ·  ".join(_u_ctx))
+                        if _u.get("sample_subjects"):
+                            st.caption("Asuntos: " + "  ·  ".join(f'"{s[:50]}"' for s in _u["sample_subjects"][:2]))
 
         # ── Configuración del análisis ────────────────────────────────────────
         st.markdown("")

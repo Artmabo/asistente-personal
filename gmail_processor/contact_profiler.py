@@ -4,9 +4,11 @@ Analiza hasta 50 correos por contacto y genera un perfil persistente en JSON.
 """
 import base64
 import email.utils
+import html
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,6 +31,21 @@ _MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 def _empty_profiles() -> dict:
     return {"profiles": {}, "last_build": None, "total_profiles": 0}
+
+
+_TAG_RE        = re.compile(r"<[^>]+>")
+_SCRIPT_RE     = re.compile(r"(?is)<(script|style)\b.*?</\1>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _strip_html(raw: str) -> str:
+    """Best-effort conversion of an HTML email body to plain text for the
+    Claude prompt — no need for a full HTML parser, just enough to avoid
+    passing markup noise into the summary."""
+    text = _SCRIPT_RE.sub(" ", raw)
+    text = _TAG_RE.sub(" ", text)
+    text = html.unescape(text)
+    return _WHITESPACE_RE.sub(" ", text).strip()
 
 
 class ContactProfiler:
@@ -213,7 +230,6 @@ class ContactProfiler:
     # ── Obtener correos ───────────────────────────────────────────────────────
 
     def _fetch_emails(self, service, addr: str) -> list[dict]:
-        result = []
         try:
             resp = service.users().messages().list(
                 userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
@@ -222,16 +238,34 @@ class ContactProfiler:
         except HttpError:
             return []
 
-        for stub in stubs:
-            try:
-                msg = service.users().messages().get(
-                    userId="me", id=stub["id"], format="full",
-                ).execute()
-                result.append(self._parse_message(msg))
-                time.sleep(0.05)
-            except HttpError:
-                continue
+        if not stubs:
+            return []
 
+        result: list[dict] = []
+
+        def _on_response(_request_id, response, exception):
+            if exception is None and response is not None:
+                result.append(self._parse_message(response))
+
+        # Batch the per-message fetches instead of one HTTP round-trip per
+        # message — cuts up to _MAX_EMAILS sequential calls down to a handful.
+        for i in range(0, len(stubs), 100):
+            batch = service.new_batch_http_request(callback=_on_response)
+            for stub in stubs[i:i + 100]:
+                batch.add(service.users().messages().get(
+                    userId="me", id=stub["id"], format="full",
+                ))
+            try:
+                batch.execute()
+            except HttpError:
+                pass
+
+        # Batch responses aren't guaranteed to preserve request order, but the
+        # prompt in _call_claude assumes "most recent first" — sort explicitly.
+        result.sort(
+            key=lambda em: em.get("date_parsed") or datetime.min,
+            reverse=True,
+        )
         return result
 
     def _parse_message(self, msg: dict) -> dict:
@@ -267,15 +301,28 @@ class ContactProfiler:
         }
 
     def _extract_body(self, payload: dict) -> str:
-        if payload.get("mimeType") == "text/plain":
+        """Prefers text/plain; falls back to a tag-stripped text/html part.
+        Many emails (marketing, but also plenty of personal webmail clients)
+        send HTML-only bodies — without this fallback those snippets were
+        silently empty, starving the Claude summary of any content."""
+        text = self._extract_by_mimetype(payload, "text/plain")
+        if text:
+            return text[:_MAX_BODY].strip()
+        raw_html = self._extract_by_mimetype(payload, "text/html")
+        if raw_html:
+            return _strip_html(raw_html)[:_MAX_BODY].strip()
+        return ""
+
+    def _extract_by_mimetype(self, payload: dict, mime_type: str) -> str:
+        if payload.get("mimeType") == mime_type:
             data = payload.get("body", {}).get("data", "")
             if data:
                 try:
-                    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")[:_MAX_BODY].strip()
+                    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
                 except Exception:
                     pass
         for part in payload.get("parts", []):
-            text = self._extract_body(part)
+            text = self._extract_by_mimetype(part, mime_type)
             if text:
                 return text
         return ""

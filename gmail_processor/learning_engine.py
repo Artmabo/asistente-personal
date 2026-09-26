@@ -586,9 +586,20 @@ class LearningEngine:
                     logger.info(f"Estado migrado v{v} → v3")
                 logger.debug(f"Estado cargado desde {self.path}")
                 return data
-            except (json.JSONDecodeError, KeyError, TypeError):
-                logger.warning(f"Estado corrupto en {self.path}, reiniciando.")
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                logger.warning(f"Estado corrupto en {self.path}, reiniciando: {exc}")
+                self._backup_corrupted()
         return copy.deepcopy(_EMPTY_STATE_V3)
+
+    def _backup_corrupted(self) -> None:
+        """Preserves the unreadable file instead of letting it be silently
+        overwritten — corrupted learned adjustments are otherwise unrecoverable."""
+        backup = self.path.with_suffix(f".corrupt-{int(datetime.now().timestamp())}.json")
+        try:
+            self.path.replace(backup)
+            logger.warning(f"Copia del estado corrupto guardada en {backup}")
+        except OSError as exc:
+            logger.warning(f"No se pudo respaldar el estado corrupto: {exc}")
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
