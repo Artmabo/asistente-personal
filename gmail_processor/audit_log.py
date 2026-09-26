@@ -25,6 +25,21 @@ logger = logging.getLogger("gmail_processor.audit")
 MAX_ENTRIES = 10_000
 
 
+def _parse_jsonl_lines(lines) -> list[dict]:
+    """Parses JSONL lines, skipping individually corrupted ones instead of
+    discarding the whole log (e.g. a line truncated by a crash mid-write)."""
+    entries: list[dict] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            logger.warning("Skipping corrupted audit log line")
+    return entries
+
+
 class AuditLogger:
     def __init__(self, path: str = "audit_log.jsonl", dry_run: bool = False):
         self.path    = Path(path)
@@ -113,9 +128,10 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                lines = f.readlines()
+        except OSError:
             return []
+        return _parse_jsonl_lines(lines)
 
     def _load_tail(self, n: int) -> list[dict]:
         """Reads only the last n lines using a deque to avoid loading the whole file."""
@@ -123,10 +139,7 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                tail = deque(
-                    (ln for ln in f if ln.strip()),
-                    maxlen=n,
-                )
-            return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+                tail = deque((ln for ln in f if ln.strip()), maxlen=n)
+        except OSError:
             return []
+        return _parse_jsonl_lines(tail)
