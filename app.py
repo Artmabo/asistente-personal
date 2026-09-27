@@ -49,6 +49,7 @@ st.session_state.setdefault("profiler_result",    None)
 st.session_state.setdefault("chat_messages",      [])
 st.session_state.setdefault("chat_open",          False)
 st.session_state.setdefault("chat_input_counter", 0)
+st.session_state.setdefault("unsub_candidates",   None)
 
 # ── Constantes ──────────────────────────────────────────────────────────────────
 CATS = [
@@ -237,33 +238,6 @@ def _limpiar_remitente(email: str) -> dict | None:
         return None
 
 
-_FREE_EMAIL_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
-
-
-def _derivar_label(email: str, name: str) -> str:
-    words = name.strip().split()
-    if words:
-        clean = "".join(c for c in words[0] if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email.split("@")[-1] if "@" in email else ""
-    local  = email.split("@")[0]  if "@" in email else email
-    if domain in _FREE_EMAIL_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
-
-
 def _proteger_remitente(email: str, name: str) -> dict:
     import re
     if not re.match(r"^[^@\s\"'\\]+@[^@\s\"'\\]+\.[^@\s\"'\\]+$", email):
@@ -276,7 +250,8 @@ def _proteger_remitente(email: str, name: str) -> dict:
         if email in rules_mod.CONTACT_RULES:
             return {"already_protected": True}
 
-        label      = _derivar_label(email, name)
+        from gmail_processor.utils import derive_label
+        label      = derive_label(email, name)
         rules_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "gmail_processor", "rules.py",
@@ -521,6 +496,16 @@ def _ca_learning_summary() -> dict:
     from gmail_processor.contact_analyzer import ContactAnalyzer
     a = ContactAnalyzer(st.session_state.service)
     return a.get_learning_stats()
+
+
+def _ca_unsubscribe_candidates(max_results: int = 15) -> list[dict]:
+    """Senders with an unsubscribe link and a low personal-contact score —
+    good candidates to unsubscribe from instead of just trashing repeatedly."""
+    try:
+        analyzer = _ca_get_analyzer()
+        return analyzer.get_unsubscribe_candidates(max_results=max_results)
+    except Exception:
+        return []
 
 
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
@@ -1892,6 +1877,54 @@ elif _current_page == "limpiar":
                             st.success(f"🛡️ **{_se_email}** protegido con etiqueta **{_ps_res['label']}**.")
                         elif _ps_res.get("error"):
                             st.error(f"Error: {_ps_res['error']}")
+                    st.markdown("---")
+
+        # ── Sugerencias para darte de baja ────────────────────────────────────
+        st.markdown("")
+        with st.expander("📬 Sugerencias para darte de baja"):
+            st.caption(
+                "Remitentes con enlace de baja (List-Unsubscribe) y puntuación baja de "
+                "'Analizar correos' — buenos candidatos para dejar de recibir en vez de "
+                "solo limpiar cada vez. Requiere haber corrido un análisis primero."
+            )
+            if st.button("🔍 Buscar candidatos", key="btn_load_unsub"):
+                with st.spinner("Buscando…"):
+                    st.session_state["unsub_candidates"] = _ca_unsubscribe_candidates()
+                st.rerun()
+
+            _unsub = st.session_state["unsub_candidates"]
+            if _unsub is None:
+                st.info("Haz clic en 'Buscar candidatos' para ver sugerencias.")
+            elif not _unsub:
+                st.info(
+                    "Sin candidatos por ahora. Corre un análisis en 'Analizar correos' "
+                    "primero, o ya no quedan remitentes con enlace de baja pendientes."
+                )
+            else:
+                for _ui, _ucand in enumerate(_unsub):
+                    _u_email = _ucand["email"]
+                    _u_name  = _ucand.get("name", "")
+                    _u_label = f"{_u_name} <{_u_email}>" if _u_name else _u_email
+                    _u_subj  = _ucand.get("sample_subjects", [])
+                    _ursk    = f"result_unsub_trash_{_ui}"
+                    st.session_state.setdefault(_ursk, None)
+
+                    _u_c1, _u_c2 = st.columns([5, 1])
+                    with _u_c1:
+                        st.markdown(f"**{_u_label}**")
+                        if _u_subj:
+                            st.caption("  ·  ".join(f'"{s[:50]}"' for s in _u_subj[:2]))
+                    with _u_c2:
+                        if st.button("🗑️ Limpiar", key=f"btn_unsub_ts_{_ui}", use_container_width=True):
+                            with st.spinner("Limpiando…"):
+                                st.session_state[_ursk] = _limpiar_remitente(_u_email)
+                            st.rerun()
+
+                    if st.session_state.get(_ursk):
+                        _ures = st.session_state[_ursk]
+                        _u_mov = _ures.get("exitos", 0)
+                        _u_tot = _ures.get("procesados", 0)
+                        st.success(f"✓ {_u_mov} de {_u_tot} correos de {_u_email} movidos.")
                     st.markdown("---")
 
 # ══════════════════════════════════════════════════════════════════════════════
