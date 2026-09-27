@@ -24,7 +24,7 @@ _CLAUDE_BASE_DELAY  = 2.0
 PROFILES_PATH = Path("contact_profiles.json")
 _MAX_EMAILS   = 50
 _MAX_BODY     = 500
-_MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+_MODEL        = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 
 
 def _empty_profiles() -> dict:
@@ -213,7 +213,10 @@ class ContactProfiler:
     # ── Obtener correos ───────────────────────────────────────────────────────
 
     def _fetch_emails(self, service, addr: str) -> list[dict]:
-        result = []
+        """Fetches up to _MAX_EMAILS full messages for `addr` in one batch HTTP
+        request instead of one sequential call per message. Order is preserved
+        (Gmail lists newest-first) so callers can rely on emails_data[0] being
+        the most recent."""
         try:
             resp = service.users().messages().list(
                 userId="me", q=f"from:{addr}", maxResults=_MAX_EMAILS,
@@ -222,17 +225,27 @@ class ContactProfiler:
         except HttpError:
             return []
 
-        for stub in stubs:
-            try:
-                msg = service.users().messages().get(
-                    userId="me", id=stub["id"], format="full",
-                ).execute()
-                result.append(self._parse_message(msg))
-                time.sleep(0.05)
-            except HttpError:
-                continue
+        if not stubs:
+            return []
 
-        return result
+        parsed: dict[str, dict] = {}
+
+        def _on_response(request_id, response, exception):
+            if exception is None and response is not None:
+                parsed[request_id] = self._parse_message(response)
+
+        batch = service.new_batch_http_request(callback=_on_response)
+        for stub in stubs:
+            batch.add(
+                service.users().messages().get(userId="me", id=stub["id"], format="full"),
+                request_id=stub["id"],
+            )
+        try:
+            batch.execute()
+        except HttpError:
+            pass
+
+        return [parsed[s["id"]] for s in stubs if s["id"] in parsed]
 
     def _parse_message(self, msg: dict) -> dict:
         payload  = msg.get("payload", {})
