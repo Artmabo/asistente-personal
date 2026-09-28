@@ -237,31 +237,9 @@ def _limpiar_remitente(email: str) -> dict | None:
         return None
 
 
-_FREE_EMAIL_PROVIDERS = frozenset([
-    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
-    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
-    "me.com", "aol.com", "msn.com",
-])
-
-
 def _derivar_label(email: str, name: str) -> str:
-    words = name.strip().split()
-    if words:
-        clean = "".join(c for c in words[0] if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    domain = email.split("@")[-1] if "@" in email else ""
-    local  = email.split("@")[0]  if "@" in email else email
-    if domain in _FREE_EMAIL_PROVIDERS:
-        clean = "".join(c for c in local if c.isalpha())[:10]
-        if clean:
-            return clean.upper()
-    if domain:
-        part  = domain.split(".")[0]
-        clean = "".join(c for c in part if c.isalpha())[:8]
-        if clean:
-            return clean.upper()
-    return "CONTACTO"
+    from gmail_processor.rules_writer import derive_label
+    return derive_label(email, name)
 
 
 def _proteger_remitente(email: str, name: str) -> dict:
@@ -270,47 +248,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
         return {"error": f"Dirección de correo no válida: {email}"}
 
     try:
-        import importlib
-        import gmail_processor.rules as rules_mod
-
-        if email in rules_mod.CONTACT_RULES:
-            return {"already_protected": True}
-
-        label      = _derivar_label(email, name)
-        rules_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "gmail_processor", "rules.py",
-        )
-
-        content = open(rules_path, encoding="utf-8").read()
-        lines   = content.split("\n")
-
-        in_cr     = False
-        depth     = 0
-        insert_at = -1
-        for i, line in enumerate(lines):
-            if not in_cr:
-                if "CONTACT_RULES" in line and "=" in line and "{" in line:
-                    in_cr = True
-                    depth = line.count("{") - line.count("}")
-            else:
-                depth += line.count("{") - line.count("}")
-                if depth <= 0:
-                    insert_at = i
-                    break
-
-        if insert_at == -1:
-            return {"error": "No se encontró CONTACT_RULES en rules.py"}
-
-        # Use repr() so quotes, backslashes and special chars are safely escaped
-        new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
-        lines.insert(insert_at, new_line)
-
-        with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-
-        importlib.reload(rules_mod)
-        return {"success": True, "email": email, "label": label}
+        from gmail_processor.rules_writer import add_contact_rule
+        label = _derivar_label(email, name)
+        return add_contact_rule(email, label, mark_important=True)
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -521,6 +461,15 @@ def _ca_learning_summary() -> dict:
     from gmail_processor.contact_analyzer import ContactAnalyzer
     a = ContactAnalyzer(st.session_state.service)
     return a.get_learning_stats()
+
+
+def _ca_unsubscribe_candidates() -> list[dict]:
+    """Senders with an unsubscribe link and a low score — good candidates
+    for the user to manually unsubscribe from instead of trashing forever."""
+    try:
+        return _ca_get_analyzer().get_unsubscribe_candidates()
+    except Exception:
+        return []
 
 
 # ── Helpers: almacenamiento ────────────────────────────────────────────────────
@@ -1638,6 +1587,28 @@ elif _current_page == "analizar":
                     f"**{_cb_pd} para revisar**"
                 )
 
+        # ── Candidatos para darse de baja ────────────────────────────────────
+        if _ca_prev or (_ca_batch and not _ca_batch.get("error")):
+            _unsub = _ca_unsubscribe_candidates()
+            if _unsub:
+                st.markdown("")
+                with st.expander(f"📭 {len(_unsub)} remitentes con opción de darte de baja"):
+                    st.caption(
+                        "Correos con enlace de baja (List-Unsubscribe) y puntuación baja. "
+                        "Dar de baja evita que sigan llegando, a diferencia de solo "
+                        "moverlos a la papelera cada vez."
+                    )
+                    for _u in _unsub[:15]:
+                        _u_label = f"{_u['name']} <{_u['email']}>" if _u.get("name") else _u["email"]
+                        st.markdown(f"**{_u_label}**")
+                        _u_ctx = [f"📧 {_u.get('count', 0)} correos"]
+                        if _u.get("last_seen"):
+                            _u_ctx.append(f"Último: {_time_ago(_u['last_seen'])}")
+                        st.caption("  ·  ".join(_u_ctx))
+                        if _u.get("sample_subjects"):
+                            st.caption("Asunto: " + f'"{_u["sample_subjects"][0][:60]}"')
+                        st.markdown("---")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PÁGINA: LIMPIAR CORREOS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2008,8 +1979,11 @@ elif _current_page == "automatica":
                     if isinstance(_last_res, dict) and "error" in _last_res:
                         st.warning(f"Error: {_last_res['error']}")
                     elif isinstance(_last_res, dict):
-                        _lr_proc = _last_res.get("procesados", 0)
-                        _lr_ok   = _last_res.get("exitos",     0)
+                        # StorageCleaner.run() (used by the scheduler) returns
+                        # examined/trashed/skipped/kept/errors — not the
+                        # procesados/exitos keys used by limpiar_bandeja().
+                        _lr_proc = _last_res.get("examined", 0)
+                        _lr_ok   = _last_res.get("trashed",  0)
                         st.success(f"✓ **{_lr_ok}** de {_lr_proc} correos movidos a la papelera.")
                     else:
                         st.caption("Sin información del resultado.")
