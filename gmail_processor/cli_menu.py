@@ -543,10 +543,9 @@ def _menu_smart_setup(get_svc: Callable):
     print("  Analiza tus últimos 12 meses de correo para detectar")
     print("  contactos importantes que deben estar protegidos.")
     print()
-    print(f"  Límites del análisis:")
-    print(f"    • Hasta 500 correos de bandeja de entrada")
-    print(f"    • Hasta 400 mensajes enviados (para detectar respuestas)")
-    print(f"    • Tiempo estimado: 3-6 minutos")
+    print(f"  Alcance del análisis:")
+    print(f"    • Todos los correos de bandeja de entrada y enviados del último año")
+    print(f"    • Tiempo estimado: 3-6 minutos (más en cuentas con mucho volumen)")
     print()
     print("  Los resultados se muestran antes de modificar nada.")
     print("  Confirmarás cada cambio antes de que sea aplicado.")
@@ -752,66 +751,14 @@ def _present_domains(domains) -> int:
 # ── rules.py patching ─────────────────────────────────────────────────────────
 
 def _patch_rules_add_contact(email: str, label: str, important: bool) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    start_idx = None
-    for i, line in enumerate(lines):
-        if "CONTACT_RULES: dict[str, dict] = {" in line:
-            start_idx = i
-            break
-    if start_idx is None:
-        return False
-
-    end_idx = None
-    for i in range(start_idx + 1, len(lines)):
-        if lines[i].strip() == "}":
-            end_idx = i
-            break
-    if end_idx is None:
-        return False
-
-    for line in lines[start_idx:end_idx]:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            return False  # already exists
-
-    important_str = "True" if important else "False"
-    new_entry = f'    "{email}": {{"label": "{label}", "mark_important": {important_str}}},'
-    lines.insert(end_idx, new_entry)
-
-    try:
-        rules_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    from .rules_writer import add_contact_rule
+    result = add_contact_rule(email, label, important)
+    return result.get("success", False)
 
 
 def _patch_rules_remove_contact(email: str) -> bool:
-    rules_path = Path(__file__).parent / "rules.py"
-    try:
-        lines = rules_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-
-    new_lines = []
-    removed   = False
-    for line in lines:
-        if f'"{email}"' in line and not line.strip().startswith("#"):
-            removed = True
-            continue
-        new_lines.append(line)
-
-    if not removed:
-        return False
-
-    try:
-        rules_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    from .rules_writer import remove_contact_rule
+    return remove_contact_rule(email)
 
 
 def _patch_rules_add_domain(domain: str, label: str, action: str = "mark_important") -> bool:

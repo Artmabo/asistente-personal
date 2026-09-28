@@ -1,29 +1,28 @@
 #!/usr/bin/env python
 """
-Ejemplos de uso avanzado del sistema de throttling adaptativo.
-Muestra cómo usar diferentes modos y parámetros para evitar 403/429.
+Ejemplos de uso de limpiar_correos() y de la Gmail API para casos que no
+cubre el menú interactivo (procesar_correos.py).
+
+Nota sobre límites de la API: limpiar_bandeja() mueve mensajes a la papelera
+en lotes (batchModify, hasta 1000 IDs por llamada) y no expone parámetros de
+"modo agresivo" ni delays configurables — no hay nada que ajustar para ir
+más rápido o más lento. Si Gmail responde 429/403 por cuota, la solución es
+esperar y reintentar (ver ejemplo_6_errores_comunes), no cambiar un ritmo
+de envío.
 """
 
 from limpiar_correos import limpiar_correos
 from asistente_personal import get_gmail_service
 
 
-def ejemplo_1_modo_conservador():
-    """Modo por defecto - el más seguro, respeita límites de Gmail API."""
+def ejemplo_1_limpieza_basica():
+    """Elimina correos no leídos más antiguos de 6 meses (comportamiento por defecto)."""
     print("\n" + "="*60)
-    print("EJEMPLO 1: Modo Conservador (RECOMENDADO)")
+    print("EJEMPLO 1: Limpieza básica")
     print("="*60)
-    print("✅ Usa delays adaptativos")
-    print("✅ Circuit breaker automático")
-    print("✅ Respeita límites de Gmail API")
-    print("❌ Más lento pero confiable")
-    
-    resultado = limpiar_correos(
-        meses=6,
-        solo_no_leidos=True,
-        aggressive=False  # Conservative mode
-    )
-    
+
+    resultado = limpiar_correos(meses=6, solo_no_leidos=True)
+
     print(f"\n✓ Resultado: {resultado['exitos']} correos eliminados")
 
 
@@ -61,34 +60,27 @@ def ejemplo_3_limpieza_personalizada():
     
     # Eliminar TODOS los correos (leídos y no leídos) de más de 1 año
     resultado = limpiar_correos(
-        meses=12,           # Más de 1 año
+        meses=12,              # Más de 1 año
         solo_no_leidos=False,  # Incluir leídos
-        aggressive=False
     )
-    
+
     print(f"\n✓ Se eliminaron {resultado['exitos']} correos")
 
 
-def ejemplo_4_comparacion_modos():
-    """Comparar comportamiento en modo agresivo vs conservador."""
+def ejemplo_4_procesador_con_reintentos():
+    """
+    Si necesitas reintentos automáticos ante 429/500/503 (backoff exponencial),
+    usa el procesador de reglas en vez de limpiar_correos(): sus acciones
+    (gmail_processor.actions.GmailActions) sí implementan retry con backoff.
+    limpiar_correos() es intencionalmente simple y no reintenta — un error
+    de Gmail API detiene solo la página en curso.
+    """
     print("\n" + "="*60)
-    print("EJEMPLO 4: Comparación de Modes")
+    print("EJEMPLO 4: Reintentos automáticos con el procesador de reglas")
     print("="*60)
-    
-    print("\n📊 Modo AGRESIVO:")
-    print("   - REQUEST_DELAY: 0.1s (muy rápido)")
-    print("   - BATCH_SIZE: 30")
-    print("   - RIESGO: Alto para 403/429")
-    print("   - VELOCIDAD: Rápida")
-    
-    print("\n📊 Modo CONSERVADOR:")
-    print("   - REQUEST_DELAY: 0.5s (seguro)")
-    print("   - BATCH_SIZE: 15")
-    print("   - RIESGO: Bajo o nulo")
-    print("   - VELOCIDAD: Moderada")
-    
-    print("\n✅ RECOMENDACIÓN: Usar modo CONSERVADOR siempre")
-
+    print("Ejecuta en su lugar:")
+    print("    python procesar_correos.py --cleanup --live")
+    print("(ver gmail_processor/actions.py::GmailActions._call para el detalle del retry)")
 
 
 def ejemplo_6_errores_comunes():
@@ -102,18 +94,18 @@ def ejemplo_6_errores_comunes():
             "causa": "Cuota de usuario excedida o permisos insuficientes",
             "solucion": [
                 "1. Esperar 24h (se resetea la cuota diaria)",
-                "2. Aumentar PAGE_DELAY y REQUEST_DELAY",
-                "3. Reducir BATCH_SIZE",
-                "4. Usar aggressive=False"
+                "2. Verificar que el OAuth se autorizó con el scope mail.google.com",
+                "3. Para reintentos automáticos, usa procesar_correos.py --cleanup "
+                "(ver ejemplo_4_procesador_con_reintentos)",
             ]
         },
         "429 Too Many Requests": {
             "causa": "Rate limit de Gmail API",
             "solucion": [
-                "1. Circuit breaker se activa automáticamente",
-                "2. Espera exponencial con backoff",
-                "3. Aumenta PAGE_DELAY a 5.0+",
-                "4. Ejecuta en horarios menos concurridos"
+                "1. limpiar_correos() no reintenta — vuelve a ejecutarlo en unos minutos",
+                "2. Para backoff exponencial automático, usa "
+                "procesar_correos.py --cleanup (GmailActions sí reintenta)",
+                "3. Ejecuta en horarios menos concurridos",
             ]
         },
         "401 Unauthorized": {
@@ -136,16 +128,15 @@ def ejemplo_6_errores_comunes():
 
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("EJEMPLOS: Sistema de Throttling Adaptativo")
+    print("EJEMPLOS: limpiar_correos() y manejo de errores de la Gmail API")
     print("="*60)
-    
+
     # Descomenta el ejemplo que quieras ejecutar:
-    
-    # ejemplo_1_modo_conservador()
+
+    # ejemplo_1_limpieza_basica()
     ejemplo_2_listar_sin_borrar()
     # ejemplo_3_limpieza_personalizada()
-    # ejemplo_4_comparacion_modos()
-    # ejemplo_5_monitorear_throttle()
+    # ejemplo_4_procesador_con_reintentos()
     # ejemplo_6_errores_comunes()
-    
+
     print("\n✅ Fin de ejemplos")

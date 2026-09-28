@@ -37,3 +37,26 @@ def extract_email_address(raw: str) -> str:
         if end > start:
             return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
+
+
+def extract_display_name(raw: str) -> str:
+    """Extracts the display name from a raw From/To header value.
+
+    Mirrors extract_email_address's use of rfind so a display name that
+    itself contains angle brackets, e.g. '"User <nickname>" <user@example.com>',
+    still yields the full name ('User <nickname>') instead of being cut off
+    at the first '<'.
+    """
+    if not raw or "<" not in raw:
+        return ""
+    return raw[: raw.rfind("<")].strip().strip('"').strip("'")
+
+
+# Free/consumer email providers — domains that belong to individuals rather
+# than a company, government agency, or bulk-mail platform. Shared by
+# contact_analyzer and app.py so classification stays consistent.
+FREE_EMAIL_PROVIDERS = frozenset([
+    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.mx",
+    "live.com", "live.com.mx", "icloud.com", "protonmail.com", "proton.me",
+    "me.com", "aol.com", "msn.com",
+])
