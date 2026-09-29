@@ -2,6 +2,7 @@
 GmailProcessor: orchestrates fetching, classifying, and acting on emails.
 """
 import logging
+from logging.handlers import RotatingFileHandler
 from googleapiclient.errors import HttpError
 
 from .auth import get_service
@@ -27,7 +28,7 @@ def setup_logging(
         format=fmt,
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_file, encoding="utf-8"),
+            RotatingFileHandler(log_file, maxBytes=5_000_000, backupCount=3, encoding="utf-8"),
         ],
     )
 
@@ -143,7 +144,8 @@ class GmailProcessor:
         # Execute primary action
         match c.action:
             case "trash":
-                if c.protected:
+                label_ids = message.get("labelIds", [])
+                if c.protected or "STARRED" in label_ids or "IMPORTANT" in label_ids:
                     logger.warning(f"  Blocked trash on protected message {msg_id}")
                     self.stats["skipped"] += 1
                 elif self.actions.trash(msg_id):

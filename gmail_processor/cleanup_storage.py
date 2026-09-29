@@ -17,15 +17,15 @@ from pathlib import Path
 from typing import Optional
 from googleapiclient.errors import HttpError
 
-_SUMMARY_PATH = Path("cleanup_summary.json")
-
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, domain_matches, find_contact_key
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
+
+_SUMMARY_PATH = Path("cleanup_summary.json")
 
 
 class StorageCleaner:
@@ -268,15 +268,16 @@ class StorageCleaner:
         email  = _sender_email(message)
         domain = email.split("@")[-1] if "@" in email else ""
 
-        if email in cfg.CONTACT_RULES:
+        key = find_contact_key(email, cfg.CONTACT_RULES)
+        if key == email:
             return f"contacto protegido ({email})"
-        if domain and f"@{domain}" in cfg.CONTACT_RULES:
+        if key:
             return f"dominio protegido por contacto ({domain})"
-        if domain in self._protected_domains:
+        if domain_matches(domain, self._protected_domains):
             return f"dominio protegido ({domain})"
 
-        extra = set(cfg.CLEANUP_RULES.get("safe_domains", []))
-        if domain in extra:
+        extra = cfg.CLEANUP_RULES.get("safe_domains", [])
+        if domain_matches(domain, extra):
             return f"dominio seguro adicional ({domain})"
 
         return None

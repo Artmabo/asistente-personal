@@ -37,3 +37,31 @@ def extract_email_address(raw: str) -> str:
         if end > start:
             return raw[start + 1 : end].strip().lower()
     return raw.strip().lower()
+
+
+def domain_matches(domain: str, candidates) -> bool:
+    """True if `domain` equals a candidate or is a subdomain of one.
+
+    e.g. 'info.cibc.com' matches 'cibc.com'; 'evilcibc.com' does not.
+    """
+    if not domain:
+        return False
+    return any(domain == c or domain.endswith("." + c) for c in candidates)
+
+
+def find_contact_key(sender: str, contact_rules) -> str | None:
+    """Returns the CONTACT_RULES key covering `sender`, or None.
+
+    Matches the exact address, then '@domain' entries (subdomains included).
+    """
+    if sender in contact_rules:
+        return sender
+    domain = sender.split("@")[-1] if "@" in sender else ""
+    if not domain:
+        return None
+    parts = domain.split(".")
+    for i in range(len(parts) - 1):          # never match a bare TLD
+        key = "@" + ".".join(parts[i:])
+        if key in contact_rules:
+            return key
+    return None

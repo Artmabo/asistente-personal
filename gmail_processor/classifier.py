@@ -10,7 +10,7 @@ Priority order (first match wins):
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, domain_matches, find_contact_key
 
 
 @dataclass
@@ -37,9 +37,7 @@ class EmailClassifier:
 
         # 1. Contact rules (highest priority — always protected)
         # Supports exact email matches AND domain-prefix entries like "@anahuac.mx"
-        contact_key = sender if sender in cfg.CONTACT_RULES else (
-            f"@{domain}" if domain and f"@{domain}" in cfg.CONTACT_RULES else None
-        )
+        contact_key = find_contact_key(sender, cfg.CONTACT_RULES)
         if contact_key:
             rule = cfg.CONTACT_RULES[contact_key]
             action = "mark_important" if rule.get("mark_important") else "label_only"
@@ -72,7 +70,7 @@ class EmailClassifier:
 
         # 4. Domain rules
         for rule in cfg.DOMAIN_RULES:
-            if domain in rule["domains"]:
+            if domain_matches(domain, rule["domains"]):
                 return Classification(
                     email_type="important",
                     action=rule["action"],
