@@ -6,11 +6,18 @@ Priority order (first match wins):
   2. Keyword rules  — subject / sender contains keywords
   3. Category rules — Gmail auto-categories (CATEGORY_PROMOTIONS, etc.)
   4. Domain rules   — sender domain matches
-  5. Default        — unknown, no action
+  5. Newsletter     — List-Unsubscribe header present, label only
+  6. Default        — unknown, no action
 """
 from dataclasses import dataclass, field
 from . import rules as cfg
 from .utils import get_header, extract_email_address
+
+
+# Domains whose rules mark mail as important: trash is blocked for these.
+_PROTECTED_DOMAINS = frozenset(
+    d for r in cfg.DOMAIN_RULES if r["action"] == "mark_important" for d in r["domains"]
+)
 
 
 @dataclass
@@ -53,11 +60,14 @@ class EmailClassifier:
         # 2. Keyword rules
         for rule in cfg.KEYWORD_RULES:
             if _matches_any(search_text, rule["keywords"], rule.get("case_sensitive", False)):
+                # A loose keyword (e.g. "click here") must never trash mail from
+                # important domains (banks, government) or starred messages.
+                guarded = domain in _PROTECTED_DOMAINS or "STARRED" in label_ids
                 return Classification(
                     email_type="spam" if rule["action"] == "trash" else "important",
                     action=rule["action"],
                     labels=[rule["label"]] if rule.get("label") else [],
-                    protected=False,
+                    protected=guarded,
                 )
 
         # 3. Gmail category labels
@@ -80,7 +90,14 @@ class EmailClassifier:
                     protected=rule["action"] == "mark_important",
                 )
 
-        # 5. Default
+        # 5. Newsletters: unknown senders that offer an unsubscribe link.
+        # Label only — never destructive — so the user can review them later.
+        if get_header(headers, "List-Unsubscribe"):
+            return Classification(
+                email_type="newsletter", action="label_only", labels=["NEWSLETTERS"],
+            )
+
+        # 6. Default
         return Classification(email_type="unknown", action="label_only", protected=False)
 
 
