@@ -2,6 +2,7 @@
 GmailProcessor: orchestrates fetching, classifying, and acting on emails.
 """
 import logging
+from logging.handlers import RotatingFileHandler
 from googleapiclient.errors import HttpError
 
 from .auth import get_service
@@ -10,7 +11,7 @@ from .actions import GmailActions
 from .cleanup_storage import StorageCleaner
 from .learning_engine import LearningEngine
 from .audit_log import AuditLogger
-from .utils import get_header
+from .utils import get_header, fetch_metadata_batch
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor")
@@ -27,7 +28,9 @@ def setup_logging(
         format=fmt,
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_file, encoding="utf-8"),
+            RotatingFileHandler(
+                log_file, maxBytes=5_000_000, backupCount=3, encoding="utf-8"
+            ),
         ],
     )
 
@@ -82,8 +85,9 @@ class GmailProcessor:
                 break
 
             logger.info(f"Page {page}: {len(messages)} messages")
+            fetched = fetch_metadata_batch(self.service, [m["id"] for m in messages])
             for stub in messages:
-                self._process_one(stub["id"])
+                self._process_one(stub["id"], fetched.get(stub["id"]))
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -108,16 +112,9 @@ class GmailProcessor:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _process_one(self, msg_id: str):
-        try:
-            message = self.service.users().messages().get(
-                userId="me",
-                id=msg_id,
-                format="metadata",
-                metadataHeaders=["From", "Subject", "Date"],
-            ).execute()
-        except HttpError as e:
-            logger.error(f"Could not fetch {msg_id}: {e}")
+    def _process_one(self, msg_id: str, message: dict | None):
+        if message is None:
+            logger.error(f"Could not fetch {msg_id}")
             self.stats["errors"] += 1
             return
 

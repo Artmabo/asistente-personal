@@ -141,6 +141,15 @@ class GmailActions:
                     continue
                 logger.error(f"API error {status} on attempt {attempt}: {e}")
                 return None
+            except (OSError, TimeoutError) as e:
+                # Connection reset / timeout — transient, retry with backoff
+                if attempt < _MAX_RETRIES:
+                    logger.warning(f"Network error ({e}), retry {attempt}/{_MAX_RETRIES} in {delay:.1f}s")
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                logger.error(f"Network error after {attempt} attempts: {e}")
+                return None
         return None
 
 

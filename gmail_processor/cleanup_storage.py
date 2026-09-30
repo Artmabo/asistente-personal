@@ -17,15 +17,15 @@ from pathlib import Path
 from typing import Optional
 from googleapiclient.errors import HttpError
 
-_SUMMARY_PATH = Path("cleanup_summary.json")
-
 from .actions import GmailActions
 from .learning_engine import LearningEngine, PROTECT_THRESHOLD, DOUBT_MARGIN
 from .audit_log import AuditLogger
-from .utils import get_header, extract_email_address
+from .utils import get_header, extract_email_address, fetch_metadata_batch
 from . import rules as cfg
 
 logger = logging.getLogger("gmail_processor.cleanup")
+
+_SUMMARY_PATH = Path("cleanup_summary.json")
 
 
 class StorageCleaner:
@@ -112,12 +112,14 @@ class StorageCleaner:
                 logger.info("  Sin candidatos para este target.")
                 break
 
-            for stub in messages:
-                if count >= cap:
-                    logger.warning(f"  Cap ({cap}) alcanzado — deteniendo este target.")
-                    break
-                self._evaluate(stub["id"], reason, rule_name)
+            batch_ids = [m["id"] for m in messages[: cap - count]]
+            fetched = fetch_metadata_batch(self.service, batch_ids)
+            for msg_id in batch_ids:
+                self._evaluate(msg_id, fetched.get(msg_id), reason, rule_name)
                 count += 1
+            if count >= cap:
+                logger.warning(f"  Cap ({cap}) alcanzado — deteniendo este target.")
+                break
 
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -125,18 +127,11 @@ class StorageCleaner:
 
     # ── Per-message evaluation ────────────────────────────────────────────────
 
-    def _evaluate(self, msg_id: str, reason: str, rule_name: str):
+    def _evaluate(self, msg_id: str, message: dict | None, reason: str, rule_name: str):
         self.stats["examined"] += 1
 
-        try:
-            message = self.service.users().messages().get(
-                userId="me",
-                id=msg_id,
-                format="metadata",
-                metadataHeaders=["From", "Subject", "Date"],
-            ).execute()
-        except HttpError as e:
-            logger.error(f"  Could not fetch {msg_id}: {e}")
+        if message is None:
+            logger.error(f"  Could not fetch {msg_id}")
             self.stats["errors"] += 1
             return
 

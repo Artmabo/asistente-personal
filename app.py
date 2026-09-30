@@ -282,7 +282,7 @@ def _proteger_remitente(email: str, name: str) -> dict:
             "gmail_processor", "rules.py",
         )
 
-        content = open(rules_path, encoding="utf-8").read()
+        content = Path(rules_path).read_text(encoding="utf-8")
         lines   = content.split("\n")
 
         in_cr     = False
@@ -306,8 +306,9 @@ def _proteger_remitente(email: str, name: str) -> dict:
         new_line = f"    {repr(email)}: {{\"label\": {repr(label)}, \"mark_important\": True}},"
         lines.insert(insert_at, new_line)
 
-        with open(rules_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        tmp_path = Path(rules_path).with_suffix(".tmp")
+        tmp_path.write_text("\n".join(lines), encoding="utf-8")
+        tmp_path.replace(rules_path)   # atomic: a crash never leaves rules.py half-written
 
         importlib.reload(rules_mod)
         return {"success": True, "email": email, "label": label}
@@ -710,7 +711,6 @@ def _render_contact_detail(pdata: dict):
 
 _HAS_DIALOG = False
 _contact_dialog = None
-
 try:
     @st.dialog("Detalles del contacto")
     def _contact_dialog(addr: str, pdata: dict):
@@ -734,7 +734,7 @@ try:
             st.markdown(
                 f'<span style="background:{_bg};color:{_fg};padding:3px 12px;'
                 f'border-radius:999px;font-size:0.8rem;font-weight:500">'
-                f'{_rel_names.get(rel, rel)}</span>',
+                f'{html.escape(_rel_names.get(rel, str(rel)))}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -1334,7 +1334,7 @@ elif _current_page == "contactos":
                                 st.markdown(
                                     f'<span style="background:{_cpbg};color:{_cpfg};padding:2px 10px;'
                                     f'border-radius:999px;font-size:0.78rem;font-weight:500">'
-                                    f'{_rel_names.get(_cprel, _cprel)}</span>',
+                                    f'{html.escape(_rel_names.get(_cprel, str(_cprel)))}</span>',
                                     unsafe_allow_html=True,
                                 )
                                 st.markdown("")
