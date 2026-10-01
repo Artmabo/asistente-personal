@@ -16,6 +16,7 @@ import csv
 import io
 import json
 import logging
+import os
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -68,9 +69,12 @@ class AuditLogger:
             return
         existing = self._load()
         combined = (existing + self._buf)[-MAX_ENTRIES:]
-        with open(self.path, "w", encoding="utf-8") as f:
+        # Atomic write: a crash mid-write must not truncate the existing log
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             for entry in combined:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        os.replace(tmp, self.path)
         logger.debug(f"Audit: {len(self._buf)} entries → {self.path}  (total={len(combined)})")
         self._buf = []
 
@@ -103,7 +107,7 @@ class AuditLogger:
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(entries)
+        writer.writerows({k: _csv_safe(v) for k, v in e.items()} for e in entries)
         return buf.getvalue()
 
     # ── Private ───────────────────────────────────────────────────────────────
@@ -113,8 +117,8 @@ class AuditLogger:
             return []
         try:
             with open(self.path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except (OSError, json.JSONDecodeError):
+                return _parse_lines(f)
+        except OSError:
             return []
 
     def _load_tail(self, n: int) -> list[dict]:
@@ -127,6 +131,26 @@ class AuditLogger:
                     (ln for ln in f if ln.strip()),
                     maxlen=n,
                 )
-            return [json.loads(ln) for ln in tail]
-        except (OSError, json.JSONDecodeError):
+            return _parse_lines(tail)
+        except OSError:
             return []
+
+
+def _parse_lines(lines) -> list[dict]:
+    """Parses JSONL lines, skipping corrupt ones so a single bad line never discards the log."""
+    entries = []
+    for ln in lines:
+        if not ln.strip():
+            continue
+        try:
+            entries.append(json.loads(ln))
+        except json.JSONDecodeError:
+            logger.warning("Audit: línea corrupta omitida")
+    return entries
+
+
+def _csv_safe(value):
+    """Neutralizes spreadsheet formula injection (sender/subject text is attacker-controlled)."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value

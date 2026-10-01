@@ -662,7 +662,6 @@ def _present_contacts(contacts, domains, DOMAIN_LABELS):
                 print(f"  ! {s.email} ya protegido o no se pudo escribir")
 
         if added_contacts:
-            from . import rules as cfg
             importlib.reload(cfg)
 
     # ── Show domain suggestions ────────────────────────────────────────────────
@@ -690,7 +689,6 @@ def _present_contacts(contacts, domains, DOMAIN_LABELS):
 def _present_domains(domains) -> int:
     """Shows domain suggestions and applies approved ones. Returns count added."""
     from . import rules as cfg
-    from .smart_setup import DOMAIN_LABELS
 
     # Filter domains already in DOMAIN_RULES
     existing = {
